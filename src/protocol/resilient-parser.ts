@@ -7,17 +7,33 @@ export interface FinalAnswer {
 
 export type ParsedTurn =
   | { type: "action"; thought: string; action: CopilotAction }
+  | { type: "handoff"; thought: string; handoffDoc: string }
   | { type: "final_answer"; thought: string; answer: FinalAnswer }
   | { type: "invalid_chatter"; thought: string; warning: string };
 
 export class ResilientParser {
   /**
-   * Parse Copilot output text into a structured turn (Action | FinalAnswer | InvalidChatter).
-   * Supports standard ```action, ```json, generic ``` blocks, unfenced streaming text,
+   * Parse Copilot output text into a structured turn (Action | Handoff | FinalAnswer | InvalidChatter).
+   * Supports standard ```action, ```handoff, ```json, generic ``` blocks, unfenced streaming text,
    * shorthand tool syntax, and various completion markers.
    */
   public static parse(text: string): ParsedTurn {
     const trimmed = (text || "").trim();
+
+    // 0. Check for Handoff fenced block
+    const handoffMatch = trimmed.match(/```handoff\s*([\s\S]*?)```/i);
+    if (handoffMatch) {
+      const handoffDoc = handoffMatch[1].trim();
+      const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```handoff/i);
+      const thought = thoughtMatch
+        ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim()
+        : "";
+      return {
+        type: "handoff",
+        thought,
+        handoffDoc,
+      };
+    }
 
     // 1. Check for Action blocks
     // 1a. Code fenced: ```action ... ```, ```json ... ```, or ``` ... ``` containing tool/action

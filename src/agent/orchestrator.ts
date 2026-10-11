@@ -568,7 +568,39 @@ export class Orchestrator {
         };
       }
 
-      // Case 3b: Action invoked
+      // Case 3b: Native handoff fenced block emitted
+      if (parsed.type === "handoff") {
+        const targetSessionId = options.sessionId || this.sessionId;
+        let docPath: string | undefined;
+        if (this.workspaceRoot) {
+          const handoffsDir = path.join(this.workspaceRoot, ".cph", "handoffs");
+          fs.mkdirSync(handoffsDir, { recursive: true });
+          docPath = path.join(handoffsDir, `handoff-${targetSessionId}.md`);
+          fs.writeFileSync(docPath, parsed.handoffDoc, "utf8");
+          this.lastHandoffDocPath = docPath;
+        }
+
+        history.push({
+          turn,
+          userInput: currentPrompt,
+          thought: parsed.thought || turnReasoningText,
+          response: turnResponseText,
+        });
+        events?.onTurnEnd?.(turn, turnResponseText);
+        events?.onHandoff?.(parsed.handoffDoc, docPath);
+
+        return {
+          finalAnswer: "Session handed off with native handoff document.",
+          turnsCount: turn,
+          completed: false,
+          history,
+          handedOff: true,
+          handoffSnapshot: parsed.handoffDoc,
+          handoffDocPath: docPath,
+        };
+      }
+
+      // Case 3c: Action invoked
       if (parsed.type === "action") {
         events?.onToolStart?.(parsed.action);
 
@@ -1486,7 +1518,9 @@ export class Orchestrator {
     // Guarantee persistence if not already created on disk by write_file
     if (!fs.existsSync(targetHandoffAbsolutePath)) {
       const contentToPersist =
-        parsed.type === "final_answer"
+        parsed.type === "handoff"
+          ? parsed.handoffDoc
+          : parsed.type === "final_answer"
           ? (parsed.answer.summary || parsed.answer.raw || arbitratorResponseText)
           : (parsed.type === "action" && parsed.action?.content)
           ? parsed.action.content

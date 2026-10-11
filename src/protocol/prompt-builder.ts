@@ -286,32 +286,26 @@ ${this.PROTOCOL_REMINDER}`;
 
   /**
    * Constructs pre-handoff summons prompt on turn maxTurns - 1,
-   * instructing the model to write the handoff document directly to disk via write_file.
+   * instructing the model to output the handoff document directly via ```handoff fenced block.
    */
   public static buildHandoffPreparationPrompt(task: string, sessionId?: string): string {
-    const sessionTag = sessionId || "active_session";
-    const targetDocPath = `.cph/handoffs/handoff-${sessionTag}.md`;
-
     return `[SYSTEM NOTICE: 当前会话即将在下一轮达到推理上限]:
 当前长耗时任务即将进入跨会话接力期。
 
-【原生文件交接指南 (File-First Handoff)】
+【原生交接文档格式指南】
 当前阶段的核心目标是完成接力移交，确保后续智能体能够无缝接续。
-请在当前轮次直接使用 tool: write_file 将你的【深度技术总结与接力备忘录 (HANDOFF_MEMO:)】完整写入以下文件：
-\`\`\`action
-tool: write_file
-path: ${targetDocPath}
-content: <完整结构化 Markdown 交接文档>
-\`\`\`
-
-交接文档重点包含：
+请在当前轮次直接输出 \`\`\`handoff ... \`\`\` 代码块提供你的【深度技术总结与接力备忘录 (HANDOFF_MEMO:)】：
+\`\`\`handoff
+# 跨会话自主任务交接文档
 1. 【任务目标与交付边界】原始任务核心目标与约束
 2. 【阶段性技术审计发现与架构核心见解】对已读源码与模块架构的深度研判及重构建议
 3. 【已验证客观事实与物理基线】已读取的项目模块与已执行验证的基准命令
 4. 【反模式与关键卡点】代码坏味道与阻碍推进的报错/依赖问题
-5. 【接力第一优先级待办事项】明确指示下任接力者的具体切入点，直接推进后续工作
+5. 【已修改/生成文件清单】变更文件路径及当前状态
+6. 【接力第一优先级待办事项】明确指示下任接力者的具体切入点，直接推进后续工作
+\`\`\`
 
-若同时有阶段性审查草稿，可继续更新 \`.cph/review_draft.md\`。
+系统将自动提取该代码块并持久化归档，接力智能体将直接据此继续攻坚！
 原始任务需求：${task}`;
   }
 }

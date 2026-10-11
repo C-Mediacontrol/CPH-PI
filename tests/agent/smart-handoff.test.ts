@@ -28,9 +28,8 @@ describe("Smart Handoff Dual-Insurance & Memo Capture (Task 3)", () => {
 
       expect(prompt).toContain("[SYSTEM NOTICE: 当前会话即将在下一轮达到推理上限]");
       expect(prompt).toContain("HANDOFF_MEMO");
-      expect(prompt).toContain("tool: write_file");
-      expect(prompt).toContain(".cph/handoffs/handoff-ses_123.md");
-      expect(prompt).toContain("原生文件交接指南 (File-First Handoff)");
+      expect(prompt).toContain("```handoff");
+      expect(prompt).toContain("原生交接文档格式指南");
       expect(prompt).not.toContain("FINAL_ANSWER: <任务交付总结说明>");
       expect(prompt).toContain(task);
     });
