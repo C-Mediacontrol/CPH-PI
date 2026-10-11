@@ -23,6 +23,10 @@ import type { Skill } from "../skills/skill-loader.ts";
 import { SkillRegistry } from "../skills/skill-registry.ts";
 import { SubagentRunner } from "./subagent-runner.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
+import {
+  createMainPlanSnapshot,
+  saveMainPlanSnapshot,
+} from "../session/main-plan-snapshot.ts";
 
 export interface IAccountPool {
   markThrottled(email: string, durationMs?: number): void;
@@ -100,6 +104,7 @@ export interface OrchestratorEvents {
   onArbitratorHandoffStart?: (arbitratorSessionId: string, accountEmail: string) => void | Promise<void>;
   onArbitratorHandoffComplete?: (handoffDocPath: string, arbitratorSessionId: string) => void | Promise<void>;
   onAttachmentUploaded?: (attachment: UploadDocumentResult, toolName: string) => void;
+  onMainSessionVirtualized?: (snapshot: any, mdPath: string) => void;
 }
 
 export interface OrchestratorRunOptions {
@@ -607,6 +612,23 @@ export class Orchestrator {
         let toolResult: ToolBridgeResult;
 
         if (parsed.action.tool === "invoke_subagent") {
+          const thought = parsed.thought || (parsed as any).action?.thought || "";
+          const subagents = (parsed.action as any).subagents || [];
+          const snapshot = createMainPlanSnapshot({
+            originalSessionId: options.sessionId || this.sessionId,
+            originalTask: this.pendingTask || task,
+            thought,
+            workspaceRoot: this.workspaceRoot,
+            plannedSubagents: subagents,
+          });
+          const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
+          events?.onMainSessionVirtualized?.(snapshot, mdPath);
+
+          // Safely disconnect client WebSocket if close method exists to free cloud account
+          try {
+            (client as any)?.close?.();
+          } catch {}
+
           const runner =
             this.subagentRunner ||
             new SubagentRunner({
@@ -620,7 +642,6 @@ export class Orchestrator {
               lineageTracker: this.lineageTracker,
             });
 
-          const subagents = (parsed.action as any).subagents || [];
           const reports = await runner.executeBatch(subagents, signal, {
             onSubagentStart: events?.onSubagentStart,
             onSubagentEnd: events?.onSubagentEnd,
