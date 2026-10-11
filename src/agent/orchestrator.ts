@@ -21,6 +21,7 @@ import { BlackboxCompactor } from "./blackbox-compactor.ts";
 import { RefusalGuard } from "./refusal-guard.ts";
 import type { Skill } from "../skills/skill-loader.ts";
 import { SkillRegistry } from "../skills/skill-registry.ts";
+import { SubagentRunner } from "./subagent-runner.ts";
 
 export interface IAccountPool {
   markThrottled(email: string, durationMs?: number): void;
@@ -65,6 +66,9 @@ export interface OrchestratorOptions {
   activeSkills?: Skill[] | string;
   isHandshakePending?: boolean;
   customAgentId?: string;
+  coderAgentId?: string;
+  researcherAgentId?: string;
+  subagentRunner?: SubagentRunner | any;
   sessionId?: string;
   enableInSessionCompaction?: boolean;
   graphTokenProvider?: () => Promise<string>;
@@ -82,6 +86,8 @@ export interface OrchestratorEvents {
   onTurnEnd?: (turn: number, response: string) => void;
   onToolStart?: (action: CopilotAction) => void;
   onToolEnd?: (result: ToolBridgeResult) => void;
+  onSubagentStart?: (id: string, role: string, spec: any) => void;
+  onSubagentEnd?: (report: any) => void;
   onAccountSwitched?: (oldEmail: string, newEmail: string) => void;
   onRefusalIntercepted?: (refusalText: string, retryAttempt: number) => void;
   onCompacted?: (clearedChars: number, ratio: number) => void;
@@ -135,6 +141,9 @@ export class Orchestrator {
   ) => IOrchestratorChatClient;
   private activeSkills?: Skill[] | string;
   public customAgentId?: string;
+  public coderAgentId?: string;
+  public researcherAgentId?: string;
+  private subagentRunner?: SubagentRunner | any;
   private enableInSessionCompaction: boolean = false;
   private graphTokenProvider?: () => Promise<string>;
   private enableCloudAttachment: boolean = true;
@@ -161,6 +170,9 @@ export class Orchestrator {
     this.chatClientFactory = options.chatClientFactory;
     this.activeSkills = options.activeSkills;
     this.customAgentId = options.customAgentId;
+    this.coderAgentId = options.coderAgentId;
+    this.researcherAgentId = options.researcherAgentId;
+    this.subagentRunner = options.subagentRunner;
     this.sessionId = options.sessionId || crypto.randomUUID();
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
@@ -535,7 +547,40 @@ export class Orchestrator {
       if (parsed.type === "action") {
         events?.onToolStart?.(parsed.action);
 
-        const toolResult = await this.bridge.executeAction(parsed.action, signal);
+        let toolResult: ToolBridgeResult;
+
+        if (parsed.action.tool === "invoke_subagent") {
+          const runner =
+            this.subagentRunner ||
+            new SubagentRunner({
+              workspaceRoot: this.workspaceRoot,
+              mainSessionId: this.sessionId,
+              coderAgentId: this.coderAgentId,
+              researcherAgentId: this.researcherAgentId,
+              pool: this.pool,
+              chatClientFactory: this.chatClientFactory,
+              modelTone: this.modelTone,
+            });
+
+          const subagents = (parsed.action as any).subagents || [];
+          const reports = await runner.executeBatch(subagents, signal, {
+            onSubagentStart: events?.onSubagentStart,
+            onSubagentEnd: events?.onSubagentEnd,
+          });
+
+          const summaryOutput = runner.formatReportSummary(reports);
+          toolResult = {
+            actionName: "invoke_subagent",
+            piToolName: "subagent",
+            target: `${reports.length} subagents`,
+            success: reports.every((r: any) => r.success),
+            output: summaryOutput,
+            formatted: summaryOutput,
+          };
+        } else {
+          toolResult = await this.bridge.executeAction(parsed.action, signal);
+        }
+
         events?.onToolEnd?.(toolResult);
 
         // Check and trigger cloud document attachment upload for tool outputs (aggressive upload policy to avoid encoding corruption and chat bloat)
