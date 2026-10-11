@@ -1,6 +1,6 @@
 # CPH-PI 三 Agent 提示词重塑、子代理自主透明接力与会话单向继承链条实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 实现 CPH-PI 三智能体提示词重塑、子代理单任务 30 轮自主透明接力引擎、解耦账号的会话单向继承链条（Lineage Chain），以及子代理 429 分级上报与主会话容灾迁移下的动态结果回流。
 
@@ -62,7 +62,7 @@
   }
   ```
 
-- [ ] **Step 1: 编写失败的血缘追踪测试**
+- [x] **Step 1: 编写失败的血缘追踪测试**
 
 在 `CPH-PI/tests/session/lineage-tracker.test.ts` 中创建测试文件：
 ```typescript
@@ -127,12 +127,12 @@ describe("SessionLineageTracker - Unidirectional Lineage Chain", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/session/lineage-tracker.test.ts`  
 预期: FAIL (`Cannot find module '../../src/session/lineage-tracker.ts'`)
 
-- [ ] **Step 3: 实现 SessionLineageTracker**
+- [x] **Step 3: 实现 SessionLineageTracker**
 
 创建 `CPH-PI/src/session/lineage-tracker.ts`：
 ```typescript
@@ -207,12 +207,12 @@ export class SessionLineageTracker {
 }
 ```
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/session/lineage-tracker.test.ts`  
 预期: PASS (3 tests pass)
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```bash
 git add src/session/lineage-tracker.ts tests/session/lineage-tracker.test.ts
@@ -234,7 +234,7 @@ git commit -m "feat(session): implement SessionLineageTracker with resolveActive
 - Consumes: `cph-main-agent-prompt.txt`, `cph-coder-agent-prompt.txt`, `cph-researcher-agent-prompt.txt`, `skills/subagent/SKILL.md`
 - Produces: 强化任务体量认知（10~20 轮黄金区间、核心修改文件 ≤3 个、防单任务超 30 轮），明确 Coder 与 Researcher 挂载 `handoff` 技能的微观交接契约。
 
-- [ ] **Step 1: 编写失败的提示词与技能契约测试**
+- [x] **Step 1: 编写失败的提示词与技能契约测试**
 
 在 `CPH-PI/tests/skills/tri-agent-prompts.test.ts` 中创建测试文件：
 ```typescript
@@ -273,12 +273,12 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/skills/tri-agent-prompts.test.ts`  
 预期: FAIL (`Expected to contain "黄金工作区间"`)
 
-- [ ] **Step 3: 更新提示词与 `subagent` 技能内容**
+- [x] **Step 3: 更新提示词与 `subagent` 技能内容**
 
 1. 修改 `CPH-PI/cph-main-agent-prompt.txt`：在任务规模感知与子代理调度契约中加入：
    - **黄金工作区间 (10~20 轮)**：一个优秀的子任务应该聚焦在单一内聚的功能垂直切片；
@@ -290,12 +290,12 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
 3. 修改 `CPH-PI/skills/subagent/SKILL.md`：
    - 在 Gate 2 中加入任务规模与 30 轮防溢出门禁标准。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/skills/tri-agent-prompts.test.ts`  
 预期: PASS (3 tests pass)
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```bash
 git add cph-main-agent-prompt.txt cph-coder-agent-prompt.txt cph-researcher-agent-prompt.txt skills/subagent/SKILL.md tests/skills/tri-agent-prompts.test.ts
@@ -314,7 +314,7 @@ git commit -m "feat(prompts): add task right-sizing and micro-handoff contracts 
 - Consumes: `SubagentRunnerOptions`, `SubagentTaskSpec`, `SessionLineageTracker`
 - Produces: 当子代理单次会话因第 29 轮生成交接文档退出时，`SubagentRunner` 自动拉起 Hop-2 Successor 子代理读取该交接文档并接续攻坚，直到最终产生 `FINAL_ANSWER`，对主会话返回合并报告。
 
-- [ ] **Step 1: 编写失败的子代理接力循环测试**
+- [x] **Step 1: 编写失败的子代理接力循环测试**
 
 在 `CPH-PI/tests/agent/subagent-continuation.test.ts` 中创建测试文件：
 ```typescript
@@ -372,12 +372,12 @@ describe("SubagentRunner - Autonomous Continuation Loop", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/agent/subagent-continuation.test.ts`  
 预期: FAIL (`reports[0].success` is false or `callCount` is 1)
 
-- [ ] **Step 3: 在 `SubagentRunner` 中实现多代循环接力**
+- [x] **Step 3: 在 `SubagentRunner` 中实现多代循环接力**
 
 修改 `CPH-PI/src/agent/subagent-runner.ts`：
 - 在 `SubagentRunnerOptions` 中增加 `lineageTracker?: SessionLineageTracker; maxAutonomousHops?: number;`（默认 `maxAutonomousHops = 5`）；
@@ -390,12 +390,12 @@ describe("SubagentRunner - Autonomous Continuation Loop", () => {
     - 循环进入下一 Hop；
   - 若返回 `res.completed`，跳出循环返回成功报告。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/agent/subagent-continuation.test.ts`  
 预期: PASS (1 test pass)
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```bash
 git add src/agent/subagent-runner.ts tests/agent/subagent-continuation.test.ts
@@ -415,7 +415,7 @@ git commit -m "feat(agent): implement transparent multi-hop continuation loop in
 - Consumes: `SessionLineageTracker`, `SubagentTaskReport`
 - Produces: 在子代理运行期间，主会话无论发生几次 429 容灾或接力切换，子代理成果均通过 `lineageTracker.resolveActiveHead` 动态路由绑定至当前最新的主端点。
 
-- [ ] **Step 1: 编写失败的动态回流路由测试**
+- [x] **Step 1: 编写失败的动态回流路由测试**
 
 在 `CPH-PI/tests/agent/subagent-reroute.test.ts` 中创建测试文件：
 ```typescript
@@ -466,12 +466,12 @@ describe("Subagent Deliverable Dynamic Rerouting", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/agent/subagent-reroute.test.ts`  
 预期: FAIL
 
-- [ ] **Step 3: 实现主端点解析与动态回流注入**
+- [x] **Step 3: 实现主端点解析与动态回流注入**
 
 1. 修改 `CPH-PI/src/agent/orchestrator.ts`：
    - 引入 `SessionLineageTracker`；
@@ -480,12 +480,12 @@ describe("Subagent Deliverable Dynamic Rerouting", () => {
    - 在子任务完成汇总报告时，调用 `this.lineageTracker.resolveActiveHead(this.mainSessionId)`；
    - 记录时间线事件 `SUBAGENT_DELIVERABLE_ROUTED`，确保多并发场景下端点一致。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/agent/subagent-reroute.test.ts`  
 预期: PASS (1 test pass)
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```bash
 git add src/agent/orchestrator.ts src/agent/subagent-runner.ts tests/agent/subagent-reroute.test.ts
@@ -504,7 +504,7 @@ git commit -m "feat(agent): dynamically reroute subagent deliverables to active 
 - Consumes: `AccountPool`, `SubagentTaskReport`
 - Produces: 单个 429 触发静默换号重试；全池耗尽触发结构化错误代码 `ALL_ACCOUNTS_THROTTLED` 与黑匣子断点生成。
 
-- [ ] **Step 1: 编写失败的 429 分级上报测试**
+- [x] **Step 1: 编写失败的 429 分级上报测试**
 
 在 `CPH-PI/tests/agent/subagent-429-escalation.test.ts` 中创建测试文件：
 ```typescript
@@ -539,12 +539,12 @@ describe("Subagent 429 Escalation", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/agent/subagent-429-escalation.test.ts`  
 预期: FAIL (`reports[0].finalAnswer` 不包含账号池枯竭)
 
-- [ ] **Step 3: 实现 429 分级错误处理与报告格式化**
+- [x] **Step 3: 实现 429 分级错误处理与报告格式化**
 
 在 `CPH-PI/src/agent/subagent-runner.ts` 中：
 - 识别 429 全池限流错误特征（`/429|throttled|rate limit/i` 或 `err.code === "ALL_ACCOUNTS_THROTTLED"`）；
@@ -552,12 +552,12 @@ describe("Subagent 429 Escalation", () => {
   `"❌ 子任务因全局账号池限流 (429) 中断，已保存现场断点，建议主会话等待冷却或通知用户介入。"`；
 - 记录 `SUBAGENT_POOL_THROTTLED` 时间线事件。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/agent/subagent-429-escalation.test.ts`  
 预期: PASS (1 test pass)
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```bash
 git add src/agent/subagent-runner.ts tests/agent/subagent-429-escalation.test.ts
@@ -576,7 +576,7 @@ git commit -m "feat(agent): implement subagent 429 rate limit escalation and err
 - Consumes: `cph-main-agent-prompt.txt`, `cph-coder-agent-prompt.txt`, `cph-researcher-agent-prompt.txt`, `skills/`
 - Produces: 完整更新的 `dist/copilot-agent-bundle.zip` 与 `UPLOAD-GUIDE.md`（明确三 Agent 的技能挂载矩阵）。
 
-- [ ] **Step 1: 编写打包与挂载矩阵测试**
+- [x] **Step 1: 编写打包与挂载矩阵测试**
 
 在 `CPH-PI/tests/cli/package-agent-bundle.test.ts` 中创建测试文件：
 ```typescript
@@ -607,12 +607,12 @@ describe("Package Agent Bundle - Tri-Agent Matrix", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/cli/package-agent-bundle.test.ts`  
 预期: FAIL (`guideContent` 缺少挂载矩阵)
 
-- [ ] **Step 3: 更新打包脚本与上传指南模板**
+- [x] **Step 3: 更新打包脚本与上传指南模板**
 
 修改 `CPH-PI/scripts/package-agent-bundle.ts`：
 - 在 `uploadGuideContent` 中清晰说明：
@@ -620,12 +620,12 @@ describe("Package Agent Bundle - Tri-Agent Matrix", () => {
   2. Coder 智能体：上传 `Instructions-Coder-代码实现智能体.txt`，仅挂载 `skills/handoff`（不挂载 `subagent`）；
   3. Researcher 智能体：上传 `Instructions-Researcher-深度调研智能体.txt`，仅挂载 `skills/handoff`（不挂载 `subagent`）。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/cli/package-agent-bundle.test.ts`  
 预期: PASS (1 test pass)
 
-- [ ] **Step 5: 提交代码并生成最新打包产物**
+- [x] **Step 5: 提交代码并生成最新打包产物**
 
 ```bash
 git add scripts/package-agent-bundle.ts tests/cli/package-agent-bundle.test.ts
