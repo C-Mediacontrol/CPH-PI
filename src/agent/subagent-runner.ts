@@ -259,6 +259,7 @@ export class SubagentRunner {
               modelTone: this.modelTone,
               skills: ["handoff"],
               activeSkills: handoffSkills,
+              task: currentTaskPrompt,
             })
           : new CopilotOrchestrator({
               workspaceRoot: this.workspaceRoot,
