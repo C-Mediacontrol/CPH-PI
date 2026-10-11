@@ -12,6 +12,17 @@ import { SkillRegistry } from "./skills/skill-registry.ts";
 import { SessionManager, type SessionRecord } from "./session/session-manager.ts";
 import { ChatHubClient } from "./transport/chathub-client.ts";
 import { TerminalLogger } from "./ui/terminal-logger.ts";
+import {
+  DEFAULT_MAIN_AGENT_ID,
+  DEFAULT_CODER_AGENT_ID,
+  DEFAULT_RESEARCHER_AGENT_ID,
+} from "./agent/subagent-runner.ts";
+
+export {
+  DEFAULT_MAIN_AGENT_ID,
+  DEFAULT_CODER_AGENT_ID,
+  DEFAULT_RESEARCHER_AGENT_ID,
+};
 
 export interface WorkspaceConfig {
   customAgentId?: string;
@@ -45,6 +56,8 @@ export interface CphPiCliOptions {
   resumeSessionId?: string;
   isInteractive?: boolean;
   customAgentId?: string;
+  coderAgentId?: string;
+  researcherAgentId?: string;
   maxAutonomousHandoffHops?: number;
   allowedAccounts?: string[];
   orchestrator?: CopilotOrchestrator;
@@ -62,6 +75,8 @@ export class CphPiCli {
   private timeoutSec: number;
   private maxAutonomousHandoffHops: number;
   public customAgentId?: string;
+  public coderAgentId?: string;
+  public researcherAgentId?: string;
   private pool: AccountPool;
   private renderer: TuiRenderer;
   private interruptController: InterruptController;
@@ -98,6 +113,12 @@ export class CphPiCli {
       : undefined;
     const envAgentId = ChatHubClient.normalizeAgentId(process.env.CPH_COPILOT_AGENT_ID);
     this.customAgentId = cliAgentId ?? envAgentId ?? config.customAgentId;
+    this.coderAgentId =
+      (options.coderAgentId ? ChatHubClient.normalizeAgentId(options.coderAgentId) : undefined) ??
+      DEFAULT_CODER_AGENT_ID;
+    this.researcherAgentId =
+      (options.researcherAgentId ? ChatHubClient.normalizeAgentId(options.researcherAgentId) : undefined) ??
+      DEFAULT_RESEARCHER_AGENT_ID;
     this.modelTone = options.modelTone || config.modelTone || "Gpt_61_Sol_Reasoning";
 
     this.maxTurns = options.maxTurns || 30;
@@ -167,6 +188,8 @@ export class CphPiCli {
         bridge: this.bridge,
         activeSkills: this.skillRegistry.getActiveSkills(),
         customAgentId: this.customAgentId,
+        coderAgentId: this.coderAgentId,
+        researcherAgentId: this.researcherAgentId,
         timeoutMs,
       } as any);
     (this.orchestrator as any).timeoutMs = timeoutMs;
@@ -1588,6 +1611,9 @@ export interface ParsedCliArgs {
   continueLast?: boolean;
   resumeSessionId?: string;
   customAgentId?: string;
+  hasExplicitAgent?: boolean;
+  coderAgentId?: string;
+  researcherAgentId?: string;
   allowedAccounts?: string[];
   debug?: boolean;
   debugLogPath?: string;
@@ -1630,12 +1656,33 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
       i++;
     } else if (arg === "-a" || arg === "--agent") {
       result.customAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      result.hasExplicitAgent = true;
       i++;
     } else if (arg.startsWith("--agent=")) {
       result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("--agent=".length));
+      result.hasExplicitAgent = true;
       i++;
     } else if (arg.startsWith("-a=")) {
       result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("-a=".length));
+      result.hasExplicitAgent = true;
+      i++;
+    } else if (arg === "--coder-agent" || arg === "--coder-agent-id") {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--coder-agent=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent=".length));
+      i++;
+    } else if (arg.startsWith("--coder-agent-id=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent-id=".length));
+      i++;
+    } else if (arg === "--researcher-agent" || arg === "--researcher-agent-id") {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--researcher-agent=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent=".length));
+      i++;
+    } else if (arg.startsWith("--researcher-agent-id=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent-id=".length));
       i++;
     } else if (arg === "--accounts" || arg === "-acc") {
       const val = args[++i];
@@ -1770,6 +1817,16 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
     result.modelTone = "Gpt_61_Sol_Reasoning";
   }
 
+  if (!result.customAgentId) {
+    result.customAgentId = DEFAULT_MAIN_AGENT_ID;
+  }
+  if (!result.coderAgentId) {
+    result.coderAgentId = DEFAULT_CODER_AGENT_ID;
+  }
+  if (!result.researcherAgentId) {
+    result.researcherAgentId = DEFAULT_RESEARCHER_AGENT_ID;
+  }
+
   const baseDir = process.env.CPH_PI_ORIGINAL_CWD || process.cwd();
 
   // If workspaceRoot was not explicitly set via flags (-w / --workspace)
@@ -1821,7 +1878,9 @@ export function getHelpText(): string {
     `  ${chalk.green("-c, --continue")}          接续最近活跃的会话`,
     `  ${chalk.green("-r, --resume <id>")}       恢复指定 ID 的历史会话`,
     `  ${chalk.green("-w, --workspace <path>")}   指定工作区根目录 (默认: 当前目录)`,
-    `  ${chalk.green("-a, --agent <id|url>")}     指定专属自建智能体 ID 或 M365 分享链接`,
+    `  ${chalk.green("-a, --agent <id|url>")}     指定专属自建主协调智能体 ID 或 M365 分享链接 (默认: 主协调智能体)`,
+    `  ${chalk.green("--coder-agent-id <id|url>")} 指定代码实现子智能体 ID (默认: 代码实现智能体)`,
+    `  ${chalk.green("--researcher-agent-id <id|url>")} 指定深度调研子智能体 ID (默认: 深度调研智能体)`,
     `  ${chalk.green("-m, --model <tone>")}       指定模型风格 (默认: Gpt_61_Sol_Reasoning)`,
     `  ${chalk.green("-acc, --accounts <list>")}   设置允许启用的账号白名单 (逗号分隔，其余默认跳过)`,
     `  ${chalk.green("-d, --debug [path]")}       启用 Debug 模式并实时落盘终端输出到本地日志 (默认: .cph/logs/)`,
@@ -1908,7 +1967,12 @@ export async function runCli(
       parsed.maxAutonomousHandoffHops ?? customOptions.maxAutonomousHandoffHops,
     continueLast: parsed.continueLast ?? customOptions.continueLast,
     resumeSessionId: parsed.resumeSessionId || customOptions.resumeSessionId,
-    customAgentId: parsed.customAgentId || customOptions.customAgentId,
+    customAgentId:
+      customOptions.customAgentId !== undefined
+        ? customOptions.customAgentId
+        : (customOptions.chatClient && !parsed.hasExplicitAgent ? undefined : parsed.customAgentId),
+    coderAgentId: parsed.coderAgentId || customOptions.coderAgentId,
+    researcherAgentId: parsed.researcherAgentId || customOptions.researcherAgentId,
     allowedAccounts: parsed.allowedAccounts || customOptions.allowedAccounts,
     debug: parsed.debug ?? customOptions.debug,
     debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
