@@ -15,6 +15,14 @@ export interface TerminalLoggerStartOptions {
   workspaceRoot?: string;
 }
 
+export interface SessionLoggerTree {
+  sessionDir: string;
+  mainLogPath: string;
+  timelineLogPath: string;
+  createSubagentLogStream(subagentId: string, role: string): fs.WriteStream;
+  logTimelineEvent(event: { type: string; timestamp: number; [key: string]: any }): void;
+}
+
 /**
  * TerminalLogger: Global output interceptor teeing all console stdout and stderr
  * streams directly to a persistent local log file in real time, avoiding terminal
@@ -33,6 +41,45 @@ export class TerminalLogger {
       TerminalLogger.instance = new TerminalLogger();
     }
     return TerminalLogger.instance;
+  }
+
+  /**
+   * Initializes a tree-structured session logging folder under <workspaceRoot>/.cph/logs/<sessionId>/
+   * with dedicated subagents/ directory, main.log, and timeline.jsonl event logger.
+   */
+  public initSessionTree(sessionId: string, workspaceRoot?: string): SessionLoggerTree {
+    const root = workspaceRoot || process.cwd();
+    const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sessionDir = path.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path.join(sessionDir, "subagents");
+    fs.mkdirSync(subagentsDir, { recursive: true });
+
+    const mainLogPath = path.join(sessionDir, "main.log");
+    if (!fs.existsSync(mainLogPath)) {
+      fs.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===\n`, "utf8");
+    }
+
+    const timelineLogPath = path.join(sessionDir, "timeline.jsonl");
+
+    return {
+      sessionDir,
+      mainLogPath,
+      timelineLogPath,
+      createSubagentLogStream: (subagentId: string, role: string): fs.WriteStream => {
+        const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const subLogPath = path.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===\n`);
+        return stream;
+      },
+      logTimelineEvent: (event: { type: string; timestamp: number; [key: string]: any }) => {
+        const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + "\n";
+        try {
+          fs.appendFileSync(timelineLogPath, line, "utf8");
+        } catch {}
+      },
+    };
   }
 
   /**
