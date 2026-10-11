@@ -791,4 +791,47 @@ export class TuiRenderer {
   public renderSubagentMatrix(states: ActiveSubagentState[]): void {
     this.writer(this.formatSubagentMatrix(states) + "\n");
   }
+
+  /**
+   * Formats Main Session Virtualization banner (📌 虚拟化归档青色边框).
+   */
+  public formatMainVirtualizationBanner(sessionId: string, snapshotPath: string): string {
+    const border = "─".repeat(60);
+    return [
+      this.c.cyan(`┌${border}┐`),
+      this.c.cyan(`│ 📌 [主控会话已虚拟化归档] ${sessionId.padEnd(35)} │`),
+      this.c.cyan(`│ 宏观规划快照已落盘: ${snapshotPath.padEnd(40)} │`),
+      this.c.cyan(`│ 云端连接已安全释放，子任务开始受限排队攻坚...             │`),
+      this.c.cyan(`└${border}┘`),
+    ].join("\n");
+  }
+
+  /**
+   * Renders Main Session Virtualization banner to terminal output.
+   */
+  public renderMainVirtualizationBanner(sessionId: string, snapshotPath: string): void {
+    this.writer("\n" + this.formatMainVirtualizationBanner(sessionId, snapshotPath) + "\n\n");
+  }
+
+  /**
+   * Formats Successor Awakening banner (🚀 后继代际唤醒绿色边框).
+   */
+  public formatSuccessorAwakeningBanner(sessionId: string, generation: number): string {
+    const border = "─".repeat(60);
+    return [
+      this.c.green(`┌${border}┐`),
+      this.c.green(`│ 🚀 [第 ${generation} 代主控会话已唤醒] ${sessionId.padEnd(33)} │`),
+      this.c.green(`│ 注入前序架构快照与子任务结题成果，重置满额 30 轮推理预算   │`),
+      this.c.green(`│ 进入系统交叉验证与交付审阅阶段...                        │`),
+      this.c.green(`└${border}┘`),
+    ].join("\n");
+  }
+
+  /**
+   * Renders Successor Awakening banner to terminal output.
+   */
+  public renderSuccessorAwakeningBanner(sessionId: string, generation: number): void {
+    this.writer("\n" + this.formatSuccessorAwakeningBanner(sessionId, generation) + "\n\n");
+  }
 }
+

@@ -1409,6 +1409,13 @@ export class CphPiCli {
             onArbitratorHandoffComplete: (_docPath, _arbId) => {},
             onAttachmentUploaded: (attachment, toolName) =>
               this.renderer.renderAttachmentUploadedNotice(attachment.fileName, toolName),
+            onMainSessionVirtualized: (snapshot, path) =>
+              this.renderer.renderMainVirtualizationBanner(
+                snapshot?.originalSessionId || currentSession.id,
+                path
+              ),
+            onSuccessorAwakened: (newSessionId, generation) =>
+              this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation),
           },
         });
 
