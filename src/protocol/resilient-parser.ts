@@ -1,4 +1,4 @@
-import type { CopilotAction } from "./tool-bridge.ts";
+import type { CopilotAction, SubagentTaskSpec } from "./tool-bridge.ts";
 
 export interface FinalAnswer {
   summary: string;
@@ -118,9 +118,23 @@ export class ResilientParser {
         if (typeof obj === "object" && obj !== null) {
           const rawTool = (obj.tool || obj.action || obj.name || "").toString();
           if (rawTool) {
+            const tool = this.normalizeToolName(rawTool) || rawTool;
+            let subagents = obj.subagents;
+            if (tool === "invoke_subagent" && Array.isArray(subagents)) {
+              subagents = subagents.map((s: any) => {
+                let rawRole = (s.role ? String(s.role).trim().toLowerCase() : "researcher");
+                if (rawRole === "searcher") rawRole = "researcher";
+                const role = (rawRole === "coder" ? "coder" : "researcher") as "researcher" | "coder";
+                return {
+                  ...s,
+                  role,
+                };
+              });
+            }
             return {
               ...obj,
-              tool: this.normalizeToolName(rawTool) || rawTool,
+              tool,
+              ...(subagents ? { subagents } : {}),
             };
           }
         }
@@ -150,6 +164,14 @@ export class ResilientParser {
     }
 
     if (tool) {
+      if (tool === "invoke_subagent") {
+        const subagents = this.parseSubagentsBlock(contentToScan);
+        return {
+          tool: "invoke_subagent",
+          subagents,
+          raw: trimmed,
+        };
+      }
       const pathMatch = contentToScan.match(/(?:path|filePath|file)\s*:\s*([^\r\n]+)/i);
       const startLineMatch = contentToScan.match(
         /(?:start_line|startLine|offset)\s*:\s*(\d+)/i
@@ -250,6 +272,59 @@ export class ResilientParser {
   }
 
   /**
+   * Parses subagents task specifications from YAML-like or JSON block content.
+   */
+  private static parseSubagentsBlock(content: string): SubagentTaskSpec[] {
+    const normalized = content.replace(/\r\n/g, "\n");
+
+    const jsonArrayMatch = normalized.match(/subagents\s*:\s*(\[[\s\S]*\])/i);
+    if (jsonArrayMatch) {
+      try {
+        const arr = JSON.parse(jsonArrayMatch[1]);
+        if (Array.isArray(arr)) {
+          return arr.map((s: any) => {
+            let rawRole = (s.role ? String(s.role).trim().toLowerCase() : "researcher");
+            if (rawRole === "searcher") rawRole = "researcher";
+            const role = (rawRole === "coder" ? "coder" : "researcher") as "researcher" | "coder";
+            return {
+              role,
+              description: s.description ? String(s.description).trim() : "",
+              prompt: s.prompt ? String(s.prompt).trim() : "",
+              maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined,
+            };
+          });
+        }
+      } catch {
+        // Fall back to YAML block parsing
+      }
+    }
+
+    const subagents: SubagentTaskSpec[] = [];
+    // 匹配 YAML 列表项格式: - role: ...
+    const blocks = ("\n" + normalized).split(/\n\s*-\s+/);
+    for (let i = 1; i < blocks.length; i++) {
+      const block = blocks[i];
+      const roleMatch = block.match(/role\s*:\s*([a-zA-Z_]+)/i);
+      const descMatch = block.match(/description\s*:\s*([^\r\n]+)/i);
+      const promptMatch = block.match(/prompt\s*:\s*([\s\S]*?)(?=\n\s*[a-zA-Z_]+\s*:|$)/i);
+      const maxTurnsMatch = block.match(/maxTurns\s*:\s*(\d+)/i);
+
+      if (roleMatch || promptMatch) {
+        let rawRole = (roleMatch ? roleMatch[1].trim().toLowerCase() : "researcher");
+        if (rawRole === "searcher") rawRole = "researcher";
+        const role = (rawRole === "coder" ? "coder" : "researcher") as "researcher" | "coder";
+        subagents.push({
+          role,
+          description: descMatch ? descMatch[1].trim() : "",
+          prompt: promptMatch ? promptMatch[1].trim() : "",
+          maxTurns: maxTurnsMatch ? parseInt(maxTurnsMatch[1], 10) : undefined,
+        });
+      }
+    }
+    return subagents;
+  }
+
+  /**
    * Normalizes tool aliases into canonical CopilotAction names.
    */
   private static normalizeToolName(name: string): string | null {
@@ -275,6 +350,9 @@ export class ResilientParser {
       case "ask_user":
       case "question":
         return "ask_question";
+      case "invoke_subagent":
+      case "subagent":
+        return "invoke_subagent";
       default:
         return null;
     }

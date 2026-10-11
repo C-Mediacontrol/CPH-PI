@@ -29,9 +29,18 @@ export type CopilotActionName =
   | "bash"
   | "exec"
   | "ask_question"
-  | "question";
+  | "question"
+  | "invoke_subagent"
+  | "subagent";
 
 export type CanonicalToolName = "read" | "edit" | "write" | "bash" | "question";
+
+export interface SubagentTaskSpec {
+  role: "researcher" | "searcher" | "coder";
+  description: string;
+  prompt: string;
+  maxTurns?: number;
+}
 
 /**
  * Raw action input received from Copilot (Markdown code block, JSON, or YAML).
@@ -40,6 +49,7 @@ export interface CopilotAction {
   tool?: string;
   action?: string;
   name?: string;
+  subagents?: SubagentTaskSpec[];
   path?: string;
   filePath?: string;
   file?: string;
@@ -73,6 +83,11 @@ export interface CopilotAction {
   prompt?: string;
   options?: string[];
   [key: string]: any;
+}
+
+export interface InvokeSubagentAction extends CopilotAction {
+  tool: "invoke_subagent" | "subagent";
+  subagents: SubagentTaskSpec[];
 }
 
 export interface MappedReadArgs {
