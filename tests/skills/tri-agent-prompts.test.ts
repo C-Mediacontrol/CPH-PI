@@ -30,4 +30,14 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(skillContent).toContain("Gate 2");
     expect(skillContent).toContain("10~20");
   });
+
+  it("should declare main session virtualization and adaptive queuing contracts", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+
+    expect(mainPrompt).toContain("主会话虚拟化");
+    expect(mainPrompt).toContain("本地快照");
+    expect(skillContent).toContain("主会话虚拟化");
+    expect(skillContent).toContain("自适应排队");
+  });
 });
