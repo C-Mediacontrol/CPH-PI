@@ -38,6 +38,7 @@ export interface SubagentTaskReport {
   turnsCount: number;
   durationMs: number;
   error?: string;
+  targetSessionId?: string;
 }
 
 export class SubagentRunner {
@@ -83,9 +84,32 @@ export class SubagentRunner {
     });
 
     const settled = await Promise.allSettled(promises);
+    const activeMainSessionId = this.lineageTracker
+      ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
+      : this.mainSessionId;
+
+    if (activeMainSessionId !== this.mainSessionId) {
+      this.loggerTree?.logTimelineEvent({
+        type: "SUBAGENT_REROUTED_TO_SUCCESSOR",
+        originalMainSessionId: this.mainSessionId,
+        activeMainSessionId,
+        subagentCount: tasks.length,
+        timestamp: Date.now(),
+      });
+      this.loggerTree?.logTimelineEvent({
+        type: "SUBAGENT_DELIVERABLE_ROUTED",
+        originalMainSessionId: this.mainSessionId,
+        activeMainSessionId,
+        timestamp: Date.now(),
+      });
+    }
+
     return settled.map((result, idx) => {
       if (result.status === "fulfilled") {
-        return result.value;
+        return {
+          ...result.value,
+          targetSessionId: activeMainSessionId,
+        };
       }
       const role = tasks[idx].role === "coder" ? "coder" : "researcher";
       return {
@@ -97,6 +121,7 @@ export class SubagentRunner {
         turnsCount: 0,
         durationMs: 0,
         error: String(result.reason),
+        targetSessionId: activeMainSessionId,
       };
     });
   }
@@ -283,6 +308,10 @@ export class SubagentRunner {
         finalAnswer = "子代理已完成，未提供详细文字总结。";
       }
 
+      const targetSessionId = this.lineageTracker
+        ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
+        : this.mainSessionId;
+
       const report: SubagentTaskReport = {
         id: subId,
         role,
@@ -291,6 +320,7 @@ export class SubagentRunner {
         finalAnswer,
         turnsCount: totalTurns,
         durationMs,
+        targetSessionId,
       };
 
       events?.onSubagentEnd?.(report);
@@ -301,12 +331,17 @@ export class SubagentRunner {
         success: report.success,
         turnsCount: report.turnsCount,
         durationMs,
+        targetSessionId,
         timestamp: Date.now(),
       });
 
       return report;
     } catch (err: any) {
       const durationMs = Date.now() - startTime;
+      const targetSessionId = this.lineageTracker
+        ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
+        : this.mainSessionId;
+
       const report: SubagentTaskReport = {
         id: subId,
         role,
@@ -316,6 +351,7 @@ export class SubagentRunner {
         turnsCount: totalTurns,
         durationMs,
         error: err.message,
+        targetSessionId,
       };
       events?.onSubagentEnd?.(report);
       return report;

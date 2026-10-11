@@ -22,6 +22,7 @@ import { RefusalGuard } from "./refusal-guard.ts";
 import type { Skill } from "../skills/skill-loader.ts";
 import { SkillRegistry } from "../skills/skill-registry.ts";
 import { SubagentRunner } from "./subagent-runner.ts";
+import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 
 export interface IAccountPool {
   markThrottled(email: string, durationMs?: number): void;
@@ -75,6 +76,7 @@ export interface OrchestratorOptions {
   enableCloudAttachment?: boolean;
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
+  lineageTracker?: SessionLineageTracker;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -149,6 +151,7 @@ export class Orchestrator {
   private enableCloudAttachment: boolean = true;
   private cloudAttachmentThresholdChars: number = 0;
   private cloudAttachmentThresholdLines: number = 0;
+  private lineageTracker: SessionLineageTracker;
 
   // Handshake State Machine
   public isHandshakePending: boolean = true;
@@ -179,10 +182,25 @@ export class Orchestrator {
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
     this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
     this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
+    this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.isHandshakePending =
       options.isHandshakePending !== undefined
         ? options.isHandshakePending
         : !this.customAgentId;
+  }
+
+  public getLineageTracker(): SessionLineageTracker {
+    return this.lineageTracker;
+  }
+
+  public linkSuccessor(oldId: string, newId: string): void {
+    this.lineageTracker.register({
+      sessionId: newId,
+      role: "main",
+      status: "active",
+      predecessorId: oldId,
+    });
+    this.lineageTracker.linkSuccessor(oldId, newId);
   }
 
   /**
@@ -282,6 +300,13 @@ export class Orchestrator {
     const sessionId = options.sessionId || this.sessionId;
     this.sessionId = sessionId;
     const conversationId = this.conversationId;
+
+    // Register active main session in lineage tracker
+    this.lineageTracker.register({
+      sessionId: this.sessionId,
+      role: "main",
+      status: "active",
+    });
 
     // Initialize or resolve ChatHub client
     let client = this.chatClient;
@@ -560,6 +585,7 @@ export class Orchestrator {
               pool: this.pool,
               chatClientFactory: this.chatClientFactory,
               modelTone: this.modelTone,
+              lineageTracker: this.lineageTracker,
             });
 
           const subagents = (parsed.action as any).subagents || [];
@@ -1348,6 +1374,14 @@ export class Orchestrator {
     // 4. Resolve Arbitrator ChatClient (Session B)
     const arbitratorSessionId = `ses_arb_${crypto.randomUUID()}`;
     const nextEmail = nextToken?.email || "next-account";
+
+    this.lineageTracker.register({
+      sessionId: arbitratorSessionId,
+      role: "main",
+      status: "active",
+      predecessorId: sessionId,
+    });
+    this.lineageTracker.linkSuccessor(sessionId, arbitratorSessionId);
 
     if (victimEmail && nextEmail && events?.onAccountSwitched) {
       events.onAccountSwitched(victimEmail, nextEmail);
