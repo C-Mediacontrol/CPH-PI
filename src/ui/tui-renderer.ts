@@ -17,6 +17,16 @@ export interface SessionStatusInfo {
   agentName?: string;
 }
 
+export interface ActiveSubagentState {
+  id: string;
+  role: "researcher" | "coder";
+  description: string;
+  status: "running" | "completed" | "failed";
+  currentTurn: number;
+  durationMs: number;
+  lastAction?: string;
+}
+
 /**
  * TUI Renderer bridging Pi ANSI styles, stream tokens, diff visualization, and tool badges.
  */
@@ -742,5 +752,43 @@ export class TuiRenderer {
     const formatted = this.formatStatusBar(info);
     this.writer(`${formatted}\n`);
     return formatted;
+  }
+
+  /**
+   * Formats multi-subagent execution progress matrix card.
+   */
+  public formatSubagentMatrix(states: ActiveSubagentState[]): string {
+    const lines: string[] = [];
+    lines.push(this.c.bold.cyan("┌─ [多会话子代理协同看板 (Sub-Agent Matrix)] " + "─".repeat(30)));
+
+    for (let i = 0; i < states.length; i++) {
+      const s = states[i];
+      const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const statusBadge =
+        s.status === "completed"
+          ? this.c.green("✅ 已完成")
+          : s.status === "failed"
+          ? this.c.red("❌ 失败")
+          : this.c.cyan("🔄 运行中");
+      const durationSec = (s.durationMs / 1000).toFixed(1);
+
+      lines.push(
+        this.c.bold(`│ [Sub-${i + 1}] `) +
+          `${roleBadge} ${s.description.slice(0, 30)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`
+      );
+      if (s.lastAction) {
+        lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
+      }
+    }
+
+    lines.push(this.c.bold.cyan("└" + "─".repeat(68)));
+    return lines.join("\n");
+  }
+
+  /**
+   * Renders the multi-subagent progress matrix card.
+   */
+  public renderSubagentMatrix(states: ActiveSubagentState[]): void {
+    this.writer(this.formatSubagentMatrix(states) + "\n");
   }
 }
