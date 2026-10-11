@@ -112,15 +112,38 @@ export class SubagentRunner {
         };
       }
       const role = tasks[idx].role === "coder" ? "coder" : "researcher";
+      const reason = result.reason;
+      const isThrottled =
+        reason?.code === "ALL_ACCOUNTS_THROTTLED" ||
+        /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(
+          reason?.message || String(reason)
+        );
+
+      let errorMsg = String(reason?.message || reason);
+      let finalAnswer = `子代理执行异常中断: ${errorMsg}`;
+
+      if (isThrottled) {
+        errorMsg = "ALL_ACCOUNTS_THROTTLED";
+        finalAnswer =
+          "❌ 子任务因全局账号池限流 (429) 中断，账号池枯竭。已保存现场断点，建议主会话等待冷却或通知用户介入。";
+        this.loggerTree?.logTimelineEvent({
+          type: "SUBAGENT_POOL_THROTTLED",
+          subagentId: `sub-${idx + 1}`,
+          role,
+          targetSessionId: activeMainSessionId,
+          timestamp: Date.now(),
+        });
+      }
+
       return {
         id: `sub-${idx + 1}`,
         role,
         description: tasks[idx].description,
         success: false,
-        finalAnswer: `子代理执行异常中断: ${String(result.reason)}`,
+        finalAnswer,
         turnsCount: 0,
         durationMs: 0,
-        error: String(result.reason),
+        error: errorMsg,
         targetSessionId: activeMainSessionId,
       };
     });
@@ -342,15 +365,35 @@ export class SubagentRunner {
         ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
         : this.mainSessionId;
 
+      const isThrottled =
+        err?.code === "ALL_ACCOUNTS_THROTTLED" ||
+        /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(err?.message || "");
+
+      let errorMsg = err?.message || String(err);
+      let finalAnswer = `子任务执行失败: ${errorMsg}`;
+
+      if (isThrottled) {
+        errorMsg = "ALL_ACCOUNTS_THROTTLED";
+        finalAnswer =
+          "❌ 子任务因全局账号池限流 (429) 中断，账号池枯竭。已保存现场断点，建议主会话等待冷却或通知用户介入。";
+        this.loggerTree?.logTimelineEvent({
+          type: "SUBAGENT_POOL_THROTTLED",
+          subagentId: subId,
+          role,
+          targetSessionId,
+          timestamp: Date.now(),
+        });
+      }
+
       const report: SubagentTaskReport = {
         id: subId,
         role,
         description: spec.description,
         success: false,
-        finalAnswer: `子任务执行失败: ${err.message}`,
+        finalAnswer,
         turnsCount: totalTurns,
         durationMs,
-        error: err.message,
+        error: errorMsg,
         targetSessionId,
       };
       events?.onSubagentEnd?.(report);
