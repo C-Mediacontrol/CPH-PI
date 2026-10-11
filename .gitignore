@@ -1,0 +1,8 @@
+node_modules/
+dist/
+profiles/
+*.log
+.env
+.cph/
+.superpowers/
+**/*tokens.json

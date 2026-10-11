@@ -1,0 +1,16 @@
+{
+  "name": "cph-pi-release",
+  "version": "0.1.0",
+  "description": "Microsoft Copilot 自主编程 Agent 独立极简运行时包 (零外部依赖，即装即用)",
+  "type": "module",
+  "bin": {
+    "cph-pi": "./bin/cph-pi.js",
+    "check-accounts": "./bin/check-accounts.js"
+  },
+  "scripts": {
+    "start": "node ./bin/cph-pi.js",
+    "check": "node ./bin/check-accounts.js",
+    "check:apply": "node ./bin/check-accounts.js --apply"
+  }
+}
+

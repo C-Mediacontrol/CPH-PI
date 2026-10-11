@@ -1,0 +1,13 @@
+[
+  {
+    "email": "user1@company.com",
+    "refreshToken": "0.AXcA...（填入你的 Microsoft OAuth 刷新令牌，系统加载后会自动加密为 enc:v1: 格式）",
+    "tenantId": "可选：组织租户 ID",
+    "userId": "可选：用户对象 ID"
+  },
+  {
+    "email": "user2@company.com",
+    "refreshToken": "0.AXcB...（支持配置多个账号以实现 429 频控与网络容灾自动轮转）"
+  }
+]
+

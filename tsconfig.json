@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "chalk": ["./node_modules/chalk", "./pi/node_modules/chalk"],
+      "diff": ["./node_modules/diff", "./pi/node_modules/diff"]
+    }
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}
