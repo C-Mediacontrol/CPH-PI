@@ -89,15 +89,21 @@ if (fs.existsSync(skillsDir)) {
   }
 }
 
-// Verify that skills/subagent is packaged
+// Verify that skills/subagent and skills/handoff are packaged
 const subagentSkillDir = path.join(targetSkillsDir, "subagent");
+const handoffSkillDir = path.join(targetSkillsDir, "handoff");
 if (fs.existsSync(subagentSkillDir)) {
   console.log(`✔ 校验通过: skills/subagent 已成功纳入发布包`);
 } else {
   console.warn(`⚠️ 警告: 发布包内未检测到 skills/subagent`);
 }
+if (fs.existsSync(handoffSkillDir)) {
+  console.log(`✔ 校验通过: skills/handoff 已成功纳入发布包`);
+} else {
+  console.warn(`⚠️ 警告: 发布包内未检测到 skills/handoff`);
+}
 
-// 4. Generate Upload Guide with Tri-Agent links
+// 4. Generate Upload Guide with Tri-Agent links and skill mounting matrix
 const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tri-Agent 架构)
 
 本压缩包已为你聚合好了更新 Copilot Agent 体系所需的所有核心资产：包含 3 个专项智能体的提示词以及工作区专属技能包。
@@ -106,7 +112,7 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
 
 ## 智能体配置与在线更新直达
 
-### 1. Main - 主协调智能体 (Master Coordinator)
+### 1. Main 智能体 (Main Agent - 主协调中枢)
 - **直达配置链接**: [Main Agent 编辑页](https://m365.cloud.microsoft/chat/agent/T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852)
 - **Agent ID**: \`T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852\`
 - **提示词文件**: \`Instructions-Main-主协调智能体.txt\`
@@ -116,7 +122,7 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
   3. 全选清空后，将 \`Instructions-Main-主协调智能体.txt\` 全文复制并粘贴进去；
   4. 点击右上角「保存 (Save)」或「更新 (Update)」。
 
-### 2. Coder - 代码实现智能体 (Execution Subagent)
+### 2. Coder 智能体 (Coder Agent - 代码实现)
 - **直达配置链接**: [Coder Agent 编辑页](https://m365.cloud.microsoft/chat/agent/T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296)
 - **Agent ID**: \`T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296\`
 - **提示词文件**: \`Instructions-Coder-代码实现智能体.txt\`
@@ -126,7 +132,7 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
   3. 全选清空后，将 \`Instructions-Coder-代码实现智能体.txt\` 全文复制并粘贴进去；
   4. 点击右上角「保存 (Save)」或「更新 (Update)」。
 
-### 3. Researcher - 深度调研智能体 (Read-Only Analysis Subagent)
+### 3. Researcher 智能体 (Researcher Agent - 深度调研)
 - **直达配置链接**: [Researcher Agent 编辑页](https://m365.cloud.microsoft/chat/agent/T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c)
 - **Agent ID**: \`T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c\`
 - **提示词文件**: \`Instructions-Researcher-深度调研智能体.txt\`
@@ -138,12 +144,28 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
 
 ---
 
-## 4. 上传知识库 / 专属技能 (Knowledge & Skills)
+## 4. 上传知识库 / 专属技能挂载矩阵 (Skill Mounting Matrix)
 
-在各 Agent 的「知识 (Knowledge)」或「功能 / 技能」板块分别挂载对应技能：
-- **Main Agent**: 挂载 \`skills/subagent/SKILL.md\` 与 \`skills/handoff/SKILL.md\`（负责任务规划拆解与全局宏观交接）；
-- **Coder Agent**: 仅挂载 \`skills/handoff/SKILL.md\`（负责单任务达到 30 轮上限时的微观代码交接，严禁挂载 \`subagent\` 以防递归）；
-- **Researcher Agent**: 仅挂载 \`skills/handoff/SKILL.md\`（负责单任务达到 30 轮上限时的探索情报交接，严禁挂载 \`subagent\` 以防递归）。
+在各 Agent 的「知识 (Knowledge)」或「功能 / 技能」板块分别挂载对应技能文件（位于本压缩包 \`skills/\` 目录）：
+
+### 智能体技能挂载矩阵总览
+- Main Agent: \`skills/subagent\` + \`skills/handoff\`
+- Coder Agent: \`skills/handoff\` (no subagent)
+- Researcher Agent: \`skills/handoff\` (no subagent)
+
+### 详细挂载指引：
+1. **Main 智能体** (Main Agent)：
+   - **上传提示词**: \`Instructions-Main-主协调智能体.txt\`
+   - **挂载技能**: \`skills/subagent\` 与 \`skills/handoff\`
+   - **协作定位**: 作为总控中枢，使用 \`skills/subagent\` 拆解并分派子任务，使用 \`skills/handoff\` 处理主会话接力与全流程宏观容灾。
+2. **Coder 智能体** (Coder Agent)：
+   - **上传提示词**: \`Instructions-Coder-代码实现智能体.txt\`
+   - **挂载技能**: \`skills/handoff\` (no subagent)
+   - **协作定位**: 保持单层扁平执行，仅挂载 \`skills/handoff\`（不挂载 \`subagent\`），在子任务轮次达到上限时自主接力续写代码。
+3. **Researcher 智能体** (Researcher Agent)：
+   - **上传提示词**: \`Instructions-Researcher-深度调研智能体.txt\`
+   - **挂载技能**: \`skills/handoff\` (no subagent)
+   - **协作定位**: 保持单层扁平执行，仅挂载 \`skills/handoff\`（不挂载 \`subagent\`），在长调研分析达到轮次上限时自主接力交付报告。
 
 ---
 
