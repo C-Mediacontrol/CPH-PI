@@ -31,13 +31,23 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(skillContent).toContain("10~20");
   });
 
-  it("should declare main session virtualization and adaptive queuing contracts", () => {
+  it("should enforce action-oriented contracts without leaking harness internal mechanics", () => {
     const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
     const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+    const agentsMd = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
 
-    expect(mainPrompt).toContain("主会话虚拟化");
-    expect(mainPrompt).toContain("本地快照");
-    expect(skillContent).toContain("主会话虚拟化");
-    expect(skillContent).toContain("自适应排队");
+    // Action-oriented contracts present
+    expect(mainPrompt).toContain("invoke_subagent");
+    expect(mainPrompt).toContain("派发即提交");
+    expect(mainPrompt).toContain("系统会自动保留规划上下文");
+    expect(skillContent).toContain("派发即提交");
+
+    // No harness internal leak to agents
+    expect(mainPrompt).not.toContain("WebSocket");
+    expect(mainPrompt).not.toContain("自适应排队");
+    expect(mainPrompt).not.toContain(".cph/handoffs/main-plan");
+
+    // Rule 6 present in AGENTS.md
+    expect(agentsMd).toContain("行动导向与认知极简准则");
   });
 });

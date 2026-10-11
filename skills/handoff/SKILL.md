@@ -12,7 +12,7 @@ disable-model-invocation: false
 
 > **智能体挂载与双模态契约**：
 > - **主控智能体 (Main Agent)** 挂载：执行**宏观工程交接 (Macro Handoff)**，提炼全局架构演进状态、已派发子任务的完成情况与剩余待办；
-> - **子智能体 (Coder / Researcher)** 挂载：执行**微观局部交接 (Micro Sub-Handoff)**，提炼单项任务代码补丁断点、失败单测用例或未完调研线索，由 Harness 调度器自动唤起 Successor 子代理透明接力。
+> - **子智能体 (Coder / Researcher)** 挂载：执行**微观局部交接 (Micro Sub-Handoff)**，提炼单项任务代码补丁断点、失败单测用例或未完调研线索，供后继接力智能体接续攻坚。
 
 ---
 
@@ -22,7 +22,7 @@ disable-model-invocation: false
 1. 梳理前序会话执行历程与真实技术推演；
 2. 提炼出结构严谨、主客观分离、包含深度技术见解的 Markdown 交接文档；
 3. **调用 `write_file` 工具原生落盘**至目标路径：`<工作区根目录>/.cph/handoffs/handoff-<会话ID>.md`；
-4. 写入完成后简要汇报已落盘状态，交由接力调度器顺畅唤起接力智能体。
+4. 写入完成后简要汇报已落盘文件路径与关键待办事项。
 
 ---
 
