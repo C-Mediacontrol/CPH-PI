@@ -87,3 +87,4 @@ describe("Handoff Fenced Block Protocol Support", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
+

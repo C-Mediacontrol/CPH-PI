@@ -4,7 +4,7 @@
 
 ---
 
-## 核心开发与治理五大准则 (Five Golden Rules)
+## 核心开发与治理准则
 
 ### 1. Harness 纯粹与中立原则 (Harness Neutrality)
 - **调度纯粹性**：Harness 本身应当保持中立与协议纯粹。无论 Copilot 模型返回何种内容（不论对错），Harness 只管按统一既定协议进行客观处理、工具路由与流式渲染。

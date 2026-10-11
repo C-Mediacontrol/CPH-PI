@@ -104,3 +104,4 @@ export interface MainPlanSnapshot {
 | `CPH-PI/src/session/lineage-tracker.ts` | 记录 `main_1 ➔ main_2 ➔ main_3` 跨代继任血缘 |
 | `CPH-PI/cph-main-agent-prompt.txt` | 正向引导主控感知会话虚拟化生命周期（派发后自动快照，新主控满配额审阅） |
 | `CPH-PI/skills/subagent/SKILL.md` | 文档说明主会话虚拟化与自适应排队契约 |
+
