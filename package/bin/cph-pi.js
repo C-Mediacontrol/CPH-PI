@@ -10376,8 +10376,8 @@ var require_libcjs = __commonJS(function(exports) {
 
 // src/cli.ts
 import readline from "node:readline";
-import path8 from "node:path";
-import fs8 from "node:fs";
+import path10 from "node:path";
+import fs10 from "node:fs";
 
 // pi/node_modules/chalk/source/utilities.js
 function stringReplaceAll(string, substring, postfix) {
@@ -10934,9 +10934,9 @@ var chalkStderr = createChalk({ level: stderrColor ? stderrColor.level : 0 });
 var source_default = chalk;
 
 // src/agent/orchestrator.ts
-import crypto4 from "crypto";
-import fs5 from "fs";
-import path5 from "path";
+import crypto5 from "crypto";
+import fs7 from "fs";
+import path7 from "path";
 import { execSync as execSync2 } from "child_process";
 
 // src/auth/token-manager.ts
@@ -21940,28 +21940,23 @@ ${options.currentTask}
 ${this.PROTOCOL_REMINDER}`;
   }
   static buildHandoffPreparationPrompt(task, sessionId) {
-    const sessionTag = sessionId || "active_session";
-    const targetDocPath = `.cph/handoffs/handoff-${sessionTag}.md`;
     return `[SYSTEM NOTICE: 当前会话即将在下一轮达到推理上限]:
 当前长耗时任务即将进入跨会话接力期。
 
-【原生文件交接指南 (File-First Handoff)】
+【原生交接文档格式指南】
 当前阶段的核心目标是完成接力移交，确保后续智能体能够无缝接续。
-请在当前轮次直接使用 tool: write_file 将你的【深度技术总结与接力备忘录 (HANDOFF_MEMO:)】完整写入以下文件：
-\`\`\`action
-tool: write_file
-path: ${targetDocPath}
-content: <完整结构化 Markdown 交接文档>
-\`\`\`
-
-交接文档重点包含：
+请在当前轮次直接输出 \`\`\`handoff ... \`\`\` 代码块提供你的【深度技术总结与接力备忘录 (HANDOFF_MEMO:)】：
+\`\`\`handoff
+# 跨会话自主任务交接文档
 1. 【任务目标与交付边界】原始任务核心目标与约束
 2. 【阶段性技术审计发现与架构核心见解】对已读源码与模块架构的深度研判及重构建议
 3. 【已验证客观事实与物理基线】已读取的项目模块与已执行验证的基准命令
 4. 【反模式与关键卡点】代码坏味道与阻碍推进的报错/依赖问题
-5. 【接力第一优先级待办事项】明确指示下任接力者的具体切入点，直接推进后续工作
+5. 【已修改/生成文件清单】变更文件路径及当前状态
+6. 【接力第一优先级待办事项】明确指示下任接力者的具体切入点，直接推进后续工作
+\`\`\`
 
-若同时有阶段性审查草稿，可继续更新 \`.cph/review_draft.md\`。
+系统将自动提取该代码块并持久化归档，接力智能体将直接据此继续攻坚！
 原始任务需求：${task}`;
   }
 }
@@ -21970,6 +21965,17 @@ content: <完整结构化 Markdown 交接文档>
 class ResilientParser {
   static parse(text) {
     const trimmed = (text || "").trim();
+    const handoffMatch = trimmed.match(/```handoff\s*([\s\S]*?)```/i);
+    if (handoffMatch) {
+      const handoffDoc = handoffMatch[1].trim();
+      const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```handoff/i);
+      const thought = thoughtMatch ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim() : "";
+      return {
+        type: "handoff",
+        thought,
+        handoffDoc
+      };
+    }
     const fencedMatch = trimmed.match(/```(?:action|json)?\s*([\s\S]*?)```/i);
     let actionContent = null;
     let thought = "";
@@ -22030,9 +22036,24 @@ class ResilientParser {
         if (typeof obj === "object" && obj !== null) {
           const rawTool = (obj.tool || obj.action || obj.name || "").toString();
           if (rawTool) {
+            const tool = this.normalizeToolName(rawTool) || rawTool;
+            let subagents = obj.subagents;
+            if (tool === "invoke_subagent" && Array.isArray(subagents)) {
+              subagents = subagents.map((s) => {
+                let rawRole = s.role ? String(s.role).trim().toLowerCase() : "researcher";
+                if (rawRole === "searcher")
+                  rawRole = "researcher";
+                const role = rawRole === "coder" ? "coder" : "researcher";
+                return {
+                  ...s,
+                  role
+                };
+              });
+            }
             return {
               ...obj,
-              tool: this.normalizeToolName(rawTool) || rawTool
+              tool,
+              ...subagents ? { subagents } : {}
             };
           }
         }
@@ -22053,6 +22074,14 @@ class ResilientParser {
       }
     }
     if (tool) {
+      if (tool === "invoke_subagent") {
+        const subagents = this.parseSubagentsBlock(contentToScan);
+        return {
+          tool: "invoke_subagent",
+          subagents,
+          raw: trimmed
+        };
+      }
       const pathMatch = contentToScan.match(/(?:path|filePath|file)\s*:\s*([^\r\n]+)/i);
       const startLineMatch = contentToScan.match(/(?:start_line|startLine|offset)\s*:\s*(\d+)/i);
       const endLineMatch = contentToScan.match(/(?:end_line|endLine)\s*:\s*(\d+)/i);
@@ -22124,6 +22153,53 @@ class ResilientParser {
     }
     return null;
   }
+  static parseSubagentsBlock(content) {
+    const normalized = content.replace(/\r\n/g, `
+`);
+    const jsonArrayMatch = normalized.match(/subagents\s*:\s*(\[[\s\S]*\])/i);
+    if (jsonArrayMatch) {
+      try {
+        const arr = JSON.parse(jsonArrayMatch[1]);
+        if (Array.isArray(arr)) {
+          return arr.map((s) => {
+            let rawRole = s.role ? String(s.role).trim().toLowerCase() : "researcher";
+            if (rawRole === "searcher")
+              rawRole = "researcher";
+            const role = rawRole === "coder" ? "coder" : "researcher";
+            return {
+              role,
+              description: s.description ? String(s.description).trim() : "",
+              prompt: s.prompt ? String(s.prompt).trim() : "",
+              maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined
+            };
+          });
+        }
+      } catch {}
+    }
+    const subagents = [];
+    const blocks = (`
+` + normalized).split(/\n\s*-\s+/);
+    for (let i = 1;i < blocks.length; i++) {
+      const block = blocks[i];
+      const roleMatch = block.match(/role\s*:\s*([a-zA-Z_]+)/i);
+      const descMatch = block.match(/description\s*:\s*([^\r\n]+)/i);
+      const promptMatch = block.match(/prompt\s*:\s*([\s\S]*?)(?=\n\s*[a-zA-Z_]+\s*:|$)/i);
+      const maxTurnsMatch = block.match(/maxTurns\s*:\s*(\d+)/i);
+      if (roleMatch || promptMatch) {
+        let rawRole = roleMatch ? roleMatch[1].trim().toLowerCase() : "researcher";
+        if (rawRole === "searcher")
+          rawRole = "researcher";
+        const role = rawRole === "coder" ? "coder" : "researcher";
+        subagents.push({
+          role,
+          description: descMatch ? descMatch[1].trim() : "",
+          prompt: promptMatch ? promptMatch[1].trim() : "",
+          maxTurns: maxTurnsMatch ? parseInt(maxTurnsMatch[1], 10) : undefined
+        });
+      }
+    }
+    return subagents;
+  }
   static normalizeToolName(name) {
     switch (name.toLowerCase()) {
       case "read_file":
@@ -22147,6 +22223,9 @@ class ResilientParser {
       case "ask_user":
       case "question":
         return "ask_question";
+      case "invoke_subagent":
+      case "subagent":
+        return "invoke_subagent";
       default:
         return null;
     }
@@ -22892,6 +22971,481 @@ ${s.content}` : "";
   }
 }
 
+// src/agent/subagent-runner.ts
+import fs5 from "node:fs";
+import path5 from "node:path";
+import crypto4 from "node:crypto";
+var DEFAULT_MAIN_AGENT_ID = "T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852";
+var DEFAULT_CODER_AGENT_ID = "T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296";
+var DEFAULT_RESEARCHER_AGENT_ID = "T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c";
+
+class SubagentRunner {
+  workspaceRoot;
+  mainSessionId;
+  coderAgentId;
+  researcherAgentId;
+  pool;
+  chatClientFactory;
+  loggerTree;
+  modelTone;
+  createOrchestratorFn;
+  lineageTracker;
+  maxAutonomousHops;
+  constructor(options) {
+    this.workspaceRoot = options.workspaceRoot;
+    this.mainSessionId = options.mainSessionId;
+    this.coderAgentId = options.coderAgentId || DEFAULT_CODER_AGENT_ID;
+    this.researcherAgentId = options.researcherAgentId || DEFAULT_RESEARCHER_AGENT_ID;
+    this.pool = options.pool;
+    this.chatClientFactory = options.chatClientFactory;
+    this.loggerTree = options.loggerTree;
+    this.modelTone = options.modelTone || "Gpt_61_Sol_Reasoning";
+    this.createOrchestratorFn = options.createOrchestratorFn;
+    this.lineageTracker = options.lineageTracker;
+    this.maxAutonomousHops = options.maxAutonomousHops || 5;
+  }
+  async executeBatch(tasks, signal, events) {
+    const poolStatus = this.pool?.getPoolStatus?.() || [];
+    const maxConcurrency = poolStatus.length <= 1 ? 1 : Math.min(poolStatus.length, tasks.length);
+    this.loggerTree?.logTimelineEvent({
+      type: "SUBAGENT_QUEUE_SCHEDULED",
+      totalTasks: tasks.length,
+      maxConcurrency,
+      poolSize: poolStatus.length,
+      timestamp: Date.now()
+    });
+    const settled = new Array(tasks.length);
+    if (maxConcurrency <= 1) {
+      for (let index = 0;index < tasks.length; index++) {
+        if (signal?.aborted) {
+          settled[index] = {
+            status: "rejected",
+            reason: new Error("Subagent execution aborted")
+          };
+          continue;
+        }
+        const taskSpec = tasks[index];
+        const subId = `sub-${index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+        const role = taskSpec.role === "coder" ? "coder" : "researcher";
+        try {
+          const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+          settled[index] = { status: "fulfilled", value: report };
+        } catch (err) {
+          settled[index] = { status: "rejected", reason: err };
+        }
+      }
+    } else {
+      const executing = tasks.map(async (taskSpec, index) => {
+        const subId = `sub-${index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+        const role = taskSpec.role === "coder" ? "coder" : "researcher";
+        return this.runSingleSubagent(subId, role, taskSpec, signal, events);
+      });
+      const results = await Promise.allSettled(executing);
+      for (let i = 0;i < results.length; i++) {
+        settled[i] = results[i];
+      }
+    }
+    const activeMainSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
+    if (activeMainSessionId !== this.mainSessionId) {
+      this.loggerTree?.logTimelineEvent({
+        type: "SUBAGENT_REROUTED_TO_SUCCESSOR",
+        originalMainSessionId: this.mainSessionId,
+        activeMainSessionId,
+        subagentCount: tasks.length,
+        timestamp: Date.now()
+      });
+      this.loggerTree?.logTimelineEvent({
+        type: "SUBAGENT_DELIVERABLE_ROUTED",
+        originalMainSessionId: this.mainSessionId,
+        activeMainSessionId,
+        timestamp: Date.now()
+      });
+    }
+    return settled.map((result, idx) => {
+      if (result.status === "fulfilled") {
+        return {
+          ...result.value,
+          targetSessionId: activeMainSessionId
+        };
+      }
+      const role = tasks[idx].role === "coder" ? "coder" : "researcher";
+      const reason = result.reason;
+      const isThrottled = reason?.code === "ALL_ACCOUNTS_THROTTLED" || /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(reason?.message || String(reason));
+      let errorMsg = String(reason?.message || reason);
+      let finalAnswer = `子代理执行异常中断: ${errorMsg}`;
+      if (isThrottled) {
+        errorMsg = "ALL_ACCOUNTS_THROTTLED";
+        finalAnswer = "❌ 子任务因全局账号池限流 (429) 中断，账号池枯竭。已保存现场断点，建议主会话等待冷却或通知用户介入。";
+        this.loggerTree?.logTimelineEvent({
+          type: "SUBAGENT_POOL_THROTTLED",
+          subagentId: `sub-${idx + 1}`,
+          role,
+          targetSessionId: activeMainSessionId,
+          timestamp: Date.now()
+        });
+      }
+      return {
+        id: `sub-${idx + 1}`,
+        role,
+        description: tasks[idx].description,
+        success: false,
+        finalAnswer,
+        turnsCount: 0,
+        durationMs: 0,
+        error: errorMsg,
+        targetSessionId: activeMainSessionId
+      };
+    });
+  }
+  async runSingleSubagent(subId, role, spec, signal, events) {
+    const startTime = Date.now();
+    events?.onSubagentStart?.(subId, role, spec);
+    this.loggerTree?.logTimelineEvent({
+      type: "SUBAGENT_STARTED",
+      subagentId: subId,
+      role,
+      description: spec.description,
+      timestamp: startTime
+    });
+    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
+    const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
+    let hopCount = 0;
+    let currentTaskPrompt = spec.prompt;
+    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
+    let previousSessionId = undefined;
+    let totalTurns = 0;
+    let lastFinalAnswer = "";
+    let completed = false;
+    let handoffSkills = [];
+    try {
+      const loader = new SkillLoader(this.workspaceRoot);
+      const discovered = loader.discoverSkills();
+      const handoff = discovered.find((s) => s.name.toLowerCase() === "handoff");
+      if (handoff) {
+        handoffSkills = [handoff];
+      }
+    } catch {}
+    try {
+      while (hopCount < this.maxAutonomousHops) {
+        hopCount++;
+        if (this.lineageTracker) {
+          this.lineageTracker.register({
+            sessionId: currentSessionId,
+            role,
+            status: "active",
+            parentSessionId: this.mainSessionId,
+            predecessorId: previousSessionId
+          });
+          this.lineageTracker.linkSubagent(this.mainSessionId, currentSessionId);
+          if (previousSessionId) {
+            this.lineageTracker.linkSuccessor(previousSessionId, currentSessionId);
+          }
+        }
+        const orchestrator = this.createOrchestratorFn ? this.createOrchestratorFn({
+          workspaceRoot: this.workspaceRoot,
+          customAgentId,
+          subagentRole: role,
+          sessionId: currentSessionId,
+          pool: this.pool,
+          chatClientFactory: this.chatClientFactory,
+          modelTone: this.modelTone,
+          skills: ["handoff"],
+          activeSkills: handoffSkills,
+          task: currentTaskPrompt
+        }) : new Orchestrator({
+          workspaceRoot: this.workspaceRoot,
+          customAgentId,
+          sessionId: currentSessionId,
+          pool: this.pool,
+          chatClientFactory: this.chatClientFactory,
+          modelTone: this.modelTone,
+          maxTurns: spec.maxTurns || 30,
+          activeSkills: handoffSkills
+        });
+        const res = await orchestrator.run({
+          task: currentTaskPrompt,
+          signal,
+          events: {
+            onDelta: (delta) => {
+              logStream?.write(delta);
+              events?.onSubagentProgress?.(subId, -1, delta);
+            },
+            onTurnStart: (turn) => {
+              logStream?.write(`
+--- [Hop ${hopCount}] Turn ${turn} ---
+`);
+              events?.onSubagentProgress?.(subId, turn);
+            }
+          }
+        });
+        totalTurns += res.turnsCount || 0;
+        lastFinalAnswer = res.finalAnswer || "";
+        if (res.completed) {
+          completed = true;
+          if (this.lineageTracker) {
+            this.lineageTracker.register({
+              sessionId: currentSessionId,
+              role,
+              status: "completed",
+              parentSessionId: this.mainSessionId,
+              predecessorId: previousSessionId
+            });
+          }
+          break;
+        }
+        if (res.handedOff && res.handoffDocPath) {
+          const docPath = res.handoffDocPath;
+          const resolvedPath = path5.isAbsolute(docPath) ? docPath : path5.join(this.workspaceRoot, docPath);
+          let docContent = "";
+          if (fs5.existsSync(resolvedPath)) {
+            docContent = fs5.readFileSync(resolvedPath, "utf8");
+          } else {
+            docContent = `（交接文档路径：${docPath}，前序总结：${res.finalAnswer || "无"}）`;
+          }
+          currentTaskPrompt = `【跨会话自主接力任务】前序子代理已达到 30 轮推理上限并输出交接文档。请根据下方交接文档中的【接力第一优先级待办事项】与【任务目标】，无缝接续攻坚并最终输出 FINAL_ANSWER：
+
+` + docContent;
+          previousSessionId = currentSessionId;
+          const nextSessionId = `${this.mainSessionId}_${subId}_${role}_hop${hopCount + 1}`;
+          if (this.lineageTracker) {
+            this.lineageTracker.register({
+              sessionId: nextSessionId,
+              role,
+              status: "active",
+              parentSessionId: this.mainSessionId,
+              predecessorId: previousSessionId
+            });
+            this.lineageTracker.linkSuccessor(previousSessionId, nextSessionId);
+            this.lineageTracker.linkSubagent(this.mainSessionId, nextSessionId);
+          }
+          currentSessionId = nextSessionId;
+          this.loggerTree?.logTimelineEvent({
+            type: "SUBAGENT_CONTINUED",
+            subagentId: subId,
+            role,
+            hop: hopCount,
+            nextHop: hopCount + 1,
+            handoffDocPath: docPath,
+            timestamp: Date.now()
+          });
+          continue;
+        }
+        break;
+      }
+      const durationMs = Date.now() - startTime;
+      const success = completed;
+      let finalAnswer = lastFinalAnswer;
+      if (!success) {
+        if (hopCount >= this.maxAutonomousHops) {
+          finalAnswer = `子代理已达到最大自主接力代数上限 (${this.maxAutonomousHops} 代, 共 ${totalTurns} 轮)，任务尚未完全交付。` + (lastFinalAnswer ? ` 最后输出: ${lastFinalAnswer}` : "");
+        } else if (!finalAnswer) {
+          finalAnswer = `子代理执行结束，但未产生最终结论 (共 ${totalTurns} 轮)。`;
+        }
+      } else if (!finalAnswer) {
+        finalAnswer = "子代理已完成，未提供详细文字总结。";
+      }
+      const targetSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
+      const report = {
+        id: subId,
+        role,
+        description: spec.description,
+        success,
+        finalAnswer,
+        turnsCount: totalTurns,
+        durationMs,
+        targetSessionId
+      };
+      events?.onSubagentEnd?.(report);
+      this.loggerTree?.logTimelineEvent({
+        type: "SUBAGENT_FINISHED",
+        subagentId: subId,
+        role,
+        success: report.success,
+        turnsCount: report.turnsCount,
+        durationMs,
+        targetSessionId,
+        timestamp: Date.now()
+      });
+      return report;
+    } catch (err) {
+      const durationMs = Date.now() - startTime;
+      const targetSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
+      const isThrottled = err?.code === "ALL_ACCOUNTS_THROTTLED" || /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(err?.message || "");
+      let errorMsg = err?.message || String(err);
+      let finalAnswer = `子任务执行失败: ${errorMsg}`;
+      if (isThrottled) {
+        errorMsg = "ALL_ACCOUNTS_THROTTLED";
+        finalAnswer = "❌ 子任务因全局账号池限流 (429) 中断，账号池枯竭。已保存现场断点，建议主会话等待冷却或通知用户介入。";
+        this.loggerTree?.logTimelineEvent({
+          type: "SUBAGENT_POOL_THROTTLED",
+          subagentId: subId,
+          role,
+          targetSessionId,
+          timestamp: Date.now()
+        });
+      }
+      const report = {
+        id: subId,
+        role,
+        description: spec.description,
+        success: false,
+        finalAnswer,
+        turnsCount: totalTurns,
+        durationMs,
+        error: errorMsg,
+        targetSessionId
+      };
+      events?.onSubagentEnd?.(report);
+      return report;
+    } finally {
+      if (logStream) {
+        logStream.end();
+      }
+    }
+  }
+  formatReportSummary(reports) {
+    const parts = [
+      `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 ${reports.length} 个子任务)`,
+      ``
+    ];
+    for (let i = 0;i < reports.length; i++) {
+      const r = reports[i];
+      const statusIcon = r.success ? "✅ 成功" : "❌ 失败";
+      const durationSec = (r.durationMs / 1000).toFixed(1);
+      parts.push(`#### [Sub-${i + 1}] [${r.role}] ${r.description}`);
+      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount} 轮)`);
+      parts.push(`- **交付结论**:`);
+      parts.push(r.finalAnswer.trim());
+      parts.push(``);
+    }
+    return parts.join(`
+`);
+  }
+}
+
+// src/session/lineage-tracker.ts
+class SessionLineageTracker {
+  registry = new Map;
+  register(lineage) {
+    const existing = this.registry.get(lineage.sessionId);
+    this.registry.set(lineage.sessionId, {
+      ...existing,
+      ...lineage,
+      subagentSessionIds: lineage.subagentSessionIds || existing?.subagentSessionIds || []
+    });
+  }
+  linkSuccessor(predecessorId, successorId) {
+    const pred = this.registry.get(predecessorId);
+    if (pred) {
+      pred.successorId = successorId;
+      pred.status = "handed_off";
+    }
+    const succ = this.registry.get(successorId);
+    if (succ) {
+      succ.predecessorId = predecessorId;
+    }
+  }
+  linkSubagent(mainSessionId, subagentSessionId) {
+    const main = this.registry.get(mainSessionId);
+    if (main) {
+      if (!main.subagentSessionIds)
+        main.subagentSessionIds = [];
+      if (!main.subagentSessionIds.includes(subagentSessionId)) {
+        main.subagentSessionIds.push(subagentSessionId);
+      }
+    }
+    const sub = this.registry.get(subagentSessionId);
+    if (sub) {
+      sub.parentSessionId = mainSessionId;
+    }
+  }
+  getLineage(sessionId) {
+    return this.registry.get(sessionId);
+  }
+  resolveActiveHead(startSessionId) {
+    let currentId = startSessionId;
+    const visited = new Set;
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const lineage = this.registry.get(currentId);
+      if (!lineage)
+        break;
+      if (lineage.successorId && lineage.status === "handed_off") {
+        currentId = lineage.successorId;
+      } else {
+        break;
+      }
+    }
+    return currentId;
+  }
+}
+
+// src/session/main-plan-snapshot.ts
+import fs6 from "node:fs";
+import path6 from "node:path";
+function createMainPlanSnapshot(params) {
+  return {
+    snapshotId: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    originalSessionId: params.originalSessionId,
+    originalTask: params.originalTask,
+    thought: params.thought || "",
+    workspaceRoot: params.workspaceRoot,
+    gitBaseline: params.gitBaseline || "HEAD",
+    plannedSubagents: params.plannedSubagents || [],
+    createdAt: Date.now()
+  };
+}
+function saveMainPlanSnapshot(snapshot, workspaceRoot) {
+  const handoffsDir = path6.join(workspaceRoot, ".cph", "handoffs");
+  fs6.mkdirSync(handoffsDir, { recursive: true });
+  const cleanId = snapshot.originalSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const jsonPath = path6.join(handoffsDir, `main-plan-${cleanId}.json`);
+  const mdPath = path6.join(handoffsDir, `main-plan-${cleanId}.md`);
+  fs6.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
+  const mdContent = `# 主控规划快照: ${snapshot.snapshotId}
+
+- **前序会话**: ${snapshot.originalSessionId}
+- **生成时间**: ${new Date(snapshot.createdAt).toISOString()}
+- **Git 基准**: ${snapshot.gitBaseline}
+
+## 1. 原始工程任务
+${snapshot.originalTask}
+
+## 2. 前序主控推演与架构思考
+${snapshot.thought || "（无额外思考推演）"}
+
+## 3. 本次派发的专项子任务 (${snapshot.plannedSubagents.length} 个)
+${snapshot.plannedSubagents.map((sub, idx) => `### 子任务 ${idx + 1}: [${sub.role || "unknown"}] ${sub.description || ""}
+- **Prompt**:
+\`\`\`text
+${sub.prompt || ""}
+\`\`\`
+`).join(`
+`)}
+`;
+  fs6.writeFileSync(mdPath, mdContent, "utf8");
+  return { jsonPath, mdPath };
+}
+function formatSuccessorTurn1Prompt(snapshot, reportsSummary) {
+  return `【主控接力与成果审阅】
+前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。以下为前序规划蓝图与各子代理的交付成果：
+
+### 1. 原始工程目标与规划思路
+- **原始目标**:
+${snapshot.originalTask}
+
+- **前序推演与架构思绪**:
+${snapshot.thought || "按既定规范开展模块化调研与修改。"}
+
+### 2. 子任务攻坚结题成果
+${reportsSummary}
+
+---
+请你作为后继主控智能体，以当前全新满额的推理配额，综合审阅上述交付物，执行交叉验证与必要测试。
+若全部达成目标且验证充分，请直接输出 FINAL_ANSWER 完成结题；
+若评估后需要第二阶段专项攻坚，可继续派发 invoke_subagent。`;
+}
+
 // src/agent/orchestrator.ts
 class Orchestrator {
   workspaceRoot;
@@ -22905,20 +23459,27 @@ class Orchestrator {
   chatClientFactory;
   activeSkills;
   customAgentId;
+  coderAgentId;
+  researcherAgentId;
+  subagentRunner;
   enableInSessionCompaction = false;
   graphTokenProvider;
   enableCloudAttachment = true;
   cloudAttachmentThresholdChars = 0;
   cloudAttachmentThresholdLines = 0;
+  lineageTracker;
+  generation = 1;
+  maxGenerations;
   isHandshakePending = true;
   pendingTask = "";
   pendingSkills = "";
-  conversationId = crypto4.randomUUID();
+  conversationId = crypto5.randomUUID();
   sessionId;
   lastHandoffDocPath;
   constructor(options = {}) {
-    this.workspaceRoot = path5.resolve(options.workspaceRoot || process.cwd());
+    this.workspaceRoot = path7.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
+    this.maxGenerations = options.maxGenerations ?? 10;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
     this.modelTone = options.modelTone ?? "Gpt_61_Sol_Reasoning";
     this.pool = options.pool;
@@ -22928,13 +23489,29 @@ class Orchestrator {
     this.chatClientFactory = options.chatClientFactory;
     this.activeSkills = options.activeSkills;
     this.customAgentId = options.customAgentId;
-    this.sessionId = options.sessionId || crypto4.randomUUID();
+    this.coderAgentId = options.coderAgentId;
+    this.researcherAgentId = options.researcherAgentId;
+    this.subagentRunner = options.subagentRunner;
+    this.sessionId = options.sessionId || crypto5.randomUUID();
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
     this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
     this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
+    this.lineageTracker = options.lineageTracker || new SessionLineageTracker;
     this.isHandshakePending = options.isHandshakePending !== undefined ? options.isHandshakePending : !this.customAgentId;
+  }
+  getLineageTracker() {
+    return this.lineageTracker;
+  }
+  linkSuccessor(oldId, newId) {
+    this.lineageTracker.register({
+      sessionId: newId,
+      role: "main",
+      status: "active",
+      predecessorId: oldId
+    });
+    this.lineageTracker.linkSuccessor(oldId, newId);
   }
   async acquireGraphToken() {
     if (this.graphTokenProvider) {
@@ -22988,8 +23565,9 @@ class Orchestrator {
     this.isHandshakePending = !this.customAgentId;
     this.pendingTask = "";
     this.pendingSkills = "";
-    this.conversationId = crypto4.randomUUID();
-    this.sessionId = crypto4.randomUUID();
+    this.conversationId = crypto5.randomUUID();
+    this.sessionId = crypto5.randomUUID();
+    this.generation = 1;
     this.lastHandoffDocPath = undefined;
   }
   formatSkillsSection(skills) {
@@ -23012,9 +23590,14 @@ class Orchestrator {
       abortError.name = "AbortError";
       throw abortError;
     }
-    const sessionId = options.sessionId || this.sessionId;
+    let sessionId = options.sessionId || this.sessionId;
     this.sessionId = sessionId;
-    const conversationId = this.conversationId;
+    let conversationId = this.conversationId;
+    this.lineageTracker.register({
+      sessionId: this.sessionId,
+      role: "main",
+      status: "active"
+    });
     let client = this.chatClient;
     if (!client) {
       const pool = this.pool || new AccountPool;
@@ -23078,7 +23661,9 @@ class Orchestrator {
         currentPrompt = PromptBuilder.buildHandoffPreparationPrompt(this.pendingTask || task, options.sessionId || this.sessionId);
       }
       events?.onTurnStart?.(turn);
-      const requestId = crypto4.randomUUID();
+      const turnIndex = turn;
+      const turnInputPrompt = currentPrompt;
+      const requestId = crypto5.randomUUID();
       let turnResponseText = "";
       let turnReasoningText = "";
       try {
@@ -23218,9 +23803,111 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           handedOff: false
         };
       }
+      if (parsed.type === "handoff") {
+        const targetSessionId = options.sessionId || this.sessionId;
+        let docPath;
+        if (this.workspaceRoot) {
+          const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
+          fs7.mkdirSync(handoffsDir, { recursive: true });
+          docPath = path7.join(handoffsDir, `handoff-${targetSessionId}.md`);
+          fs7.writeFileSync(docPath, parsed.handoffDoc, "utf8");
+          this.lastHandoffDocPath = docPath;
+        }
+        history.push({
+          turn,
+          userInput: currentPrompt,
+          thought: parsed.thought || turnReasoningText,
+          response: turnResponseText
+        });
+        events?.onTurnEnd?.(turn, turnResponseText);
+        events?.onHandoff?.(parsed.handoffDoc, docPath);
+        return {
+          finalAnswer: "Session handed off with native handoff document.",
+          turnsCount: turn,
+          completed: false,
+          history,
+          handedOff: true,
+          handoffSnapshot: parsed.handoffDoc,
+          handoffDocPath: docPath
+        };
+      }
       if (parsed.type === "action") {
         events?.onToolStart?.(parsed.action);
-        const toolResult = await this.bridge.executeAction(parsed.action, signal);
+        let toolResult;
+        if (parsed.action.tool === "invoke_subagent") {
+          const thought = parsed.thought || parsed.action?.thought || "";
+          const subagents = parsed.action.subagents || [];
+          const snapshot = createMainPlanSnapshot({
+            originalSessionId: this.sessionId,
+            originalTask: this.pendingTask || task,
+            thought,
+            workspaceRoot: this.workspaceRoot,
+            plannedSubagents: subagents
+          });
+          const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
+          events?.onMainSessionVirtualized?.(snapshot, mdPath);
+          try {
+            client?.close?.();
+          } catch {}
+          const runner = this.subagentRunner || new SubagentRunner({
+            workspaceRoot: this.workspaceRoot,
+            mainSessionId: this.sessionId,
+            coderAgentId: this.coderAgentId,
+            researcherAgentId: this.researcherAgentId,
+            pool: this.pool,
+            chatClientFactory: this.chatClientFactory,
+            modelTone: this.modelTone,
+            lineageTracker: this.lineageTracker
+          });
+          const reports = await runner.executeBatch(subagents, signal, {
+            onSubagentStart: events?.onSubagentStart,
+            onSubagentEnd: events?.onSubagentEnd
+          });
+          const summaryOutput = runner.formatReportSummary(reports);
+          toolResult = {
+            actionName: "invoke_subagent",
+            piToolName: "subagent",
+            target: `${reports.length} subagents`,
+            success: reports.every((r) => r.success),
+            output: summaryOutput,
+            formatted: summaryOutput
+          };
+          const prevSessionId = this.sessionId;
+          this.generation++;
+          const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
+          this.sessionId = nextSessionId;
+          sessionId = nextSessionId;
+          this.conversationId = crypto5.randomUUID();
+          conversationId = this.conversationId;
+          this.lineageTracker?.register({
+            sessionId: nextSessionId,
+            role: "main",
+            status: "active",
+            predecessorId: prevSessionId
+          });
+          this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
+          events?.onSuccessorAwakened?.(nextSessionId, this.generation);
+          if (!this.chatClient && this.pool) {
+            try {
+              const token = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
+              client = this.chatClientFactory ? this.chatClientFactory(token, {
+                modelTone: this.modelTone,
+                customAgentId: this.customAgentId
+              }) : new ChatHubClient(token, {
+                modelTone: this.modelTone,
+                customAgentId: this.customAgentId
+              });
+            } catch {}
+          }
+          currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+          this.isHandshakePending = false;
+          refusalRetries = 0;
+          if (this.generation <= this.maxGenerations) {
+            turn = 0;
+          }
+        } else {
+          toolResult = await this.bridge.executeAction(parsed.action, signal);
+        }
         events?.onToolEnd?.(toolResult);
         let uploadedAttachment = null;
         const rawContent = toolResult.rawOutput || toolResult.output || "";
@@ -23240,8 +23927,8 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           } catch (uploadErr) {}
         }
         const currentTurnRecord = {
-          turn,
-          userInput: currentPrompt,
+          turn: turnIndex,
+          userInput: turnInputPrompt,
           thought: parsed.thought || turnReasoningText,
           response: turnResponseText,
           action: parsed.action,
@@ -23258,7 +23945,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
           }
         }
-        if (this.isHandshakePending) {
+        if (parsed.action.tool === "invoke_subagent") {} else if (this.isHandshakePending) {
           this.isHandshakePending = false;
           if (uploadedAttachment) {
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount });
@@ -23272,7 +23959,15 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output);
           }
         }
-        events?.onTurnEnd?.(turn, turnResponseText);
+        events?.onTurnEnd?.(turnIndex, turnResponseText);
+        if (parsed.action.tool === "invoke_subagent" && this.generation > this.maxGenerations) {
+          return {
+            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
+            turnsCount: turnIndex,
+            completed: false,
+            history
+          };
+        }
         turn++;
         continue;
       }
@@ -23334,9 +24029,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     const cleanTask = task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path5.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
-        if (fs5.existsSync(docPath)) {
-          const existingDoc = fs5.readFileSync(docPath, "utf8").trim();
+        const docPath = path7.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        if (fs7.existsSync(docPath)) {
+          const existingDoc = fs7.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
             this.lastHandoffDocPath = docPath;
             return existingDoc;
@@ -23540,9 +24235,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     let reviewDraftContent = "";
     if (this.workspaceRoot) {
       try {
-        const reviewDraftPath = path5.join(this.workspaceRoot, ".cph", "review_draft.md");
-        if (fs5.existsSync(reviewDraftPath)) {
-          reviewDraftContent = fs5.readFileSync(reviewDraftPath, "utf8").trim();
+        const reviewDraftPath = path7.join(this.workspaceRoot, ".cph", "review_draft.md");
+        if (fs7.existsSync(reviewDraftPath)) {
+          reviewDraftContent = fs7.readFileSync(reviewDraftPath, "utf8").trim();
         }
       } catch {}
     }
@@ -23581,10 +24276,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
 `);
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const handoffsDir = path5.join(this.workspaceRoot, ".cph", "handoffs");
-        fs5.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path5.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
-        fs5.writeFileSync(docPath, doc, "utf8");
+        const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
+        fs7.mkdirSync(handoffsDir, { recursive: true });
+        const docPath = path7.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        fs7.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {}
     }
@@ -23611,7 +24306,7 @@ ${status}` : "clean (无未提交变更)"}`;
   }
   collectDirTreePreview() {
     try {
-      const entries = fs5.readdirSync(this.workspaceRoot, { withFileTypes: true });
+      const entries = fs7.readdirSync(this.workspaceRoot, { withFileTypes: true });
       const filtered = entries.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "dist").slice(0, 15).map((e) => e.isDirectory() ? `${e.name}/` : e.name);
       return filtered.join(`
 `);
@@ -23675,12 +24370,12 @@ ${status}` : "clean (无未提交变更)"}`;
       this.pool.markThrottled(victimEmail);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
-    const handoffsDir = path5.join(this.workspaceRoot, ".cph", "handoffs");
-    const targetHandoffAbsolutePath = path5.join(handoffsDir, `handoff-${sessionId}.md`);
+    const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
+    const targetHandoffAbsolutePath = path7.join(handoffsDir, `handoff-${sessionId}.md`);
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
-      fs5.mkdirSync(handoffsDir, { recursive: true });
+      fs7.mkdirSync(handoffsDir, { recursive: true });
       const localHandoffDoc = this.generateHandoffSnapshot(task, history, sessionId);
-      fs5.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
+      fs7.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(localHandoffDoc, targetHandoffAbsolutePath);
@@ -23711,7 +24406,7 @@ ${status}` : "clean (无未提交变更)"}`;
         nextToken = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
       }
     } catch (poolErr) {
-      fs5.mkdirSync(handoffsDir, { recursive: true });
+      fs7.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (All Accounts Throttled)`,
         `> ⚠️ 账号池所有可用账号均已耗尽频控 (${poolErr.message || String(poolErr)})，本地保障黑匣子生成与落盘。`,
@@ -23719,7 +24414,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs5.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs7.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -23738,8 +24433,15 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    const arbitratorSessionId = `ses_arb_${crypto4.randomUUID()}`;
+    const arbitratorSessionId = `ses_arb_${crypto5.randomUUID()}`;
     const nextEmail = nextToken?.email || "next-account";
+    this.lineageTracker.register({
+      sessionId: arbitratorSessionId,
+      role: "main",
+      status: "active",
+      predecessorId: sessionId
+    });
+    this.lineageTracker.linkSuccessor(sessionId, arbitratorSessionId);
     if (victimEmail && nextEmail && events?.onAccountSwitched) {
       events.onAccountSwitched(victimEmail, nextEmail);
     }
@@ -23783,9 +24485,9 @@ ${status}` : "clean (无未提交变更)"}`;
     try {
       const arbRes = await arbitratorClient.sendMessage({
         text: arbitratorPrompt,
-        conversationId: crypto4.randomUUID(),
+        conversationId: crypto5.randomUUID(),
         sessionId: arbitratorSessionId,
-        requestId: crypto4.randomUUID(),
+        requestId: crypto5.randomUUID(),
         signal
       });
       arbitratorResponseText = arbRes.text;
@@ -23795,7 +24497,7 @@ ${status}` : "clean (无未提交变更)"}`;
         abortError.name = "AbortError";
         throw abortError;
       }
-      fs5.mkdirSync(handoffsDir, { recursive: true });
+      fs7.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (Arbitrator Session Failed)`,
         `> ⚠️ 仲裁会话执行异常 (${arbErr.message || String(arbErr)})，本地保障黑匣子生成与落盘。`,
@@ -23803,7 +24505,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs5.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs7.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -23822,19 +24524,19 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    fs5.mkdirSync(handoffsDir, { recursive: true });
+    fs7.mkdirSync(handoffsDir, { recursive: true });
     const parsed = ResilientParser.parse(arbitratorResponseText);
     if (parsed.type === "action") {
       events?.onToolStart?.(parsed.action);
       const toolResult = await this.bridge.executeAction(parsed.action, signal);
       events?.onToolEnd?.(toolResult);
     }
-    if (!fs5.existsSync(targetHandoffAbsolutePath)) {
-      const contentToPersist = parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
-      fs5.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
+    if (!fs7.existsSync(targetHandoffAbsolutePath)) {
+      const contentToPersist = parsed.type === "handoff" ? parsed.handoffDoc : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
+      fs7.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
     this.lastHandoffDocPath = targetHandoffAbsolutePath;
-    const finalDocContent = fs5.existsSync(targetHandoffAbsolutePath) ? fs5.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
+    const finalDocContent = fs7.existsSync(targetHandoffAbsolutePath) ? fs7.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
     if (events?.onArbitratorHandoffComplete) {
       await Promise.resolve(events.onArbitratorHandoffComplete(targetHandoffAbsolutePath, arbitratorSessionId));
     }
@@ -24438,24 +25140,79 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
 `);
     return formatted;
   }
+  formatSubagentMatrix(states) {
+    const lines = [];
+    lines.push(this.c.bold.cyan("┌─ [多会话子代理协同看板 (Sub-Agent Matrix)] " + "─".repeat(30)));
+    for (let i = 0;i < states.length; i++) {
+      const s = states[i];
+      const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const statusBadge = s.status === "completed" ? this.c.green("✅ 已完成") : s.status === "failed" ? this.c.red("❌ 失败") : this.c.cyan("\uD83D\uDD04 运行中");
+      const durationSec = (s.durationMs / 1000).toFixed(1);
+      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${s.description.slice(0, 30)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
+      if (s.lastAction) {
+        lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
+      }
+    }
+    lines.push(this.c.bold.cyan("└" + "─".repeat(68)));
+    return lines.join(`
+`);
+  }
+  renderSubagentMatrix(states) {
+    this.writer(this.formatSubagentMatrix(states) + `
+`);
+  }
+  formatMainVirtualizationBanner(sessionId, snapshotPath) {
+    const border = "─".repeat(60);
+    return [
+      this.c.cyan(`┌${border}┐`),
+      this.c.cyan(`│ \uD83D\uDCCC [主控会话已虚拟化归档] ${sessionId.padEnd(35)} │`),
+      this.c.cyan(`│ 宏观规划快照已落盘: ${snapshotPath.padEnd(40)} │`),
+      this.c.cyan(`│ 云端连接已安全释放，子任务开始受限排队攻坚...             │`),
+      this.c.cyan(`└${border}┘`)
+    ].join(`
+`);
+  }
+  renderMainVirtualizationBanner(sessionId, snapshotPath) {
+    this.writer(`
+` + this.formatMainVirtualizationBanner(sessionId, snapshotPath) + `
+
+`);
+  }
+  formatSuccessorAwakeningBanner(sessionId, generation) {
+    const border = "─".repeat(60);
+    return [
+      this.c.green(`┌${border}┐`),
+      this.c.green(`│ \uD83D\uDE80 [第 ${generation} 代主控会话已唤醒] ${sessionId.padEnd(33)} │`),
+      this.c.green(`│ 注入前序架构快照与子任务结题成果，重置满额 30 轮推理预算   │`),
+      this.c.green(`│ 进入系统交叉验证与交付审阅阶段...                        │`),
+      this.c.green(`└${border}┘`)
+    ].join(`
+`);
+  }
+  renderSuccessorAwakeningBanner(sessionId, generation) {
+    this.writer(`
+` + this.formatSuccessorAwakeningBanner(sessionId, generation) + `
+
+`);
+  }
 }
 
 // src/session/session-manager.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path8 from "node:path";
 
 class SessionManager {
   workspaceRoot;
   sessionsDir;
   indexFile;
   constructor(workspaceRoot) {
-    this.workspaceRoot = path6.resolve(workspaceRoot || process.cwd());
-    this.sessionsDir = path6.join(this.workspaceRoot, ".cph", "sessions");
-    this.indexFile = path6.join(this.sessionsDir, "index.json");
+    this.workspaceRoot = path8.resolve(workspaceRoot || process.cwd());
+    this.sessionsDir = path8.join(this.workspaceRoot, ".cph", "sessions");
+    this.indexFile = path8.join(this.sessionsDir, "index.json");
   }
   ensureSessionsDir() {
-    if (!fs6.existsSync(this.sessionsDir)) {
-      fs6.mkdirSync(this.sessionsDir, { recursive: true });
+    if (!fs8.existsSync(this.sessionsDir)) {
+      fs8.mkdirSync(this.sessionsDir, { recursive: true });
     }
   }
   isValidSessionId(id) {
@@ -24475,11 +25232,11 @@ class SessionManager {
   }
   readIndex() {
     this.ensureSessionsDir();
-    if (!fs6.existsSync(this.indexFile)) {
+    if (!fs8.existsSync(this.indexFile)) {
       return this.rebuildIndex();
     }
     try {
-      const raw = fs6.readFileSync(this.indexFile, "utf-8");
+      const raw = fs8.readFileSync(this.indexFile, "utf-8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -24492,23 +25249,23 @@ class SessionManager {
   writeIndex(items) {
     this.ensureSessionsDir();
     const sorted = [...items].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    fs6.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
+    fs8.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
   }
   rebuildIndex() {
     this.ensureSessionsDir();
     const items = [];
     let files = [];
     try {
-      files = fs6.readdirSync(this.sessionsDir);
+      files = fs8.readdirSync(this.sessionsDir);
     } catch {
       return [];
     }
     for (const file of files) {
       if (!file.endsWith(".json") || file === "index.json")
         continue;
-      const fullPath = path6.join(this.sessionsDir, file);
+      const fullPath = path8.join(this.sessionsDir, file);
       try {
-        const raw = fs6.readFileSync(fullPath, "utf-8");
+        const raw = fs8.readFileSync(fullPath, "utf-8");
         const session = JSON.parse(raw);
         if (session && session.id && session.title) {
           items.push({
@@ -24538,7 +25295,7 @@ class SessionManager {
     const session = {
       id,
       title: options.title || "新会话",
-      workspaceRoot: options.workspaceRoot ? path6.resolve(options.workspaceRoot) : this.workspaceRoot,
+      workspaceRoot: options.workspaceRoot ? path8.resolve(options.workspaceRoot) : this.workspaceRoot,
       createdAt: now,
       updatedAt: now,
       turnCount: 0,
@@ -24561,8 +25318,8 @@ class SessionManager {
     this.ensureSessionsDir();
     session.updatedAt = new Date().toISOString();
     session.turnCount = session.turns ? session.turns.length : session.turnCount;
-    const sessionFile = path6.join(this.sessionsDir, `${session.id}.json`);
-    fs6.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
+    const sessionFile = path8.join(this.sessionsDir, `${session.id}.json`);
+    fs8.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
     const index = this.readIndex();
     const existingIdx = index.findIndex((item) => item.id === session.id);
     const indexEntry = {
@@ -24589,11 +25346,11 @@ class SessionManager {
   loadSession(id) {
     if (!this.isValidSessionId(id))
       return null;
-    const sessionFile = path6.join(this.sessionsDir, `${id}.json`);
-    if (!fs6.existsSync(sessionFile))
+    const sessionFile = path8.join(this.sessionsDir, `${id}.json`);
+    if (!fs8.existsSync(sessionFile))
       return null;
     try {
-      const raw = fs6.readFileSync(sessionFile, "utf-8");
+      const raw = fs8.readFileSync(sessionFile, "utf-8");
       return JSON.parse(raw);
     } catch {
       return null;
@@ -24618,11 +25375,11 @@ class SessionManager {
     if (!this.isValidSessionId(id))
       return false;
     this.ensureSessionsDir();
-    const sessionFile = path6.join(this.sessionsDir, `${id}.json`);
+    const sessionFile = path8.join(this.sessionsDir, `${id}.json`);
     let fileExisted = false;
-    if (fs6.existsSync(sessionFile)) {
+    if (fs8.existsSync(sessionFile)) {
       try {
-        fs6.unlinkSync(sessionFile);
+        fs8.unlinkSync(sessionFile);
         fileExisted = true;
       } catch {}
     }
@@ -24637,8 +25394,8 @@ class SessionManager {
 }
 
 // src/ui/terminal-logger.ts
-import fs7 from "node:fs";
-import path7 from "node:path";
+import fs9 from "node:fs";
+import path9 from "node:path";
 function stripAnsi2(str) {
   if (!str)
     return "";
@@ -24658,25 +25415,59 @@ class TerminalLogger {
     }
     return TerminalLogger.instance;
   }
+  initSessionTree(sessionId, workspaceRoot) {
+    const root = workspaceRoot || process.cwd();
+    const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sessionDir = path9.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path9.join(sessionDir, "subagents");
+    fs9.mkdirSync(subagentsDir, { recursive: true });
+    const mainLogPath = path9.join(sessionDir, "main.log");
+    if (!fs9.existsSync(mainLogPath)) {
+      fs9.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
+`, "utf8");
+    }
+    const timelineLogPath = path9.join(sessionDir, "timeline.jsonl");
+    return {
+      sessionDir,
+      mainLogPath,
+      timelineLogPath,
+      createSubagentLogStream: (subagentId, role) => {
+        const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const subLogPath = path9.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs9.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
+`);
+        return stream;
+      },
+      logTimelineEvent: (event) => {
+        const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
+`;
+        try {
+          fs9.appendFileSync(timelineLogPath, line, "utf8");
+        } catch {}
+      }
+    };
+  }
   resolveDefaultLogPath(workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const logDir = path7.join(root, ".cph", "logs");
+    const logDir = path9.join(root, ".cph", "logs");
     try {
-      fs7.mkdirSync(logDir, { recursive: true });
+      fs9.mkdirSync(logDir, { recursive: true });
     } catch {}
-    return path7.join(logDir, `cph-terminal-${dateStr}.log`);
+    return path9.join(logDir, `cph-terminal-${dateStr}.log`);
   }
   start(options = {}) {
     if (this.isHooked && this.logFilePath) {
       return this.logFilePath;
     }
     const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
-    const resolvedPath = path7.resolve(targetPath);
+    const resolvedPath = path9.resolve(targetPath);
     try {
-      const parentDir = path7.dirname(resolvedPath);
-      fs7.mkdirSync(parentDir, { recursive: true });
-      this.stream = fs7.createWriteStream(resolvedPath, {
+      const parentDir = path9.dirname(resolvedPath);
+      fs9.mkdirSync(parentDir, { recursive: true });
+      this.stream = fs9.createWriteStream(resolvedPath, {
         flags: "a",
         encoding: "utf8"
       });
@@ -24754,6 +25545,8 @@ class CphPiCli {
   timeoutSec;
   maxAutonomousHandoffHops;
   customAgentId;
+  coderAgentId;
+  researcherAgentId;
   pool;
   renderer;
   interruptController;
@@ -24776,11 +25569,13 @@ class CphPiCli {
   debug = false;
   debugLogPath;
   constructor(options = {}) {
-    this.workspaceRoot = path8.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.workspaceRoot = path10.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId ? ChatHubClient.normalizeAgentId(options.customAgentId) : undefined;
     const envAgentId = ChatHubClient.normalizeAgentId(process.env.CPH_COPILOT_AGENT_ID);
     this.customAgentId = cliAgentId ?? envAgentId ?? config.customAgentId;
+    this.coderAgentId = (options.coderAgentId ? ChatHubClient.normalizeAgentId(options.coderAgentId) : undefined) ?? DEFAULT_CODER_AGENT_ID;
+    this.researcherAgentId = (options.researcherAgentId ? ChatHubClient.normalizeAgentId(options.researcherAgentId) : undefined) ?? DEFAULT_RESEARCHER_AGENT_ID;
     this.modelTone = options.modelTone || config.modelTone || "Gpt_61_Sol_Reasoning";
     this.maxTurns = options.maxTurns || 30;
     this.timeoutSec = options.timeoutSec ?? options.parsedArgs?.timeoutSec ?? 600;
@@ -24842,6 +25637,8 @@ ${source_default.yellow(msg)}
       bridge: this.bridge,
       activeSkills: this.skillRegistry.getActiveSkills(),
       customAgentId: this.customAgentId,
+      coderAgentId: this.coderAgentId,
+      researcherAgentId: this.researcherAgentId,
       timeoutMs
     });
     this.orchestrator.timeoutMs = timeoutMs;
@@ -24982,24 +25779,24 @@ ${source_default.yellow(msg)}
     return this.pendingHandoffSnapshot;
   }
   loadWorkspaceConfig() {
-    const configPath = path8.join(this.workspaceRoot, ".cph", "config.json");
+    const configPath = path10.join(this.workspaceRoot, ".cph", "config.json");
     try {
-      if (fs8.existsSync(configPath)) {
-        const content = fs8.readFileSync(configPath, "utf-8");
+      if (fs10.existsSync(configPath)) {
+        const content = fs10.readFileSync(configPath, "utf-8");
         return JSON.parse(content) || {};
       }
     } catch {}
     return {};
   }
   saveWorkspaceConfig(updates) {
-    const cphDir = path8.join(this.workspaceRoot, ".cph");
-    const configPath = path8.join(cphDir, "config.json");
+    const cphDir = path10.join(this.workspaceRoot, ".cph");
+    const configPath = path10.join(cphDir, "config.json");
     try {
-      fs8.mkdirSync(cphDir, { recursive: true });
+      fs10.mkdirSync(cphDir, { recursive: true });
       let current = {};
-      if (fs8.existsSync(configPath)) {
+      if (fs10.existsSync(configPath)) {
         try {
-          current = JSON.parse(fs8.readFileSync(configPath, "utf-8")) || {};
+          current = JSON.parse(fs10.readFileSync(configPath, "utf-8")) || {};
         } catch {
           current = {};
         }
@@ -25011,7 +25808,7 @@ ${source_default.yellow(msg)}
           current[k] = v;
         }
       }
-      fs8.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
+      fs10.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
     } catch {}
   }
   initSession() {
@@ -25829,7 +26626,9 @@ ${task}`;
             onDisasterOccurred: (blackbox, err) => this.renderer.renderDisasterBlackboxBanner(currentSession.id, err),
             onArbitratorHandoffStart: (arbId, email) => this.renderer.renderArbitratorHandoffBanner(arbId, email),
             onArbitratorHandoffComplete: (_docPath, _arbId) => {},
-            onAttachmentUploaded: (attachment, toolName) => this.renderer.renderAttachmentUploadedNotice(attachment.fileName, toolName)
+            onAttachmentUploaded: (attachment, toolName) => this.renderer.renderAttachmentUploadedNotice(attachment.fileName, toolName),
+            onMainSessionVirtualized: (snapshot, path) => this.renderer.renderMainVirtualizationBanner(snapshot?.originalSessionId || currentSession.id, path),
+            onSuccessorAwakened: (newSessionId, generation) => this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation)
           }
         });
         const startTurnNum = currentSession.turns.length;
@@ -26029,12 +26828,33 @@ function parseCliArgs(args) {
       i++;
     } else if (arg === "-a" || arg === "--agent") {
       result.customAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      result.hasExplicitAgent = true;
       i++;
     } else if (arg.startsWith("--agent=")) {
       result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("--agent=".length));
+      result.hasExplicitAgent = true;
       i++;
     } else if (arg.startsWith("-a=")) {
       result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("-a=".length));
+      result.hasExplicitAgent = true;
+      i++;
+    } else if (arg === "--coder-agent" || arg === "--coder-agent-id") {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--coder-agent=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent=".length));
+      i++;
+    } else if (arg.startsWith("--coder-agent-id=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent-id=".length));
+      i++;
+    } else if (arg === "--researcher-agent" || arg === "--researcher-agent-id") {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--researcher-agent=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent=".length));
+      i++;
+    } else if (arg.startsWith("--researcher-agent-id=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent-id=".length));
       i++;
     } else if (arg === "--accounts" || arg === "-acc") {
       const val = args[++i];
@@ -26167,6 +26987,15 @@ function parseCliArgs(args) {
   if (!result.hasExplicitModel) {
     result.modelTone = "Gpt_61_Sol_Reasoning";
   }
+  if (!result.customAgentId) {
+    result.customAgentId = DEFAULT_MAIN_AGENT_ID;
+  }
+  if (!result.coderAgentId) {
+    result.coderAgentId = DEFAULT_CODER_AGENT_ID;
+  }
+  if (!result.researcherAgentId) {
+    result.researcherAgentId = DEFAULT_RESEARCHER_AGENT_ID;
+  }
   const baseDir = process.env.CPH_PI_ORIGINAL_CWD || process.cwd();
   if (!result.workspaceRoot) {
     if (positional.length > 0) {
@@ -26175,10 +27004,10 @@ function parseCliArgs(args) {
         result.workspaceRoot = baseDir;
         positional.shift();
       } else {
-        const resolved = path8.isAbsolute(first) ? first : path8.resolve(baseDir, first);
+        const resolved = path10.isAbsolute(first) ? first : path10.resolve(baseDir, first);
         let isDir = false;
         try {
-          isDir = fs8.existsSync(resolved) && fs8.statSync(resolved).isDirectory();
+          isDir = fs10.existsSync(resolved) && fs10.statSync(resolved).isDirectory();
         } catch {
           isDir = false;
         }
@@ -26211,7 +27040,9 @@ function getHelpText() {
     `  ${source_default.green("-c, --continue")}          接续最近活跃的会话`,
     `  ${source_default.green("-r, --resume <id>")}       恢复指定 ID 的历史会话`,
     `  ${source_default.green("-w, --workspace <path>")}   指定工作区根目录 (默认: 当前目录)`,
-    `  ${source_default.green("-a, --agent <id|url>")}     指定专属自建智能体 ID 或 M365 分享链接`,
+    `  ${source_default.green("-a, --agent <id|url>")}     指定专属自建主协调智能体 ID 或 M365 分享链接 (默认: 主协调智能体)`,
+    `  ${source_default.green("--coder-agent-id <id|url>")} 指定代码实现子智能体 ID (默认: 代码实现智能体)`,
+    `  ${source_default.green("--researcher-agent-id <id|url>")} 指定深度调研子智能体 ID (默认: 深度调研智能体)`,
     `  ${source_default.green("-m, --model <tone>")}       指定模型风格 (默认: Gpt_61_Sol_Reasoning)`,
     `  ${source_default.green("-acc, --accounts <list>")}   设置允许启用的账号白名单 (逗号分隔，其余默认跳过)`,
     `  ${source_default.green("-d, --debug [path]")}       启用 Debug 模式并实时落盘终端输出到本地日志 (默认: .cph/logs/)`,
@@ -26282,7 +27113,9 @@ async function runCli(args = process.argv.slice(2), customOptions = {}, isDirect
     maxAutonomousHandoffHops: parsed.maxAutonomousHandoffHops ?? customOptions.maxAutonomousHandoffHops,
     continueLast: parsed.continueLast ?? customOptions.continueLast,
     resumeSessionId: parsed.resumeSessionId || customOptions.resumeSessionId,
-    customAgentId: parsed.customAgentId || customOptions.customAgentId,
+    customAgentId: customOptions.customAgentId !== undefined ? customOptions.customAgentId : customOptions.chatClient && !parsed.hasExplicitAgent ? undefined : parsed.customAgentId,
+    coderAgentId: parsed.coderAgentId || customOptions.coderAgentId,
+    researcherAgentId: parsed.researcherAgentId || customOptions.researcherAgentId,
     allowedAccounts: parsed.allowedAccounts || customOptions.allowedAccounts,
     debug: parsed.debug ?? customOptions.debug,
     debugLogPath: parsed.debugLogPath || customOptions.debugLogPath
@@ -26326,6 +27159,9 @@ export {
   CPH_PI_VERSION,
   CphPiCli as CliApp,
   CphPiCli,
+  DEFAULT_CODER_AGENT_ID,
+  DEFAULT_MAIN_AGENT_ID,
+  DEFAULT_RESEARCHER_AGENT_ID,
   getHelpText,
   parseArgs,
   parseCliArgs,

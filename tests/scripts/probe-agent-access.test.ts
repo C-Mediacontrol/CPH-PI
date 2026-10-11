@@ -5,8 +5,15 @@ import os from "node:os";
 import {
   probeAccountAccess,
   probeAllAccounts,
+  probeAllAccountsTriAgent,
   formatProbeReport,
+  formatProbeMatrixReport,
+  resolveAgentTarget,
+  DEFAULT_MAIN_AGENT_ID,
+  DEFAULT_CODER_AGENT_ID,
+  DEFAULT_RESEARCHER_AGENT_ID,
   type ProbeAccountResult,
+  type TriAgentMatrixResult,
 } from "../../scripts/probe-agent-access.ts";
 import { TokenManager, type StoredAccount } from "../../src/auth/token-manager.ts";
 
@@ -193,5 +200,108 @@ describe("Agent Multi-Account Access Probe Suite", () => {
     );
     expect(res.errorMessage).not.toContain("getActiveSessionToken is not a function");
   });
+
+  it("5. probeAllAccountsTriAgent should evaluate accounts against all 3 agents (Main, Coder, Researcher)", async () => {
+    const mockAccounts: StoredAccount[] = [
+      { email: "full@corp.com", refreshToken: "r1" },
+      { email: "partial@corp.com", refreshToken: "r2" },
+      { email: "none@corp.com", refreshToken: "r3" },
+    ];
+
+    const mockSender = async (email: string, agentId: string) => {
+      if (email === "full@corp.com") {
+        return { text: "OK: All agents supported" };
+      }
+      if (email === "partial@corp.com") {
+        if (agentId.includes("9ace94c8") || agentId.includes("main")) {
+          return { text: "OK: Main only" };
+        }
+        const err: any = new Error("[GptAccessForbidden] No access to subagent");
+        err.errorCode = "GptAccessForbidden";
+        throw err;
+      }
+      const err: any = new Error("[GptAccessForbidden] No access");
+      err.errorCode = "GptAccessForbidden";
+      throw err;
+    };
+
+    const matrix = await probeAllAccountsTriAgent({
+      tokenManager: new MockTokenManager(mockAccounts),
+      sendProbeMessage: mockSender,
+      workspaceRoot: tmpDir,
+      apply: true,
+    });
+
+    expect(matrix.length).toBe(3);
+
+    const fullAcc = matrix.find((m) => m.email === "full@corp.com")!;
+    expect(fullAcc.isFullEligible).toBe(true);
+    expect(fullAcc.main.isEligible).toBe(true);
+    expect(fullAcc.coder.isEligible).toBe(true);
+    expect(fullAcc.researcher.isEligible).toBe(true);
+
+    const partialAcc = matrix.find((m) => m.email === "partial@corp.com")!;
+    expect(partialAcc.isFullEligible).toBe(false);
+    expect(partialAcc.main.isEligible).toBe(true);
+    expect(partialAcc.coder.isEligible).toBe(false);
+
+    const noneAcc = matrix.find((m) => m.email === "none@corp.com")!;
+    expect(noneAcc.isFullEligible).toBe(false);
+
+    // Verify .cph/config.json with apply: true
+    const configPath = path.join(tmpDir, ".cph", "config.json");
+    expect(fs.existsSync(configPath)).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    expect(config.allowedAccounts).toEqual(["full@corp.com"]);
+    expect(config.customAgentId).toBeDefined();
+    expect(config.coderAgentId).toBeDefined();
+    expect(config.researcherAgentId).toBeDefined();
+  });
+
+  it("6. formatProbeMatrixReport should render a multi-column Tri-Agent dashboard", () => {
+    const mockMatrix: TriAgentMatrixResult[] = [
+      {
+        email: "alice@corp.com",
+        isFullEligible: true,
+        main: { email: "alice@corp.com", status: "PASS", isEligible: true, durationMs: 120 },
+        coder: { email: "alice@corp.com", status: "PASS", isEligible: true, durationMs: 130 },
+        researcher: { email: "alice@corp.com", status: "PASS", isEligible: true, durationMs: 140 },
+      },
+      {
+        email: "bob@corp.com",
+        isFullEligible: false,
+        main: { email: "bob@corp.com", status: "PASS", isEligible: true, durationMs: 100 },
+        coder: { email: "bob@corp.com", status: "FORBIDDEN", isEligible: false, durationMs: 80, errorMessage: "GptAccessForbidden" },
+        researcher: { email: "bob@corp.com", status: "PASS", isEligible: true, durationMs: 90 },
+      },
+    ];
+
+    const report = formatProbeMatrixReport(mockMatrix);
+    expect(report).toContain("Tri-Agent");
+    expect(report).toContain("alice@corp.com");
+    expect(report).toContain("bob@corp.com");
+    expect(report).toContain("全就绪");
+    expect(report).toContain("局部受限");
+    expect(report).toContain("推荐白名单配置");
+  });
+
+  it("7. resolveAgentTarget should resolve role names ('main', 'coder', 'researcher') to default IDs", () => {
+    const resMain = resolveAgentTarget("main");
+    expect(resMain.isTriAgent).toBe(false);
+    expect(resMain.agentId).toBe(DEFAULT_MAIN_AGENT_ID);
+    expect(resMain.roleName).toBe("Main 主协调智能体");
+
+    const resCoder = resolveAgentTarget("coder");
+    expect(resCoder.isTriAgent).toBe(false);
+    expect(resCoder.agentId).toBe(DEFAULT_CODER_AGENT_ID);
+
+    const resResearcher = resolveAgentTarget("researcher");
+    expect(resResearcher.isTriAgent).toBe(false);
+    expect(resResearcher.agentId).toBe(DEFAULT_RESEARCHER_AGENT_ID);
+
+    const resDefault = resolveAgentTarget(undefined);
+    expect(resDefault.isTriAgent).toBe(true);
+  });
 });
+
 

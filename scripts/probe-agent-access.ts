@@ -15,6 +15,14 @@ export interface ProbeAccountResult {
   responseSnippet?: string;
 }
 
+export interface TriAgentMatrixResult {
+  email: string;
+  main: ProbeAccountResult;
+  coder: ProbeAccountResult;
+  researcher: ProbeAccountResult;
+  isFullEligible: boolean;
+}
+
 export interface ProbeOptions {
   agentId?: string;
   workspaceRoot?: string;
@@ -24,8 +32,64 @@ export interface ProbeOptions {
   timeoutMs?: number;
 }
 
+export const DEFAULT_MAIN_AGENT_ID =
+  "T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852";
+export const DEFAULT_CODER_AGENT_ID =
+  "T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296";
+export const DEFAULT_RESEARCHER_AGENT_ID =
+  "T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c";
 export const DEFAULT_DEV_AGENT_ID =
   "T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3";
+
+/**
+ * Resolves role aliases ('main', 'coder', 'researcher') or custom agent IDs.
+ */
+export function resolveAgentTarget(roleOrId?: string): {
+  isTriAgent: boolean;
+  agentId?: string;
+  roleName?: string;
+} {
+  if (!roleOrId) {
+    return { isTriAgent: true };
+  }
+  const normalized = roleOrId.trim().toLowerCase();
+  if (normalized === "all" || normalized === "tri" || normalized === "tri-agent") {
+    return { isTriAgent: true };
+  }
+  if (normalized === "main") {
+    return {
+      isTriAgent: false,
+      agentId: DEFAULT_MAIN_AGENT_ID,
+      roleName: "Main 主协调智能体",
+    };
+  }
+  if (normalized === "coder") {
+    return {
+      isTriAgent: false,
+      agentId: DEFAULT_CODER_AGENT_ID,
+      roleName: "Coder 代码实现智能体",
+    };
+  }
+  if (normalized === "researcher" || normalized === "searcher") {
+    return {
+      isTriAgent: false,
+      agentId: DEFAULT_RESEARCHER_AGENT_ID,
+      roleName: "Researcher 深度调研智能体",
+    };
+  }
+  if (normalized === "dev") {
+    return {
+      isTriAgent: false,
+      agentId: DEFAULT_DEV_AGENT_ID,
+      roleName: "Dev 历史兼容智能体",
+    };
+  }
+  return {
+    isTriAgent: false,
+    agentId: ChatHubClient.normalizeAgentId(roleOrId),
+    roleName: "自定义 Agent",
+  };
+}
 
 /**
  * Probes access permission for a single account against a target agent.
@@ -141,7 +205,7 @@ export async function probeAccountAccess(
 }
 
 /**
- * Probes all accounts in token store and optionally applies whitelist.
+ * Probes all accounts in token store for a single target agent.
  */
 export async function probeAllAccounts(options: ProbeOptions = {}): Promise<ProbeAccountResult[]> {
   const root = options.workspaceRoot || process.cwd();
@@ -159,7 +223,7 @@ export async function probeAllAccounts(options: ProbeOptions = {}): Promise<Prob
     }
   }
   if (!targetAgentId) {
-    targetAgentId = DEFAULT_DEV_AGENT_ID;
+    targetAgentId = DEFAULT_MAIN_AGENT_ID;
   }
 
   const results: ProbeAccountResult[] = [];
@@ -190,7 +254,78 @@ export async function probeAllAccounts(options: ProbeOptions = {}): Promise<Prob
 }
 
 /**
- * Formats a clean ANSI/Markdown report.
+ * Probes all accounts across Tri-Agent architecture (Main, Coder, Researcher).
+ */
+export async function probeAllAccountsTriAgent(
+  options: ProbeOptions = {}
+): Promise<TriAgentMatrixResult[]> {
+  const root = options.workspaceRoot || process.cwd();
+  const tokenManager = options.tokenManager || new TokenManager();
+  const accounts = tokenManager.loadAccounts();
+
+  const mainId = options.agentId || DEFAULT_MAIN_AGENT_ID;
+  const coderId = DEFAULT_CODER_AGENT_ID;
+  const researcherId = DEFAULT_RESEARCHER_AGENT_ID;
+
+  const matrix: TriAgentMatrixResult[] = [];
+
+  for (const account of accounts) {
+    const mainRes = await probeAccountAccess(account, mainId, options);
+    const coderRes = await probeAccountAccess(account, coderId, options);
+    const researcherRes = await probeAccountAccess(account, researcherId, options);
+
+    const isFullEligible = mainRes.isEligible && coderRes.isEligible && researcherRes.isEligible;
+    matrix.push({
+      email: account.email,
+      main: mainRes,
+      coder: coderRes,
+      researcher: researcherRes,
+      isFullEligible,
+    });
+  }
+
+  if (options.apply) {
+    const eligibleEmails = matrix.filter((m) => m.isFullEligible).map((m) => m.email);
+    const cphDir = path.join(root, ".cph");
+    const configPath = path.join(cphDir, "config.json");
+
+    fs.mkdirSync(cphDir, { recursive: true });
+    let config: Record<string, any> = {};
+    if (fs.existsSync(configPath)) {
+      try {
+        config = JSON.parse(fs.readFileSync(configPath, "utf-8")) || {};
+      } catch {}
+    }
+
+    config.allowedAccounts = eligibleEmails;
+    config.customAgentId = mainId;
+    config.coderAgentId = coderId;
+    config.researcherAgentId = researcherId;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+  }
+
+  return matrix;
+}
+
+function formatStatusTag(status: ProbeStatus): string {
+  switch (status) {
+    case "PASS":
+      return chalk.green("🟢 可用  ");
+    case "THROTTLED":
+      return chalk.yellow("⏱️  限频  ");
+    case "FORBIDDEN":
+      return chalk.red("🔴 拦截  ");
+    case "NOT_AVAILABLE":
+      return chalk.magenta("⚠️  未共享");
+    case "AUTH_FAIL":
+      return chalk.red("❌ 失效  ");
+    default:
+      return chalk.gray("❓ 异常  ");
+  }
+}
+
+/**
+ * Formats a clean ANSI/Markdown single-agent report.
  */
 export function formatProbeReport(results: ProbeAccountResult[], agentId: string): string {
   const eligible = results.filter((r) => r.isEligible);
@@ -212,32 +347,26 @@ export function formatProbeReport(results: ProbeAccountResult[], agentId: string
   results.forEach((r, idx) => {
     const num = String(idx + 1).padStart(3, " ");
     const email = r.email.padEnd(27, " ");
-    let statusBadge = "";
+    const statusBadge = formatStatusTag(r.status);
     let detail = "";
 
     switch (r.status) {
       case "PASS":
-        statusBadge = chalk.green("🟢 可用   ");
         detail = chalk.green("完整交互权限 (建议勾选)");
         break;
       case "THROTTLED":
-        statusBadge = chalk.yellow("⏱️  限频   ");
         detail = chalk.yellow(r.errorMessage || "429 频控 (具备权限，建议勾选)");
         break;
       case "FORBIDDEN":
-        statusBadge = chalk.red("🔴 拦截   ");
         detail = chalk.red(r.errorMessage || "GptAccessForbidden (未授权)");
         break;
       case "NOT_AVAILABLE":
-        statusBadge = chalk.magenta("⚠️  未发布 ");
         detail = chalk.magenta(r.errorMessage || "GptNotAvailable (未共享)");
         break;
       case "AUTH_FAIL":
-        statusBadge = chalk.red("❌ 认证失效");
         detail = chalk.red(r.errorMessage || "Token 失效");
         break;
       default:
-        statusBadge = chalk.gray("❓ 异常   ");
         detail = chalk.gray(r.errorMessage || "未知错误");
     }
 
@@ -260,50 +389,147 @@ export function formatProbeReport(results: ProbeAccountResult[], agentId: string
 }
 
 /**
+ * Formats a clean ANSI/Markdown Tri-Agent Matrix report.
+ */
+export function formatProbeMatrixReport(results: TriAgentMatrixResult[]): string {
+  const fullEligible = results.filter((r) => r.isFullEligible);
+  const partialEligible = results.filter((r) => !r.isFullEligible && (r.main.isEligible || r.coder.isEligible || r.researcher.isEligible));
+  const noneEligible = results.filter((r) => !r.main.isEligible && !r.coder.isEligible && !r.researcher.isEligible);
+
+  const lines = [
+    chalk.bold.cyan("\n╔══════════════════════════════════════════════════════════════════════════════════════════╗"),
+    chalk.bold.cyan("║           CPH-PI Tri-Agent 三位一体专属智能体 多账号权限探测矩阵诊断报告                 ║"),
+    chalk.bold.cyan("╚══════════════════════════════════════════════════════════════════════════════════════════╝"),
+    `  探测矩阵:       [Main 主协调] + [Coder 代码实现] + [Researcher 深度调研]`,
+    `  探测账号总数:   ${chalk.bold.white(String(results.length))} 个`,
+    `  全就绪账号:     ${chalk.bold.green(String(fullEligible.length))} 个 (三角色全通，推荐勾选主力池)`,
+    `  局部受限账号:   ${chalk.bold.yellow(String(partialEligible.length))} 个 (部分角色受阻，需在 M365 补充授权)`,
+    `  完全未授权:     ${chalk.bold.red(String(noneEligible.length))} 个 (未共享/需跳过)`,
+    chalk.gray("──────────────────────────────────────────────────────────────────────────────────────────"),
+    chalk.bold("序号 │ 账号邮箱                    │ Main 主控  │ Coder 实现 │ Researcher │ 综合评级 │ 建议与诊断"),
+    chalk.gray("─────┼─────────────────────────────┼────────────┼────────────┼────────────┼──────────┼─────────────────────"),
+  ];
+
+  results.forEach((r, idx) => {
+    const num = String(idx + 1).padStart(3, " ");
+    const email = r.email.padEnd(27, " ");
+    const mainTag = formatStatusTag(r.main.status);
+    const coderTag = formatStatusTag(r.coder.status);
+    const resTag = formatStatusTag(r.researcher.status);
+
+    let rating = "";
+    let advice = "";
+
+    if (r.isFullEligible) {
+      rating = chalk.green("🌟 全就绪 ");
+      advice = chalk.green("纳入主力全功能账号池");
+    } else if (r.main.isEligible) {
+      const missing = [];
+      if (!r.coder.isEligible) missing.push("Coder");
+      if (!r.researcher.isEligible) missing.push("Researcher");
+      rating = chalk.yellow("⚠️  局部受限");
+      advice = chalk.yellow(`主控可用，需补齐 ${missing.join("+")} 共享授权`);
+    } else {
+      rating = chalk.red("🔴 未授权 ");
+      advice = chalk.red("未被授予主控权限，无法调度");
+    }
+
+    lines.push(` ${num} │ ${email} │ ${mainTag} │ ${coderTag} │ ${resTag} │ ${rating} │ ${advice}`);
+  });
+
+  lines.push(chalk.gray("──────────────────────────────────────────────────────────────────────────────────────────"));
+  if (fullEligible.length > 0) {
+    lines.push(
+      chalk.bold.green(`✔ 推荐白名单配置 (全就绪账号):`) +
+        ` [ ${fullEligible.map((e) => `"${e.email}"`).join(", ")} ]`
+    );
+  } else if (partialEligible.length > 0) {
+    lines.push(
+      chalk.bold.yellow(`⚠️ 暂无全就绪账号！以下账号可运行主控，但子代理将被拦截:`) +
+        ` [ ${partialEligible.map((e) => `"${e.email}"`).join(", ")} ]\n` +
+        chalk.cyan(`👉 请先前往 M365 Copilot 智能体管理界面为上述账号共享 Coder 与 Researcher 权限。`)
+    );
+  } else {
+    lines.push(chalk.bold.red("✖ 警告: 未探测到任何具备 Agent 访问权限的账号！"));
+  }
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/**
  * CLI runner for probe tool
  */
 async function runProbeCli() {
   const args = process.argv.slice(2);
-  let agentId: string | undefined = undefined;
+  let rawRoleOrAgent: string | undefined = undefined;
   let apply = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--agent" || a === "-a") {
-      agentId = ChatHubClient.normalizeAgentId(args[++i]);
+    if (a === "--agent" || a === "-a" || a === "--role" || a === "-r") {
+      rawRoleOrAgent = args[++i];
     } else if (a.startsWith("--agent=")) {
-      agentId = ChatHubClient.normalizeAgentId(a.slice("--agent=".length));
+      rawRoleOrAgent = a.slice("--agent=".length);
+    } else if (a.startsWith("--role=")) {
+      rawRoleOrAgent = a.slice("--role=".length);
     } else if (a === "--apply") {
       apply = true;
     }
   }
 
-  process.stdout.write(chalk.cyan("\n[+] 正在启动多账号权限自动化探测，请稍候...\n"));
+  const target = resolveAgentTarget(rawRoleOrAgent);
 
-  const results = await probeAllAccounts({
-    agentId,
-    apply,
-    workspaceRoot: process.cwd(),
-  });
-
-  const targetAgent = agentId || DEFAULT_DEV_AGENT_ID;
-  const report = formatProbeReport(results, targetAgent);
-  process.stdout.write(report + "\n");
-
-  if (apply) {
-    const eligible = results.filter((r) => r.isEligible);
+  if (target.isTriAgent) {
     process.stdout.write(
-      chalk.bold.green(
-        `✔ 已自动应用白名单到 .cph/config.json！\n  本次已勾选启用 ${eligible.length} 个账号，未勾选账号将在会话与容灾中自动跳过。\n\n`
-      )
+      chalk.cyan("\n[+] 正在启动 Tri-Agent 三位一体多账号权限矩阵自动化探测 (Main / Coder / Researcher)...\n")
     );
+
+    const matrix = await probeAllAccountsTriAgent({
+      apply,
+      workspaceRoot: process.cwd(),
+    });
+
+    const report = formatProbeMatrixReport(matrix);
+    process.stdout.write(report + "\n");
+
+    if (apply) {
+      const full = matrix.filter((r) => r.isFullEligible);
+      process.stdout.write(
+        chalk.bold.green(
+          `✔ 已自动应用全功能白名单到 .cph/config.json！\n  本次已勾选启用 ${full.length} 个账号，并绑定默认 Tri-Agent 配置。\n\n`
+        )
+      );
+    } else {
+      process.stdout.write(
+        chalk.dim(
+          `💡 提示: 运行 bun run check:accounts:apply (或加 --apply) 可一键将所有全就绪账号写入白名单。\n` +
+            `   若需单独探测特定角色，可运行 bun run check:accounts --role coder\n\n`
+        )
+      );
+    }
   } else {
     process.stdout.write(
-      chalk.dim(
-        `💡 提示: 运行 bun run scripts/probe-agent-access.ts --apply 可一键将所有可用账号写入白名单。\n` +
-          `   或者在 CPH-PI 交互终端中输入 /accounts set <账号1,账号2> 自定义指定。\n\n`
-      )
+      chalk.cyan(`\n[+] 正在启动专属智能体权限探测: ${target.roleName || target.agentId}...\n`)
     );
+
+    const results = await probeAllAccounts({
+      agentId: target.agentId,
+      apply,
+      workspaceRoot: process.cwd(),
+    });
+
+    const report = formatProbeReport(results, target.agentId || DEFAULT_MAIN_AGENT_ID);
+    process.stdout.write(report + "\n");
+
+    if (apply) {
+      const eligible = results.filter((r) => r.isEligible);
+      process.stdout.write(
+        chalk.bold.green(
+          `✔ 已自动应用白名单到 .cph/config.json！\n  本次已勾选启用 ${eligible.length} 个账号。\n\n`
+        )
+      );
+    }
   }
 }
 
@@ -313,4 +539,3 @@ if (import.meta.main) {
     process.exit(1);
   });
 }
-
