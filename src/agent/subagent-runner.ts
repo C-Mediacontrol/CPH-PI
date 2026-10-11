@@ -77,13 +77,52 @@ export class SubagentRunner {
       onSubagentProgress?: (id: string, turn: number, delta?: string) => void;
     }
   ): Promise<SubagentTaskReport[]> {
-    const promises = tasks.map((taskSpec, index) => {
-      const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-      const role = taskSpec.role === "coder" ? "coder" : "researcher";
-      return this.runSingleSubagent(subId, role, taskSpec, signal, events);
+    const poolStatus = this.pool?.getPoolStatus?.() || [];
+    const maxConcurrency = poolStatus.length <= 1 ? 1 : Math.min(poolStatus.length, tasks.length);
+
+    this.loggerTree?.logTimelineEvent({
+      type: "SUBAGENT_QUEUE_SCHEDULED",
+      totalTasks: tasks.length,
+      maxConcurrency,
+      poolSize: poolStatus.length,
+      timestamp: Date.now(),
     });
 
-    const settled = await Promise.allSettled(promises);
+    const settled: PromiseSettledResult<SubagentTaskReport>[] = new Array(tasks.length);
+
+    if (maxConcurrency <= 1) {
+      // Strict serial queue execution for single account protection
+      for (let index = 0; index < tasks.length; index++) {
+        if (signal?.aborted) {
+          settled[index] = {
+            status: "rejected",
+            reason: new Error("Subagent execution aborted"),
+          };
+          continue;
+        }
+        const taskSpec = tasks[index];
+        const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
+        const role = taskSpec.role === "coder" ? "coder" : "researcher";
+        try {
+          const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+          settled[index] = { status: "fulfilled", value: report };
+        } catch (err) {
+          settled[index] = { status: "rejected", reason: err };
+        }
+      }
+    } else {
+      // Chunked or concurrent execution across multiple accounts
+      const executing = tasks.map(async (taskSpec, index) => {
+        const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
+        const role = taskSpec.role === "coder" ? "coder" : "researcher";
+        return this.runSingleSubagent(subId, role, taskSpec, signal, events);
+      });
+      const results = await Promise.allSettled(executing);
+      for (let i = 0; i < results.length; i++) {
+        settled[i] = results[i];
+      }
+    }
+
     const activeMainSessionId = this.lineageTracker
       ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
       : this.mainSessionId;
