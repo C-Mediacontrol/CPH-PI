@@ -138,3 +138,4 @@ export function resolveActiveHead(startSessionId: string, getLineage: (id: strin
    - Coder 智能体：挂载 `handoff`
    - Researcher 智能体：挂载 `handoff`
 4. 运行 `bun run package` 生成 `dist/copilot-agent-bundle.zip`。
+

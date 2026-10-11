@@ -640,3 +640,4 @@ git commit -m "feat(package): update tri-agent skill mounting matrix and distrib
 - [x] **No Placeholders**：所有步骤均包含完整的测试代码、实现逻辑与验证命令，绝无占位符。
 - [x] **Type Consistency**：`SessionLineage`、`SessionLineageTracker`、`SubagentTaskReport` 类型贯穿各任务且严格统一。
 - [x] **Agent-Friendly Slicing**：任务按照会话血缘 ➔ 提示词契约 ➔ 执行核接力 ➔ 动态回流 ➔ 429 分级 ➔ 打包发布清晰切片，每步均独立可测。
+

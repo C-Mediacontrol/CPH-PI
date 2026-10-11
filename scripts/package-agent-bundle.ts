@@ -140,9 +140,10 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
 
 ## 4. 上传知识库 / 专属技能 (Knowledge & Skills)
 
-在各 Agent 的「知识 (Knowledge)」或「功能 / 技能」板块：
-- **Main Agent**: 可上传 \`skills/subagent/SKILL.md\` 与 \`skills/handoff/SKILL.md\`；
-- **Coder & Researcher**: 子代理默认以纯净上下文运行，无需上传额外冗余技能，最大化保留代码与分析上下文。
+在各 Agent 的「知识 (Knowledge)」或「功能 / 技能」板块分别挂载对应技能：
+- **Main Agent**: 挂载 \`skills/subagent/SKILL.md\` 与 \`skills/handoff/SKILL.md\`（负责任务规划拆解与全局宏观交接）；
+- **Coder Agent**: 仅挂载 \`skills/handoff/SKILL.md\`（负责单任务达到 30 轮上限时的微观代码交接，严禁挂载 \`subagent\` 以防递归）；
+- **Researcher Agent**: 仅挂载 \`skills/handoff/SKILL.md\`（负责单任务达到 30 轮上限时的探索情报交接，严禁挂载 \`subagent\` 以防递归）。
 
 ---
 
