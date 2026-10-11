@@ -26,6 +26,7 @@ import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import {
   createMainPlanSnapshot,
   saveMainPlanSnapshot,
+  formatSuccessorTurn1Prompt,
 } from "../session/main-plan-snapshot.ts";
 
 export interface IAccountPool {
@@ -81,6 +82,7 @@ export interface OrchestratorOptions {
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
   lineageTracker?: SessionLineageTracker;
+  maxGenerations?: number;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -105,6 +107,7 @@ export interface OrchestratorEvents {
   onArbitratorHandoffComplete?: (handoffDocPath: string, arbitratorSessionId: string) => void | Promise<void>;
   onAttachmentUploaded?: (attachment: UploadDocumentResult, toolName: string) => void;
   onMainSessionVirtualized?: (snapshot: any, mdPath: string) => void;
+  onSuccessorAwakened?: (newSessionId: string, generation: number) => void;
 }
 
 export interface OrchestratorRunOptions {
@@ -157,6 +160,8 @@ export class Orchestrator {
   private cloudAttachmentThresholdChars: number = 0;
   private cloudAttachmentThresholdLines: number = 0;
   private lineageTracker: SessionLineageTracker;
+  public generation: number = 1;
+  private maxGenerations: number;
 
   // Handshake State Machine
   public isHandshakePending: boolean = true;
@@ -169,6 +174,7 @@ export class Orchestrator {
   constructor(options: OrchestratorOptions = {}) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
+    this.maxGenerations = options.maxGenerations ?? 10;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
     this.modelTone = options.modelTone ?? "Gpt_61_Sol_Reasoning";
     this.pool = options.pool;
@@ -276,6 +282,7 @@ export class Orchestrator {
     this.pendingSkills = "";
     this.conversationId = crypto.randomUUID();
     this.sessionId = crypto.randomUUID();
+    this.generation = 1;
     this.lastHandoffDocPath = undefined;
   }
 
@@ -302,9 +309,9 @@ export class Orchestrator {
       throw abortError;
     }
 
-    const sessionId = options.sessionId || this.sessionId;
+    let sessionId = options.sessionId || this.sessionId;
     this.sessionId = sessionId;
-    const conversationId = this.conversationId;
+    let conversationId = this.conversationId;
 
     // Register active main session in lineage tracker
     this.lineageTracker.register({
@@ -405,6 +412,8 @@ export class Orchestrator {
       }
 
       events?.onTurnStart?.(turn);
+      const turnIndex = turn;
+      const turnInputPrompt = currentPrompt;
       const requestId = crypto.randomUUID();
 
       let turnResponseText = "";
@@ -615,7 +624,7 @@ export class Orchestrator {
           const thought = parsed.thought || (parsed as any).action?.thought || "";
           const subagents = (parsed.action as any).subagents || [];
           const snapshot = createMainPlanSnapshot({
-            originalSessionId: options.sessionId || this.sessionId,
+            originalSessionId: this.sessionId,
             originalTask: this.pendingTask || task,
             thought,
             workspaceRoot: this.workspaceRoot,
@@ -656,6 +665,48 @@ export class Orchestrator {
             output: summaryOutput,
             formatted: summaryOutput,
           };
+
+          // Generational transition to Successor Main Session
+          const prevSessionId = this.sessionId;
+          this.generation++;
+          const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
+          this.sessionId = nextSessionId;
+          sessionId = nextSessionId;
+          this.conversationId = crypto.randomUUID();
+          conversationId = this.conversationId;
+          this.lineageTracker?.register({
+            sessionId: nextSessionId,
+            role: "main",
+            status: "active",
+            predecessorId: prevSessionId,
+          });
+          this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
+
+          events?.onSuccessorAwakened?.(nextSessionId, this.generation);
+
+          if (!this.chatClient && this.pool) {
+            try {
+              const token = await this.pool.getNextAvailableToken(
+                this.customAgentId ? { forAgentId: this.customAgentId } : undefined
+              );
+              client = this.chatClientFactory
+                ? this.chatClientFactory(token, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId,
+                  })
+                : new ChatHubClient(token, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId,
+                  });
+            } catch {}
+          }
+
+          currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+          this.isHandshakePending = false;
+          refusalRetries = 0;
+          if (this.generation <= this.maxGenerations) {
+            turn = 0; // Reset turn counter for fresh 30 turns budget!
+          }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
         }
@@ -696,8 +747,8 @@ export class Orchestrator {
         }
 
         const currentTurnRecord: TurnRecord = {
-          turn,
-          userInput: currentPrompt,
+          turn: turnIndex,
+          userInput: turnInputPrompt,
           thought: parsed.thought || turnReasoningText,
           response: turnResponseText,
           action: parsed.action,
@@ -721,7 +772,9 @@ export class Orchestrator {
         }
 
         // Prepare next turn prompt
-        if (this.isHandshakePending) {
+        if (parsed.action.tool === "invoke_subagent") {
+          // Generational relay: currentPrompt was already set to formatSuccessorTurn1Prompt(...)
+        } else if (this.isHandshakePending) {
           this.isHandshakePending = false;
           if (uploadedAttachment) {
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(
@@ -756,7 +809,15 @@ export class Orchestrator {
           }
         }
 
-        events?.onTurnEnd?.(turn, turnResponseText);
+        events?.onTurnEnd?.(turnIndex, turnResponseText);
+        if (parsed.action.tool === "invoke_subagent" && this.generation > this.maxGenerations) {
+          return {
+            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
+            turnsCount: turnIndex,
+            completed: false,
+            history,
+          };
+        }
         turn++;
         continue;
       }
