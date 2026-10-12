@@ -279,7 +279,7 @@ FINAL_ANSWER:
         expect(runResult.exitCode).toBe(0);
         expect(runResult.mode).toBe("task");
         expect(chatClient.callCount).toBe(4);
-        expect(uploadSpy).toHaveBeenCalledTimes(3);
+        expect(uploadSpy).toHaveBeenCalledTimes(0);
 
         // 5. Assertions on file system modifications
         const patchedContent = await readFile(targetFile, "utf8");

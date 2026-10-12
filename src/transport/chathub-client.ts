@@ -458,25 +458,33 @@ export class ChatHubClient {
       };
 
       ws.onclose = (ev) => {
+        if (ev.code === 1008 || ev.code === 1006) {
+          events?.onRateLimitDetected?.(this.token.email);
+        }
+
         if (!hasSentChat) {
-          // Code 1006 / 1008 usually indicates auth failure or rate limit
-          if (ev.code === 1008 || ev.code === 1006) {
-            events?.onRateLimitDetected?.(this.token.email);
-          }
           settleReject(
             new Error(`WebSocket closed prematurely (${ev.code}): ${ev.reason || "unknown reason"}`)
           );
         } else if (!isSettled) {
           // If closed after chat was sent but before type 2/3 frame
-          settleResolve({
-            text: fullText,
-            reasoning: reasoningText,
-            conversationId: payload.conversationId,
-            sessionId: payload.sessionId,
-            requestId: payload.requestId,
-            rawMessages,
-            rawFrames,
-          });
+          if (ev.code !== 1000 && !fullText) {
+            settleReject(
+              new Error(
+                `WebSocket connection closed abnormally (${ev.code}): ${ev.reason || "network interrupt"}`
+              )
+            );
+          } else {
+            settleResolve({
+              text: fullText,
+              reasoning: reasoningText,
+              conversationId: payload.conversationId,
+              sessionId: payload.sessionId,
+              requestId: payload.requestId,
+              rawMessages,
+              rawFrames,
+            });
+          }
         }
       };
     });

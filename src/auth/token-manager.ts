@@ -40,6 +40,7 @@ export class TokenManager {
   private configPath: string;
   private activeTokens: Map<string, ActiveSessionToken> = new Map();
   private graphTokens: Map<string, { token: string; expiresAt: number }> = new Map();
+  private inFlightRefreshes = new Map<string, Promise<ActiveSessionToken>>();
   private tokenEndpoint: string;
   private fetchFn: typeof fetch;
 
@@ -156,8 +157,10 @@ export class TokenManager {
   public clearCache(email?: string): void {
     if (email) {
       this.activeTokens.delete(email.toLowerCase());
+      this.inFlightRefreshes.delete(email.toLowerCase());
     } else {
       this.activeTokens.clear();
+      this.inFlightRefreshes.clear();
     }
   }
 
@@ -203,71 +206,86 @@ export class TokenManager {
       return existing;
     }
 
-    const accounts = this.loadAccounts();
-    const target = accounts.find((a) => a.email.toLowerCase() === key);
-    if (!target) {
-      throw new Error(`Account not found in accounts.json: ${email}`);
+    // Single-flight deduplication: reuse active in-flight refresh promise for this account
+    const inFlight = this.inFlightRefreshes.get(key);
+    if (inFlight) {
+      return inFlight;
     }
 
-    const validation = TokenManager.validateAccount(target);
-    if (!validation.valid) {
-      throw new Error(`Invalid credentials for ${email}: ${validation.reason}`);
-    }
+    const refreshPromise = (async () => {
+      try {
+        const accounts = this.loadAccounts();
+        const target = accounts.find((a) => a.email.toLowerCase() === key);
+        if (!target) {
+          throw new Error(`Account not found in accounts.json: ${email}`);
+        }
 
-    const plainRt = decryptToken(target.refreshToken);
-    if (!plainRt) {
-      throw new Error(`Empty refresh token for account: ${email}`);
-    }
+        const validation = TokenManager.validateAccount(target);
+        if (!validation.valid) {
+          throw new Error(`Invalid credentials for ${email}: ${validation.reason}`);
+        }
 
-    const params = new URLSearchParams({
-      client_id: DEFAULT_CLIENT_ID,
-      grant_type: "refresh_token",
-      refresh_token: plainRt,
-      scope: DEFAULT_SCOPE,
-    });
+        const plainRt = decryptToken(target.refreshToken);
+        if (!plainRt) {
+          throw new Error(`Empty refresh token for account: ${email}`);
+        }
 
-    const res = await this.fetchFn(this.tokenEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params.toString(),
-    });
+        const params = new URLSearchParams({
+          client_id: DEFAULT_CLIENT_ID,
+          grant_type: "refresh_token",
+          refresh_token: plainRt,
+          scope: DEFAULT_SCOPE,
+        });
 
-    if (!res.ok) {
-      const errBody = await res.text();
-      throw new Error(
-        `Azure AD token refresh failed (${res.status}): ${errBody.slice(0, 300)}`
-      );
-    }
+        const res = await this.fetchFn(this.tokenEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+        });
 
-    const data = (await res.json()) as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-    };
+        if (!res.ok) {
+          const errBody = await res.text();
+          throw new Error(
+            `Azure AD token refresh failed (${res.status}): ${errBody.slice(0, 300)}`
+          );
+        }
 
-    const payload = this.parseJwt(data.access_token);
+        const data = (await res.json()) as {
+          access_token: string;
+          refresh_token?: string;
+          expires_in: number;
+        };
 
-    const activeSession: ActiveSessionToken = {
-      email: target.email,
-      accessToken: data.access_token,
-      refreshToken: plainRt,
-      expiresAt: payload.exp
-        ? payload.exp * 1000
-        : now + (data.expires_in || 3600) * 1000,
-      oid: payload.oid || "",
-      tid: payload.tid || "",
-    };
+        const payload = this.parseJwt(data.access_token);
 
-    this.activeTokens.set(key, activeSession);
+        const activeSession: ActiveSessionToken = {
+          email: target.email,
+          accessToken: data.access_token,
+          refreshToken: plainRt,
+          expiresAt: payload.exp
+            ? payload.exp * 1000
+            : Date.now() + (data.expires_in || 3600) * 1000,
+          oid: payload.oid || "",
+          tid: payload.tid || "",
+        };
 
-    // If Azure AD returned a new refresh token, persist it
-    if (data.refresh_token && data.refresh_token !== plainRt) {
-      target.refreshToken = encryptToken(data.refresh_token);
-      target.lastRefresh = new Date().toISOString();
-      this.saveAccounts(accounts);
-    }
+        this.activeTokens.set(key, activeSession);
 
-    return activeSession;
+        // If Azure AD returned a new refresh token, persist it
+        if (data.refresh_token && data.refresh_token !== plainRt) {
+          target.refreshToken = encryptToken(data.refresh_token);
+          target.lastRefresh = new Date().toISOString();
+          this.saveAccounts(accounts);
+        }
+
+        return activeSession;
+      } finally {
+        this.inFlightRefreshes.delete(key);
+      }
+    })();
+
+    this.inFlightRefreshes.set(key, refreshPromise);
+    return refreshPromise;
   }
 
   /**

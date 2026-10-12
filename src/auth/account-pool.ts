@@ -318,9 +318,11 @@ export class AccountPool {
       }
     }
 
+    const startIndex = this.currentIndex;
+
     // Scan pool in round-robin order
     for (let i = 0; i < total; i++) {
-      const idx = (this.currentIndex + i) % total;
+      const idx = (startIndex + i) % total;
       const acc = accounts[idx];
       const key = acc.email.toLowerCase();
       const status = this.statuses.get(key)!;
@@ -337,14 +339,16 @@ export class AccountPool {
       }
 
       if (!status.isThrottled) {
+        // Advance round-robin pointer synchronously before async token acquisition to avoid collision in concurrent calls
+        this.currentIndex = (idx + 1) % total;
         try {
           const session = await this.manager.getAccessToken(acc.email);
-          this.currentIndex = (idx + 1) % total;
           status.lastUsedAt = now;
           status.totalRequests++;
           return session;
         } catch (err) {
           // If token acquisition fails, mark throttled and continue to next account
+          // Pointer remains advanced without rollback
           status.isThrottled = true;
           status.cooldownUntil = now + 60 * 1000;
           status.throttledCount = (status.throttledCount || 0) + 1;
