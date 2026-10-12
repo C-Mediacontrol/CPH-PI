@@ -94,46 +94,91 @@ export class SubagentRunner {
 
     const settled: PromiseSettledResult<SubagentTaskReport>[] = new Array(tasks.length);
 
-    if (maxConcurrency <= 1) {
-      // Strict serial queue execution for single account protection
-      for (let index = 0; index < tasks.length; index++) {
-        if (signal?.aborted) {
-          settled[index] = {
+    // Group tasks by stage in ascending order (defaults to stage 1)
+    const taskStageMap = tasks.map((t, idx) => ({
+      index: idx,
+      task: t,
+      stage: Math.max(1, Math.floor(t.stage ?? 1)),
+    }));
+    const uniqueStages = Array.from(new Set(taskStageMap.map((t) => t.stage))).sort((a, b) => a - b);
+
+    let circuitBreakerTriggered = false;
+
+    for (const stage of uniqueStages) {
+      const stageTasks = taskStageMap.filter((t) => t.stage === stage);
+
+      if (circuitBreakerTriggered) {
+        for (const item of stageTasks) {
+          settled[item.index] = {
             status: "rejected",
-            reason: new Error("Subagent execution aborted"),
+            reason: new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 因前序阶段任务失败被自动熔断阻断`),
           };
-          continue;
         }
-        const taskSpec = tasks[index];
-        const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-        const role = taskSpec.role === "coder" ? "coder" : "researcher";
-        try {
-          const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
-          settled[index] = { status: "fulfilled", value: report };
-        } catch (err) {
-          settled[index] = { status: "rejected", reason: err };
-        }
+        continue;
       }
-    } else {
-      // Sliding window concurrency limited strictly to maxConcurrency
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < tasks.length) {
-          if (signal?.aborted) return;
-          const index = cursor++;
-          const taskSpec = tasks[index];
-          const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
+
+      if (maxConcurrency <= 1) {
+        // Strict serial execution within stage
+        for (const item of stageTasks) {
+          if (signal?.aborted) {
+            settled[item.index] = {
+              status: "rejected",
+              reason: new Error("Subagent execution aborted"),
+            };
+            continue;
+          }
+          const taskSpec = item.task;
+          const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
           const role = taskSpec.role === "coder" ? "coder" : "researcher";
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
-            settled[index] = { status: "fulfilled", value: report };
+            settled[item.index] = { status: "fulfilled", value: report };
+            if (!report.success) {
+              circuitBreakerTriggered = true;
+            }
           } catch (err) {
-            settled[index] = { status: "rejected", reason: err };
+            settled[item.index] = { status: "rejected", reason: err };
+            circuitBreakerTriggered = true;
           }
         }
-      };
-      const workers = Array.from({ length: maxConcurrency }, () => worker());
-      await Promise.all(workers);
+      } else {
+        // Sliding window concurrency within stage
+        let stageCursor = 0;
+        const stageWorker = async () => {
+          while (stageCursor < stageTasks.length) {
+            if (signal?.aborted || circuitBreakerTriggered) return;
+            const itemIndex = stageCursor++;
+            const item = stageTasks[itemIndex];
+            const taskSpec = item.task;
+            const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
+            const role = taskSpec.role === "coder" ? "coder" : "researcher";
+            try {
+              const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+              settled[item.index] = { status: "fulfilled", value: report };
+              if (!report.success) {
+                circuitBreakerTriggered = true;
+              }
+            } catch (err) {
+              settled[item.index] = { status: "rejected", reason: err };
+              circuitBreakerTriggered = true;
+            }
+          }
+        };
+        const workers = Array.from(
+          { length: Math.min(maxConcurrency, stageTasks.length) },
+          () => stageWorker()
+        );
+        await Promise.all(workers);
+      }
+
+      // Check if any task in this stage failed to lock down next stages
+      for (const item of stageTasks) {
+        const res = settled[item.index];
+        if (res?.status === "rejected" || (res?.status === "fulfilled" && !res.value.success)) {
+          circuitBreakerTriggered = true;
+          break;
+        }
+      }
     }
 
     const activeMainSessionId = this.lineageTracker
@@ -170,6 +215,7 @@ export class SubagentRunner {
         /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(
           reason?.message || String(reason)
         );
+      const isStageBreaker = String(reason?.message || reason).includes("STAGE_CIRCUIT_BREAKER");
 
       let errorMsg = String(reason?.message || reason);
       let finalAnswer = `子代理执行异常中断: ${errorMsg}`;
@@ -185,6 +231,10 @@ export class SubagentRunner {
           targetSessionId: activeMainSessionId,
           timestamp: Date.now(),
         });
+      } else if (isStageBreaker) {
+        errorMsg = "STAGE_CIRCUIT_BREAKER";
+        finalAnswer =
+          "⚠️ 该任务因前序阶段执行失败触发阶段屏障熔断，已自动跳过执行以保护工作区。";
       }
 
       return {
@@ -199,6 +249,7 @@ export class SubagentRunner {
         targetSessionId: activeMainSessionId,
       };
     });
+
   }
 
   private async runSingleSubagent(

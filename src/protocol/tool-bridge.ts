@@ -40,6 +40,7 @@ export interface SubagentTaskSpec {
   description: string;
   prompt: string;
   maxTurns?: number;
+  stage?: number;
 }
 
 /**
