@@ -94,10 +94,26 @@ export function loadMainPlanSnapshot(
 
 export function formatSuccessorTurn1Prompt(
   snapshot: MainPlanSnapshot,
-  reportsSummary: string
+  reportsSummary: string,
+  customLedgerMountHeader?: string
 ): string {
+  let mountHeader = customLedgerMountHeader;
+  if (!mountHeader && snapshot.workspaceRoot) {
+    try {
+      const { ExecutionLedger } = require("./ledger/execution-ledger.ts");
+      const ledger = new ExecutionLedger(snapshot.workspaceRoot);
+      mountHeader = ledger.formatMountHeader();
+    } catch {
+      // 容错忽略
+    }
+  }
+
+  const mountSection = mountHeader
+    ? `\n### 2. 物理执行账本挂载 (Pass-by-Reference)\n${mountHeader}\n`
+    : "";
+
   return `【主控接力与成果审阅】
-前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。以下为前序规划蓝图与各子代理的交付成果：
+前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:
@@ -105,12 +121,14 @@ ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
 ${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-
-### 2. 子任务攻坚结题成果
+${mountSection}
+### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
 ---
 请你作为后继主控智能体，以当前全新满额的推理配额，综合审阅上述交付物，执行交叉验证与必要测试。
+若需回溯具体的执行细节，可按需调阅已挂载的物理账本；
 若全部达成目标且验证充分，请直接输出 FINAL_ANSWER 完成结题；
 若评估后需要第二阶段专项攻坚，可继续派发 invoke_subagent。`;
 }
+

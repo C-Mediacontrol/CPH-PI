@@ -64,4 +64,26 @@ describe("MainPlanSnapshot Engine", () => {
     expect(prompt).toContain("子代理多会话并发执行报告");
     expect(prompt).toContain("FINAL_ANSWER");
   });
+
+  it("should mount physical execution ledger header when provided or in workspace", () => {
+    const snapshot = createMainPlanSnapshot({
+      originalSessionId: "main_ses_789",
+      originalTask: "测试账本挂载",
+      thought: "验证挂载头",
+      workspaceRoot: tmpDir,
+      plannedSubagents: [],
+    });
+
+    const customMount = "【系统物理执行账本已挂载】\n- 账本路径: .cph/state/execution-ledger.md\n- 累计物理操作: 5 步";
+    const prompt = formatSuccessorTurn1Prompt(
+      snapshot,
+      "交付摘要",
+      customMount
+    );
+
+    expect(prompt).toContain("### 2. 物理执行账本挂载 (Pass-by-Reference)");
+    expect(prompt).toContain("【系统物理执行账本已挂载】");
+    expect(prompt).toContain(".cph/state/execution-ledger.md");
+    expect(prompt).toContain("按需调阅已挂载的物理账本");
+  });
 });

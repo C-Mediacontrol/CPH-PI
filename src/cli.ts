@@ -12,6 +12,7 @@ import { SkillRegistry } from "./skills/skill-registry.ts";
 import { SessionManager, type SessionRecord } from "./session/session-manager.ts";
 import { ChatHubClient } from "./transport/chathub-client.ts";
 import { TerminalLogger } from "./ui/terminal-logger.ts";
+import { ExecutionLedger } from "./session/ledger/execution-ledger.ts";
 import {
   DEFAULT_MAIN_AGENT_ID,
   DEFAULT_CODER_AGENT_ID,
@@ -35,6 +36,7 @@ export interface WorkspaceConfig {
 export interface CphPiCliOptions {
   workspaceRoot?: string;
   workspace?: string;
+  ledger?: ExecutionLedger;
   modelTone?: string;
   maxTurns?: number;
   timeoutSec?: number;
@@ -82,6 +84,7 @@ export class CphPiCli {
   private interruptController: InterruptController;
   private orchestrator: CopilotOrchestrator;
   private chatClient?: IOrchestratorChatClient;
+  public readonly ledger: ExecutionLedger;
   private arbitratorChatClient?: IOrchestratorChatClient;
   private chatClientFactory?: (
     token: any,
@@ -106,6 +109,7 @@ export class CphPiCli {
     this.workspaceRoot = path.resolve(
       options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd()
     );
+    this.ledger = options.ledger || new ExecutionLedger(this.workspaceRoot);
 
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId
@@ -148,6 +152,7 @@ export class CphPiCli {
       options.bridge ||
       new ToolBridge({
         cwd: this.workspaceRoot,
+        ledger: this.ledger,
         onQuestion: async (qArgs) => {
           const answer = await this.handleInteractiveQuestion(qArgs);
           return ToolBridge.formatUserResponse(answer);

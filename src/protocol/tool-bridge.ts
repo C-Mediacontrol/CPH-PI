@@ -154,6 +154,7 @@ export interface ToolBridgeOptions {
   cwd?: string;
   tools?: Tool[] | Record<string, Tool>;
   onQuestion?: (action: MappedQuestionArgs) => Promise<string> | string;
+  ledger?: any;
 }
 
 /**
@@ -402,6 +403,7 @@ export class ToolBridge {
   private cwd: string;
   private tools: Map<string, Tool> = new Map();
   private onQuestion?: (action: MappedQuestionArgs) => Promise<string> | string;
+  private ledger?: any;
   public readonly bashOperations?: BashOperations;
 
   constructor(options?: ToolBridgeOptions | string) {
@@ -410,6 +412,7 @@ export class ToolBridge {
     } else {
       this.cwd = options?.cwd ?? process.cwd();
       this.onQuestion = options?.onQuestion;
+      this.ledger = options?.ledger;
     }
 
     const customTools = typeof options === "object" ? options?.tools : undefined;
@@ -450,6 +453,47 @@ export class ToolBridge {
 
   public getAllTools(): Map<string, Tool> {
     return new Map(this.tools);
+  }
+
+  public getLedger(): any {
+    return this.ledger;
+  }
+
+  public setLedger(ledger: any): void {
+    this.ledger = ledger;
+  }
+
+  private recordToLedger(
+    toolName: string,
+    target: string,
+    canonicalTool: string,
+    success: boolean,
+    output: string
+  ): void {
+    if (!this.ledger || typeof this.ledger.recordStep !== "function") return;
+    try {
+      const modifiedFiles =
+        canonicalTool === "edit" || canonicalTool === "write" ? [target] : undefined;
+      let statusBadge: string | undefined = undefined;
+      if (canonicalTool === "bash") {
+        const match = output.match(/(\d+\s*pass[^\n\r]*|\d+\s*fail[^\n\r]*|PASS[^\n\r]*|FAIL[^\n\r]*)/i);
+        if (match) {
+          statusBadge = match[1].slice(0, 30);
+        }
+      }
+      this.ledger.recordStep({
+        role: "main",
+        sessionId: "main",
+        tool: toolName,
+        target,
+        status: success ? "SUCCESS" : "FAILURE",
+        modifiedFiles,
+        statusBadge,
+        briefSummary: output.slice(0, 200),
+      });
+    } catch {
+      // 容错不中断
+    }
   }
 
   /**
@@ -735,6 +779,7 @@ export class ToolBridge {
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
       const success = !isError;
+      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -758,6 +803,7 @@ export class ToolBridge {
       let output = err instanceof Error ? err.message : String(err);
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
+      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
