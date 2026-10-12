@@ -158,8 +158,8 @@ export class Orchestrator {
   private enableInSessionCompaction: boolean = false;
   private graphTokenProvider?: () => Promise<string>;
   private enableCloudAttachment: boolean = true;
-  private cloudAttachmentThresholdChars: number = 0;
-  private cloudAttachmentThresholdLines: number = 0;
+  private cloudAttachmentThresholdChars: number = 120000;
+  private cloudAttachmentThresholdLines: number = 3000;
   private lineageTracker: SessionLineageTracker;
   public generation: number = 1;
   private maxGenerations: number;
@@ -192,8 +192,8 @@ export class Orchestrator {
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
-    this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
-    this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
+    this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 120000;
+    this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 3000;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.isHandshakePending =
       options.isHandshakePending !== undefined
@@ -787,12 +787,12 @@ export class Orchestrator {
               { lineCount, charCount }
             );
           } else {
-            currentPrompt = PromptBuilder.buildTurn2TaskPrompt(
-              this.pendingTask,
-              this.pendingSkills,
-              toolResult.output,
-              parsed.action.tool || toolResult.actionName
-            );
+            currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
+              taskPrompt: this.pendingTask,
+              skillsSection: this.pendingSkills,
+              toolResult: toolResult.output,
+              toolName: parsed.action.tool || toolResult.actionName,
+            });
           }
         } else {
           if (uploadedAttachment) {
@@ -898,6 +898,7 @@ export class Orchestrator {
     sessionId?: string
   ): string {
     const effectiveSessionId = sessionId || this.sessionId;
+    const safeSessionId = path.basename(effectiveSessionId).replace(/[^a-zA-Z0-9_-]/g, "_");
     const cleanTask =
       task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
 
@@ -905,7 +906,7 @@ export class Orchestrator {
     // honor and return the model's authentic document without secondary wrapping!
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        const docPath = path.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${safeSessionId}.md`);
         if (fs.existsSync(docPath)) {
           const existingDoc = fs.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
@@ -1241,7 +1242,7 @@ export class Orchestrator {
       try {
         const handoffsDir = path.join(this.workspaceRoot, ".cph", "handoffs");
         fs.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        const docPath = path.join(handoffsDir, `handoff-${safeSessionId}.md`);
         fs.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {

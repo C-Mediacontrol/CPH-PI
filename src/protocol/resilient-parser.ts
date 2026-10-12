@@ -36,17 +36,13 @@ export class ResilientParser {
     }
 
     // 1. Check for Action blocks
-    // 1a. Code fenced: ```action ... ```, ```json ... ```, or ``` ... ``` containing tool/action
-    const fencedMatch = trimmed.match(/```(?:action|json)?\s*([\s\S]*?)```/i);
+    const actionBlock = this.extractActionBlock(trimmed);
     let actionContent: string | null = null;
     let thought = "";
 
-    if (fencedMatch) {
-      actionContent = fencedMatch[1].trim();
-      const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```/i);
-      thought = thoughtMatch
-        ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim()
-        : "";
+    if (actionBlock) {
+      actionContent = actionBlock.actionContent;
+      thought = actionBlock.thought;
     } else {
       // 1b. Un-fenced action: handles streaming without backticks, e.g. "tool: read_file..."
       const unfencedMatch =
@@ -75,10 +71,14 @@ export class ResilientParser {
       }
     }
 
-    // 2. Check for Final Answer (strictly matching FINAL_ANSWER variants or completion tags)
-    const finalAnswerMatch = trimmed.match(
-      /(?:FINAL_?ANSWER\b:?|_ANSWER\b:?|ALL_TASKS_COMPLETED|【已完成交付】)([\s\S]*)$/i
-    );
+    // 2. Check for Final Answer
+    // Matches:
+    // - FINAL_ANSWER: or FINALANSWER: anywhere as an explicit marker
+    // - ALL_TASKS_COMPLETED or 【已完成交付】 strictly as a standalone line marker
+    const finalAnswerMatch =
+      trimmed.match(/(?:FINAL_?ANSWER\b:?|_ANSWER\b:?)([\s\S]*)$/i) ||
+      trimmed.match(/(?:^|\n)\s*(?:ALL_TASKS_COMPLETED|【已完成交付】)(?::|\s|$)([\s\S]*)$/i);
+
     if (finalAnswerMatch) {
       const summary = finalAnswerMatch[1].trim();
       const markerIndex = finalAnswerMatch.index ?? -1;
@@ -100,24 +100,87 @@ export class ResilientParser {
       };
     }
 
-    // 2b. Direct completion indicators in body
-    if (
-      trimmed.includes("ALL_TASKS_COMPLETED") ||
-      trimmed.includes("【已完成交付】")
-    ) {
-      return {
-        type: "final_answer",
-        thought: "",
-        answer: { summary: trimmed, raw: trimmed },
-      };
-    }
-
     // 3. Fallback: Invalid Chatter
     return {
       type: "invalid_chatter",
       thought: trimmed,
       warning:
         "[Harness 纠偏提示: 请按协议约定操作：若需继续执行，请在 ```action ... ``` 块中调用工具；若已完成所有工作，请直接输出 FINAL_ANSWER: 交付总结。]",
+    };
+  }
+
+  /**
+   * Extracts fenced action block content supporting nested code fences.
+   */
+  private static extractActionBlock(
+    trimmed: string
+  ): { actionContent: string; thought: string } | null {
+    // 1. Check for 4+ backtick outer fence: ````action ... ```` or ````json ... ```` or ```` ... ````
+    const multiTickMatch = trimmed.match(
+      /(?:THOUGHT:|^)([\s\S]*?)(`{4,}|~{4,})(?:action|json)?\s*\n?([\s\S]*?)\n?\2/i
+    );
+    if (multiTickMatch) {
+      const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)(`{4,}|~{4,})/i);
+      const thought = thoughtMatch
+        ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim()
+        : "";
+      return { actionContent: multiTickMatch[3].trim(), thought };
+    }
+
+    // 2. Check for 3-backtick fence: ```action, ```json, or ``` containing tool/action
+    const openMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```(?:action|json)?\s*\n?/i);
+    if (!openMatch) {
+      return null;
+    }
+
+    const thought = openMatch[1].replace(/^THOUGHT:\s*/i, "").trim();
+    const startIndex = openMatch.index! + openMatch[0].length;
+    const rest = trimmed.slice(startIndex);
+
+    // Scan lines in rest to find the matching outer closing ```
+    const lines = rest.split(/\r?\n/);
+    let depth = 0;
+    let closingLineIndex = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      const lineTrim = lines[i].trim();
+
+      if (lineTrim.startsWith("```") || lineTrim.startsWith("~~~")) {
+        const isFenceClose = /^(?:```+|~~~+)\s*$/.test(lineTrim);
+        const hasLangTag = /^(?:```+|~~~+)[a-zA-Z0-9_-]+\s*$/.test(lineTrim);
+
+        if (hasLangTag) {
+          depth++;
+        } else if (isFenceClose) {
+          if (depth > 0) {
+            depth--;
+          } else {
+            const remainingFences = lines
+              .slice(i + 1)
+              .filter((l) => /^(?:```+|~~~+)\s*$/.test(l.trim())).length;
+            if (remainingFences >= 2 && remainingFences % 2 === 0) {
+              depth++;
+            } else {
+              closingLineIndex = i;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (closingLineIndex !== -1) {
+      return {
+        actionContent: lines.slice(0, closingLineIndex).join("\n").trim(),
+        thought,
+      };
+    }
+
+    const lastFenceIndex = rest.lastIndexOf("```");
+    return {
+      actionContent:
+        lastFenceIndex !== -1 ? rest.slice(0, lastFenceIndex).trim() : rest.trim(),
+      thought,
     };
   }
 
@@ -199,10 +262,10 @@ export class ResilientParser {
       const patternMatch = contentToScan.match(/pattern\s*:\s*([^\r\n]+)/i);
       const contentMatch = contentToScan.match(/content\s*:\s*([\s\S]*)$/i);
       const oldStrMatch = contentToScan.match(
-        /(?:old_string|oldstring|old_text|oldText)\s*:\s*([\s\S]*?)(?=\n(?:new_string|newstring|new_text|newText|tool|path)\s*:|$)/i
+        /(?:old_string|oldstring|old_text|oldText)\s*:\s*([\s\S]*?)(?=\n(?:new_string|newstring|new_text|newText)\s*:|$)/i
       );
       const newStrMatch = contentToScan.match(
-        /(?:new_string|newstring|new_text|newText)\s*:\s*([\s\S]*?)(?=\n(?:tool|path|old_string)\s*:|$)/i
+        /(?:new_string|newstring|new_text|newText)\s*:\s*([\s\S]*?)(?=\n(?:old_string|oldstring|old_text|oldText)\s*:|$)/i
       );
       const questionMatch = contentToScan.match(
         /(?:question|prompt|message)\s*:\s*([^\r\n]+)/i

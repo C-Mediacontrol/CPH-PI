@@ -16,6 +16,14 @@ export interface ReGroundingOptions {
   skillsSection?: string;
 }
 
+export interface Turn2TaskPromptOptions {
+  taskPrompt?: string;
+  task?: string;
+  toolResult: string;
+  skillsSection?: string;
+  toolName?: string;
+}
+
 export class PromptBuilder {
   public static readonly PROTOCOL_REMINDER = `【交接协议铁律 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
@@ -135,35 +143,41 @@ command: git status
 
   /**
    * Builds Turn 2 task prompt after Turn 1 handshake succeeds.
-   * Supports both (task, skillsSection, toolResult) and (task, toolResult, skillsSection).
+   * Supports both explicit options object `{ taskPrompt, toolResult, skillsSection, toolName }`
+   * and compatible positional signatures `(task, skillsSection, toolResult, toolName?)`
+   * or `(task, toolResult)`.
    */
   public static buildTurn2TaskPrompt(
-    task: string,
-    arg2: string,
-    arg3 = "",
+    optionsOrTask: Turn2TaskPromptOptions | string,
+    arg2?: string,
+    arg3?: string,
     toolName?: string
   ): string {
+    let task = "";
     let skillsSection = "";
     let toolResult = "";
+    let effectiveToolName = toolName;
 
-    if (arg3 !== undefined && arg3 !== "") {
-      if (arg2.includes("Skill") || arg2.includes("技能") || arg2 === "") {
-        skillsSection = arg2;
-        toolResult = arg3;
-      } else if (arg3.includes("Skill") || arg3.includes("技能")) {
-        toolResult = arg2;
-        skillsSection = arg3;
-      } else {
-        skillsSection = arg2;
-        toolResult = arg3;
-      }
+    if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
+      task = optionsOrTask.taskPrompt || optionsOrTask.task || "";
+      toolResult = optionsOrTask.toolResult || "";
+      skillsSection = optionsOrTask.skillsSection || "";
+      effectiveToolName = optionsOrTask.toolName;
     } else {
-      toolResult = arg2;
-      skillsSection = "";
+      task = optionsOrTask || "";
+      if (arg3 !== undefined) {
+        // Standard 3-arg or 4-arg positional signature: (task, skillsSection, toolResult, toolName?)
+        skillsSection = arg2 || "";
+        toolResult = arg3;
+      } else {
+        // 2-arg positional signature: (task, toolResult)
+        toolResult = arg2 || "";
+        skillsSection = "";
+      }
     }
 
-    const toolHeader = toolName
-      ? `[TOOL_RESULT for ${toolName} - SUCCESS]:`
+    const toolHeader = effectiveToolName
+      ? `[TOOL_RESULT for ${effectiveToolName} - SUCCESS]:`
       : `[TOOL_RESULT - SUCCESS]:`;
 
     return `${toolHeader}
