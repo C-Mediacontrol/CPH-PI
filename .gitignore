@@ -6,3 +6,4 @@ profiles/
 .cph/
 .superpowers/
 **/*tokens.json
+.worktrees/
