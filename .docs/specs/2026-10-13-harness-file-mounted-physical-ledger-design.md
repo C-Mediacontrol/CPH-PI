@@ -160,19 +160,62 @@ Sequence Diagram:
 
 ---
 
-## 5. 与现有架构模块的改造映射 (Refactoring Mapping)
+## 7. 阶段屏障并发调度与因果时序防护规范 (Stage Barrier & Causality Guard)
+
+### 7.1 核心问题与时序反转缺陷 (The Causality Inversion Problem)
+当账号池具备 $N$ 个并发槽位、主控一次性派发多个任务时，若部分任务存在逻辑因果依赖（例如 Task 1 为核心库升级，Task 3 依赖新库；或 Task 1 为根因排查，Task 3 依据结论修复）：
+- 在传统 FIFO 滑动窗口中，若独立的 Task 2 先于 Task 1 结束，调度器会盲目 pop 出 Task 3 投入执行；
+- 此时 Task 1 尚未落地，Task 3 将在脏工作区中遭遇断言失败、编译错误或代码冲突；
+- 若跨角色（如 Researcher ➔ Coder），主控在 Task 1 尚未回传前，根本不可能写出自闭环、准确的 Task 3 Prompt，陷入“未卜先知”的信息悖论。
+
+### 7.2 双层防御架构契约 (Two-Tier Defense Architecture)
+
+#### 1. 认知与提示词层（第一道防线：信息依赖分轮次推进）
+- **跨角色信息因果依赖 (Cross-Role Causality)**：
+  凡是“后置任务 Prompt 必须参考前置任务真实输出（如代码行号、根因、接口变动）”的场景，**强制分轮次派发**：
+  - 主控第 1 轮发起 `invoke_subagent` 派发前置任务（如调研）；
+  - 主控接收回传报告并完成客观事实审阅；
+  - 主控基于确凿事实编写自闭环 Prompt，发起第 2 轮 `invoke_subagent`。
+- **同批次任务正交性**：同一次派发的任务，默认在目标文件与数据维度必须完全正交。
+
+#### 2. Harness 调度层（第二道防线：Stage Barrier 阶段屏障）
+对于已知目标、但执行步骤存在先后顺序的纯代码实施任务，协议与调度核提供物理级阶段屏障：
+- **协议扩展**：
+  在 `invoke_subagent` 的任务模型中增加可选字段 `stage?: number`（未指定时默认为 `1`）：
+  ```yaml
+  subagents:
+    - stage: 1
+      role: coder
+      description: 核心协议层重构
+    - stage: 1
+      role: coder
+      description: 独立配置文件修复
+    - stage: 2
+      stage: 2
+      role: coder
+      description: 上层调用方适配（依赖 Stage 1 成果）
+  ```
+- **Harness 调度核屏障规则**：
+  1. `SubagentRunner.executeBatch` 按 `stage` 升序分组（`Stage 1` ➔ `Stage 2` ➔ ...）；
+  2. 严格按阶段串行执行：**只有 Stage $K$ 的所有子任务全部成功执行完毕并通过单测后，才允许解锁并将 Stage $K+1$ 的任务压入并发滑动窗口**；
+  3. **阶段级熔断保护 (Stage Circuit Breaker)**：若 Stage $K$ 中有任意任务遭遇失败或 429 熔断，Harness 立即中止后续 Stage，防止级联污染，并将断点状态与已成功事实精准回传主控。
+
+---
+
+## 8. 与现有架构模块的改造映射 (Refactoring Mapping)
 
 | 目标文件 | 改造内容 |
 |---|---|
 | `src/session/ledger/execution-ledger.ts` (新建) | 实现 `ExecutionLedger` 类，负责状态记录、append-only 落盘、Markdown 投影与挂载指纹生成。 |
-| `src/cli.ts` / `src/agent/` | 在工具调用成功与失败的回调管道中，埋入 `ledger.recordStep(...)`，实现透明无感立桩。 |
+| `src/agent/subagent-runner.ts` | 增加 `stage` 字段解析、Stage 升序分组屏障执行队列与阶段熔断机制。 |
+| `src/cli.ts` / 工具回调 | 在工具调用成功与失败的回调管道中，埋入 `ledger.recordStep(...)`，实现透明无感立桩；子代理看板渲染 `[Stage X]` 标识。 |
 | `src/session/main-plan-snapshot.ts` | 改造 `formatSuccessorTurn1Prompt`，彻底移除旧版将 `reportsSummary` 全量拼接的方式，换用轻量指纹挂载。 |
-| `src/session/session-manager.ts` | 会话初始化与恢复时，自动将当前工作区的账本挂载路径注入到系统上下文。 |
-| `.cph/review_draft.md` (废弃) | 彻底停止向该路径写入草稿，正式业务文档一律引导至 `.docs/`。 |
+| `skills/subagent/SKILL.md` | 补充 Gate 5（阶段屏障与分轮次门禁），提供 `stage: 1, 2` 标准示例与信息依赖规则。 |
+| `cph-main-agent-prompt.txt` | 正向引导信息因果分阶段、执行依赖分 Stage。 |
 
 ---
 
-## 6. 异常处理与鲁棒性保障 (Error Handling & Robustness)
+## 9. 异常处理与鲁棒性保障 (Error Handling & Robustness)
 
 1. **I/O 容错与无阻塞原则**：
    账本写入为辅助性底座保障，若因磁盘满或权限异常导致写入失败，仅输出 stderr warning，**绝不中断主业务工具执行流程**。
@@ -182,10 +225,12 @@ Sequence Diagram:
    - 每个条目携带独立的 `sessionId` 与 `role` 标识，保证即便交叉写入也能无损按会话重新聚合。
 3. **体积溢出防护 (Ledger Compaction/Rotation)**：
    若单一任务执行超过 500 步，Harness 自动对 `.cph/state/execution-ledger.md` 进行表格折叠归档，仅保留最近 50 步表格，历史步骤归档为 `.cph/state/execution-ledger-archive.md`，确保模型调阅时不超窗。
+4. **阶段屏障容错**：
+   非法 `stage`（如负数、非数字）由 Harness 统一防御归一化为 `stage: 1`，保证系统健壮性。
 
 ---
 
-## 7. 验证计划与验收标准 (Test & Acceptance Plan)
+## 10. 验证计划与验收标准 (Test & Acceptance Plan)
 
 1. **单元测试矩阵**：
    - `tests/session/execution-ledger.test.ts`：
@@ -193,6 +238,12 @@ Sequence Diagram:
      - 测试 `formatMountHeader` 生成指纹的长度与 Token 控制（< 150 tokens）；
      - 测试多并发写入下的追加完整性；
      - 测试超长工具输出截断指纹的有效性。
+   - `tests/agent/subagent-stage-barrier.test.ts` (新建)：
+     - 测试多任务带 `stage: 1, 2` 时按阶段严格串行、阶段内并发滑窗；
+     - 测试 Stage 1 任务失败时后续 Stage 任务自动熔断拦截；
+     - 测试未提供 `stage` 字段时的向后兼容性（默认 stage 1）。
 2. **端到端回归**：
    - 运行全量 `bun test tests/`，确保全部现有 476 个单元测试 100% 保持通过；
    - 模拟 429 容灾与接力场景，验证后继智能体通过挂载头能准确感知物理事实，且 Prompt 长度缩减 80% 以上。
+
+
