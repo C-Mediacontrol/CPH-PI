@@ -23,11 +23,12 @@ disable-model-invocation: false
 
 ## 派发前置四道门禁 (Pre-Flight Gates)
 
-在调用 `invoke_subagent` 之前，主控 Agent 必须依序通过以下四道硬性检查门禁：
+在调用 `invoke_subagent` 之前，主控 Agent 必须依序通过以下五道硬性检查门禁：
 
 ```text
  ┌────────────────────────────────────────────────────────┐
- │            ★ 派发前置四道门禁 (Pre-Flight Gates) ★       │
+ │            ★ 派发前置五道门禁 (Pre-Flight Gates) ★       │
+ │ 任何派发前必须逐一通过五项检查，杜绝因果冲突与并发竞态  │
  └───────────────────────────┬────────────────────────────┘
                              │
                              ▼
@@ -65,6 +66,15 @@ disable-model-invocation: false
  │ · 包含限定的文件路径或入口函数                          │
  │ · Coder 必须包含明确的单元测试命令与验收标准            │
  │ · Researcher 必须包含期望的排查结论与证据输出结构      │
+ └───────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+ ┌────────────────────────────────────────────────────────┐
+ │ 【Gate 5: 因果依赖与阶段屏障门禁 (Stage Barrier Gate)】 │
+ │ 检查任务之间的先后顺序与信息依赖：                     │
+ │ · 跨角色信息因果（调研 ➔ 编码）：必须分轮次等待回传     │
+ │ · 纯代码执行依赖（已知全貌）：显式声明 stage: 1, 2       │
+ │ · 调度核保证 Stage 升序串行、Stage 内并发滑窗、失败熔断 │
  └───────────────────────────┬────────────────────────────┘
                              │
                              ▼
@@ -140,12 +150,13 @@ prompt: |
 
 ## 标准 `invoke_subagent` 调用示例
 
-主控 Agent 在满足四道门禁后，在标准 ```action 块中发起调派：
+主控 Agent 在满足五道门禁后，在标准 ```action 块中发起调派：
 
 ```action
 tool: invoke_subagent
 subagents:
-  - role: researcher
+  - stage: 1
+    role: researcher
     description: 探查 AccountPool 在并发下的 Token 轮换机制与限频点
     prompt: |
       【调研目标】: 调查 AccountPool 在并发获取 Token 时的锁机制与避险策略。
@@ -154,13 +165,22 @@ subagents:
       1. 分析 getNextAvailableToken 在多并发调用时是否存在竞态条件；
       2. 梳理 429 标记后的退避重试链路。
       【交付标准】: 输出包含行号分析与排错建议的结题报告。
-  - role: coder
+  - stage: 1
+    role: coder
     description: 完善 session-manager 的边界用例测试覆盖
     prompt: |
       【实施目标】: 为 session-manager 补充会话恢复异常边界测试。
       【涉及文件】: tests/session/session.test.ts。
       【验证标准】: 执行 `bun test tests/session/session.test.ts` 确保全部通过，并汇报测试日志证据。
+  - stage: 2
+    role: coder
+    description: 基于 Stage 1 调研与测试基线修复并发死锁
+    prompt: |
+      【实施目标】: 修复并发获取 Token 时的锁竞态。
+      【涉及文件】: src/auth/account-pool.ts。
+      【验证标准】: 执行 `bun test tests/auth/` 确保全部绿灯。
 ```
+
 
 ---
 

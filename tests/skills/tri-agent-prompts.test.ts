@@ -50,4 +50,18 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     // Rule 6 present in AGENTS.md
     expect(agentsMd).toContain("行动导向与认知极简准则");
   });
+
+  it("should declare Gate 5 Stage Barrier and causality rules in subagent skill and main prompt", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+
+    // Gate 5 present in subagent SKILL.md
+    expect(skillContent).toContain("Gate 5");
+    expect(skillContent).toContain("阶段屏障");
+    expect(skillContent).toContain("stage");
+
+    // Main prompt declares stage barrier and causality separation
+    expect(mainPrompt).toContain("阶段屏障");
+    expect(mainPrompt).toContain("stage");
+  });
 });
