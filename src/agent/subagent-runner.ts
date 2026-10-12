@@ -74,11 +74,15 @@ export class SubagentRunner {
     events?: {
       onSubagentStart?: (id: string, role: string, spec: SubagentTaskSpec) => void;
       onSubagentEnd?: (report: SubagentTaskReport) => void;
-      onSubagentProgress?: (id: string, turn: number, delta?: string) => void;
+      onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any) => void;
     }
   ): Promise<SubagentTaskReport[]> {
-    const poolStatus = this.pool?.getPoolStatus?.() || [];
-    const maxConcurrency = poolStatus.length <= 1 ? 1 : Math.min(poolStatus.length, tasks.length);
+    const poolStatus = (this.pool?.getPoolStatus?.() || []) as any[];
+    const activeAllowedAccounts = poolStatus.filter(
+      (acc) => acc.isAllowed !== false && !acc.isThrottled
+    );
+    const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+    const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
 
     this.loggerTree?.logTimelineEvent({
       type: "SUBAGENT_QUEUE_SCHEDULED",
@@ -111,16 +115,25 @@ export class SubagentRunner {
         }
       }
     } else {
-      // Chunked or concurrent execution across multiple accounts
-      const executing = tasks.map(async (taskSpec, index) => {
-        const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-        const role = taskSpec.role === "coder" ? "coder" : "researcher";
-        return this.runSingleSubagent(subId, role, taskSpec, signal, events);
-      });
-      const results = await Promise.allSettled(executing);
-      for (let i = 0; i < results.length; i++) {
-        settled[i] = results[i];
-      }
+      // Sliding window concurrency limited strictly to maxConcurrency
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < tasks.length) {
+          if (signal?.aborted) return;
+          const index = cursor++;
+          const taskSpec = tasks[index];
+          const subId = `sub-${index + 1}-${crypto.randomBytes(3).toString("hex")}`;
+          const role = taskSpec.role === "coder" ? "coder" : "researcher";
+          try {
+            const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+            settled[index] = { status: "fulfilled", value: report };
+          } catch (err) {
+            settled[index] = { status: "rejected", reason: err };
+          }
+        }
+      };
+      const workers = Array.from({ length: maxConcurrency }, () => worker());
+      await Promise.all(workers);
     }
 
     const activeMainSessionId = this.lineageTracker
@@ -283,6 +296,15 @@ export class SubagentRunner {
             onTurnStart: (turn: number) => {
               logStream?.write(`\n--- [Hop ${hopCount}] Turn ${turn} ---\n`);
               events?.onSubagentProgress?.(subId, turn);
+            },
+            onToolStart: (action: any) => {
+              const actName = action?.tool || action?.action || "tool";
+              const target = action?.path || action?.filePath || action?.command || "";
+              logStream?.write(`\n[Tool Start] ${actName} ${target}\n`);
+              events?.onSubagentProgress?.(subId, -1, undefined, action);
+            },
+            onToolEnd: (toolRes: any) => {
+              logStream?.write(`\n[Tool End] ${toolRes?.toolName || toolRes?.actionName} (success: ${toolRes?.success})\n`);
             },
           },
         });

@@ -96,6 +96,7 @@ export interface OrchestratorEvents {
   onToolEnd?: (result: ToolBridgeResult) => void;
   onSubagentStart?: (id: string, role: string, spec: any) => void;
   onSubagentEnd?: (report: any) => void;
+  onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any) => void;
   onAccountSwitched?: (oldEmail: string, newEmail: string) => void;
   onRefusalIntercepted?: (refusalText: string, retryAttempt: number) => void;
   onCompacted?: (clearedChars: number, ratio: number) => void;
@@ -654,6 +655,7 @@ export class Orchestrator {
           const reports = await runner.executeBatch(subagents, signal, {
             onSubagentStart: events?.onSubagentStart,
             onSubagentEnd: events?.onSubagentEnd,
+            onSubagentProgress: events?.onSubagentProgress,
           });
 
           const summaryOutput = runner.formatReportSummary(reports);

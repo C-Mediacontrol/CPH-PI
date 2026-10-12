@@ -4,7 +4,7 @@ import fs from "node:fs";
 import chalk from "chalk";
 import { CopilotOrchestrator, type IOrchestratorChatClient } from "./agent/orchestrator.ts";
 import { InterruptController } from "./agent/interrupt-controller.ts";
-import { TuiRenderer, type SessionStatusInfo } from "./ui/tui-renderer.ts";
+import { TuiRenderer, type SessionStatusInfo, type ActiveSubagentState } from "./ui/tui-renderer.ts";
 import { AccountPool } from "./auth/account-pool.ts";
 import { ToolBridge, type MappedQuestionArgs } from "./protocol/tool-bridge.ts";
 import { SkillLoader, type Skill } from "./skills/skill-loader.ts";
@@ -638,6 +638,10 @@ export class CphPiCli {
    * Handles user input line or multi-line accumulation.
    */
   public async handleInputLine(line: string): Promise<void> {
+    if (this.interruptController.isBusy()) {
+      return;
+    }
+
     const trimmed = line.trim();
 
     // 1. Triple-quote block detection (""")
@@ -1374,6 +1378,8 @@ export class CphPiCli {
     }
 
     let hopCount = 0;
+    const activeSubagents = new Map<string, ActiveSubagentState>();
+    const subagentStartTimes = new Map<string, number>();
 
     try {
       while (true) {
@@ -1392,6 +1398,54 @@ export class CphPiCli {
             onTurnStart: (turn) => this.renderer.renderTurnHeader(turn),
             onToolStart: (action) => this.renderer.renderToolBadge(action),
             onToolEnd: (result) => this.renderer.renderToolResult(result),
+            onSubagentStart: (id, role, spec) => {
+              subagentStartTimes.set(id, Date.now());
+              activeSubagents.set(id, {
+                id,
+                role: role === "coder" ? "coder" : "researcher",
+                description: spec?.description || spec?.prompt?.slice(0, 40) || id,
+                status: "running",
+                currentTurn: 1,
+                durationMs: 0,
+                lastAction: "正在启动会话与加载技能...",
+              });
+              this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+            },
+            onSubagentProgress: (id, turn, _delta, action) => {
+              const state = activeSubagents.get(id);
+              if (!state) return;
+              const startTime = subagentStartTimes.get(id) || Date.now();
+              state.durationMs = Date.now() - startTime;
+              let changed = false;
+              if (turn > 0 && turn !== state.currentTurn) {
+                state.currentTurn = turn;
+                state.lastAction = `第 ${turn} 轮推理思考中...`;
+                changed = true;
+              }
+              if (action) {
+                const actName = action.tool || action.action || "tool";
+                const target = action.path || action.filePath || action.command || "";
+                state.lastAction = `${actName} ${target}`.trim();
+                changed = true;
+              }
+              if (changed) {
+                this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+              }
+            },
+            onSubagentEnd: (report) => {
+              const state = activeSubagents.get(report.id);
+              if (state) {
+                state.status = report.success ? "completed" : "failed";
+                state.durationMs =
+                  report.durationMs ||
+                  Date.now() - (subagentStartTimes.get(report.id) || Date.now());
+                state.currentTurn = report.turnsCount || state.currentTurn;
+                state.lastAction = report.success
+                  ? "成果交付并完成自验证"
+                  : `异常中断: ${report.error || "执行未完成"}`;
+              }
+              this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+            },
             onRefusalIntercepted: (refusal, attempt) =>
               this.renderer.renderRefusalWarning(refusal, attempt),
             onCompacted: (cleared, ratio) => {
