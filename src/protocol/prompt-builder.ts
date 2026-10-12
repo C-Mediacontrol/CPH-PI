@@ -32,7 +32,7 @@ export class PromptBuilder {
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
-2. 若全部步骤已完成且无需后续动作，严禁输出工具块，必须直接输出交付格式：
+2. 若全部步骤已完成且无需后续动作，请直接输出任务交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
 
   /**

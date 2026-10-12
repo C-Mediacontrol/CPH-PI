@@ -13,15 +13,15 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
     }
   });
 
-  it("should default cloud attachment thresholds to 0 for aggressive file upload (anti-encoding corruption)", () => {
+  it("should default cloud attachment thresholds to 120000 chars and 3000 lines (Sydney context window protection)", () => {
     const orchestrator = new CopilotOrchestrator({
       workspaceRoot: process.cwd(),
     });
     const charsThreshold = (orchestrator as any).cloudAttachmentThresholdChars;
     const linesThreshold = (orchestrator as any).cloudAttachmentThresholdLines;
 
-    expect(charsThreshold).toBe(0);
-    expect(linesThreshold).toBe(0);
+    expect(charsThreshold).toBe(120000);
+    expect(linesThreshold).toBe(3000);
   });
 
   describe("Aggressive Upload Execution Checks", () => {
@@ -94,6 +94,8 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
         chatClient: mockClient,
         customAgentId: "T_test_agent",
         graphTokenProvider: async () => "mock-graph-token",
+        cloudAttachmentThresholdChars: 0,
+        cloudAttachmentThresholdLines: 0,
       });
 
       const runResult = await orchestrator.run({
