@@ -589,6 +589,39 @@ export class ToolBridge {
   }
 
   /**
+   * Helper to construct unified error result and format it.
+   */
+  public createErrorResult(
+    toolName: string,
+    error: any,
+    target: string = "unknown",
+    piToolName: string = "unknown",
+    mappedArgs?: any
+  ): ToolBridgeResult {
+    let output = error instanceof Error ? error.message : String(error ?? "unknown error");
+    output = sanitizeOutput(output);
+    const persisted = this.persistLargeOutputIfNeeded(output, toolName);
+    const formatted = this.formatResult({
+      toolName,
+      target,
+      success: false,
+      output: persisted.displayOutput,
+    });
+
+    return {
+      actionName: toolName,
+      piToolName,
+      target,
+      success: false,
+      output: persisted.displayOutput,
+      rawOutput: output,
+      formatted,
+      mappedArgs,
+      persistedFile: persisted.persistedFile,
+    };
+  }
+
+  /**
    * Executes a mapped Copilot action on Pi native tools or the question callback,
    * returning structured details and formatted text.
    */
@@ -599,27 +632,8 @@ export class ToolBridge {
     try {
       mapped = this.mapAction(action);
     } catch (err: any) {
-      let output = err instanceof Error ? err.message : String(err);
-      output = sanitizeOutput(output);
       const target = action.path ?? action.command ?? action.question ?? "unknown";
-      const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-      const formatted = this.formatResult({
-        toolName: rawActionName,
-        target,
-        success: false,
-        output: persisted.displayOutput,
-      });
-
-      return {
-        actionName: rawActionName,
-        piToolName: "unknown",
-        target,
-        success: false,
-        output: persisted.displayOutput,
-        rawOutput: output,
-        formatted,
-        persistedFile: persisted.persistedFile,
-      };
+      return this.createErrorResult(rawActionName, err, target, "unknown");
     }
 
     // Question action handling
@@ -656,54 +670,20 @@ export class ToolBridge {
           persistedFile: persisted.persistedFile,
         };
       } catch (err: any) {
-        let output = err instanceof Error ? err.message : String(err);
-        output = sanitizeOutput(output);
-        const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-        const formatted = this.formatResult({
-          toolName: rawActionName,
-          target: mapped.target,
-          success: false,
-          output: persisted.displayOutput,
-        });
-
-        return {
-          actionName: rawActionName,
-          piToolName: "question",
-          target: mapped.target,
-          success: false,
-          output: persisted.displayOutput,
-          rawOutput: output,
-          formatted,
-          mappedArgs: mapped.args,
-          persistedFile: persisted.persistedFile,
-        };
+        return this.createErrorResult(rawActionName, err, mapped.target, "question", mapped.args);
       }
     }
 
     // Native Pi tool execution
     const tool = this.tools.get(mapped.canonicalTool);
     if (!tool) {
-      let output = `Native Pi tool not available for action: ${mapped.canonicalTool}`;
-      output = sanitizeOutput(output);
-      const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-      const formatted = this.formatResult({
-        toolName: rawActionName,
-        target: mapped.target,
-        success: false,
-        output: persisted.displayOutput,
-      });
-
-      return {
-        actionName: rawActionName,
-        piToolName: mapped.canonicalTool,
-        target: mapped.target,
-        success: false,
-        output: persisted.displayOutput,
-        rawOutput: output,
-        formatted,
-        mappedArgs: mapped.args,
-        persistedFile: persisted.persistedFile,
-      };
+      return this.createErrorResult(
+        rawActionName,
+        `Native Pi tool not available for action: ${mapped.canonicalTool}`,
+        mapped.target,
+        mapped.canonicalTool,
+        mapped.args
+      );
     }
 
     const toolCallId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -755,27 +735,7 @@ export class ToolBridge {
         persistedFile: persisted.persistedFile,
       };
     } catch (err: any) {
-      let output = err instanceof Error ? err.message : String(err);
-      output = sanitizeOutput(output);
-      const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-      const formatted = this.formatResult({
-        toolName: rawActionName,
-        target: mapped.target,
-        success: false,
-        output: persisted.displayOutput,
-      });
-
-      return {
-        actionName: rawActionName,
-        piToolName: mapped.canonicalTool,
-        target: mapped.target,
-        success: false,
-        output: persisted.displayOutput,
-        rawOutput: output,
-        formatted,
-        mappedArgs: mapped.args,
-        persistedFile: persisted.persistedFile,
-      };
+      return this.createErrorResult(rawActionName, err, mapped.target, mapped.canonicalTool, mapped.args);
     }
   }
 

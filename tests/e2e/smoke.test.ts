@@ -311,9 +311,9 @@ FINAL_ANSWER:
 
         // 7. Verify prompt history continuity across turns (attached losslessly)
         expect(chatClient.sentPrompts[0]).toContain("calculator.ts");
-        expect(chatClient.sentPrompts[1]).toContain("[TOOL_RESULT for read_file - SUCCESS (ATTACHED)]");
-        expect(chatClient.sentPrompts[2]).toContain("[TOOL_RESULT for edit - SUCCESS (ATTACHED)]");
-        expect(chatClient.sentPrompts[3]).toContain("[TOOL_RESULT for run_command - SUCCESS (ATTACHED)]");
+        expect(chatClient.sentPrompts[1]).toContain("[TOOL_RESULT for read_file - SUCCESS]");
+        expect(chatClient.sentPrompts[2]).toContain("[TOOL_RESULT for edit - SUCCESS]");
+        expect(chatClient.sentPrompts[3]).toContain("[TOOL_RESULT for run_command - SUCCESS]");
       } finally {
         uploadSpy.mockRestore();
       }
