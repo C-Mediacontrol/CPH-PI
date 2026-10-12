@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { SessionLineage, SessionLineageTracker } from "./lineage-tracker.ts";
 
 /**
  * 单轮交互记录实体
@@ -36,6 +37,7 @@ export interface SessionRecord {
   handoffSnapshot?: string;
   handoffDocPath?: string;
   disasterBlackbox?: string;
+  lineage?: Record<string, SessionLineage>;
 }
 
 /**
@@ -70,6 +72,7 @@ export interface CreateSessionOptions {
   handoffSnapshot?: string;
   handoffDocPath?: string;
   disasterBlackbox?: string;
+  lineage?: Record<string, SessionLineage>;
 }
 
 /**
@@ -226,6 +229,7 @@ export class SessionManager {
       handoffSnapshot: options.handoffSnapshot,
       handoffDocPath: options.handoffDocPath,
       disasterBlackbox: options.disasterBlackbox,
+      lineage: options.lineage,
     };
 
     this.saveSession(session);
@@ -233,9 +237,9 @@ export class SessionManager {
   }
 
   /**
-   * 增量保存更新会话详情与索引
+   * 增量保存更新会话详情与索引，支持可选联动持久化血缘追踪器
    */
-  public saveSession(session: SessionRecord): void {
+  public saveSession(session: SessionRecord, tracker?: SessionLineageTracker): void {
     if (!this.isValidSessionId(session.id)) {
       throw new Error(`Invalid session ID: ${session.id}`);
     }
@@ -244,6 +248,9 @@ export class SessionManager {
 
     session.updatedAt = new Date().toISOString();
     session.turnCount = session.turns ? session.turns.length : session.turnCount;
+    if (tracker) {
+      session.lineage = tracker.serialize();
+    }
 
     // 写入独立会话文件
     const sessionFile = path.join(this.sessionsDir, `${session.id}.json`);
@@ -278,9 +285,9 @@ export class SessionManager {
   }
 
   /**
-   * 读取特定会话详情
+   * 读取特定会话详情，支持可选联动将血缘反序列化恢复至传入的追踪器
    */
-  public loadSession(id: string): SessionRecord | null {
+  public loadSession(id: string, tracker?: SessionLineageTracker): SessionRecord | null {
     if (!this.isValidSessionId(id)) return null;
 
     const sessionFile = path.join(this.sessionsDir, `${id}.json`);
@@ -288,10 +295,29 @@ export class SessionManager {
 
     try {
       const raw = fs.readFileSync(sessionFile, "utf-8");
-      return JSON.parse(raw) as SessionRecord;
+      const record = JSON.parse(raw) as SessionRecord;
+      if (tracker && record && record.lineage) {
+        tracker.deserialize(record.lineage);
+      }
+      return record;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 保存会话并关联持久化血缘追踪器状态
+   */
+  public saveSessionWithLineage(session: SessionRecord, tracker: SessionLineageTracker): void {
+    this.saveSession(session, tracker);
+  }
+
+  /**
+   * 恢复指定会话中持久化的血缘状态至追踪器中
+   */
+  public restoreSessionLineage(id: string, tracker: SessionLineageTracker): boolean {
+    const session = this.loadSession(id, tracker);
+    return Boolean(session && session.lineage);
   }
 
   /**

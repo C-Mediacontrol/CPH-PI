@@ -1,6 +1,6 @@
 import { TokenManager } from "./token-manager.ts";
 import type { ActiveSessionToken, StoredAccount } from "./token-manager.ts";
-import { ChatHubClient } from "../transport/chathub-client.ts";
+import { normalizeAgentId } from "../utils/url-utils.ts";
 
 export interface AccountStatus {
   email: string;
@@ -233,7 +233,7 @@ export class AccountPool {
    */
   public markAgentIneligible(email: string, agentId: string, reason?: string): void {
     const key = email.toLowerCase();
-    const normAgent = ChatHubClient.normalizeAgentId(agentId) || agentId.trim();
+    const normAgent = normalizeAgentId(agentId) || agentId.trim();
     if (!this.ineligibleAgents.has(key)) {
       this.ineligibleAgents.set(key, new Set());
     }
@@ -248,7 +248,7 @@ export class AccountPool {
     const key = email.toLowerCase();
     const set = this.ineligibleAgents.get(key);
     if (!set) return true;
-    const normAgent = ChatHubClient.normalizeAgentId(agentId) || agentId.trim();
+    const normAgent = normalizeAgentId(agentId) || agentId.trim();
     return !set.has(normAgent);
   }
 
@@ -257,7 +257,7 @@ export class AccountPool {
    */
   public clearAgentIneligibility(email?: string, agentId?: string): void {
     const normAgent = agentId
-      ? (ChatHubClient.normalizeAgentId(agentId) || agentId.trim())
+      ? (normalizeAgentId(agentId) || agentId.trim())
       : undefined;
 
     if (!email && !normAgent) {
@@ -304,7 +304,7 @@ export class AccountPool {
         ? targetAgentOrOptions
         : targetAgentOrOptions?.forAgentId;
     const normAgentId = rawAgentId
-      ? (ChatHubClient.normalizeAgentId(rawAgentId) || rawAgentId.trim())
+      ? (normalizeAgentId(rawAgentId) || rawAgentId.trim())
       : undefined;
 
     const now = Date.now();

@@ -1,14 +1,5 @@
-export interface TurnRecord {
-  turn: number;
-  userInput?: string;
-  thought?: string;
-  response?: string;
-  action?: any;
-  toolName?: string;
-  toolOutput?: string;
-  success?: boolean;
-  [key: string]: any;
-}
+import type { TurnRecord } from "./blackbox-compactor.ts";
+export type { TurnRecord };
 
 export interface CompactionOptions {
   preserveRecentTurns?: number; // Number of most recent turns to keep completely uncompacted (default: 2)
@@ -132,8 +123,3 @@ export class CompactionService {
     return lines.join("\n").trim();
   }
 }
-
-export {
-  BlackboxCompactor,
-  type BlackboxCompactorOptions,
-} from "./blackbox-compactor.ts";

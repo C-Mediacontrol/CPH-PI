@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { ActiveSessionToken } from "../auth/token-manager.ts";
+import { normalizeAgentId } from "../utils/url-utils.ts";
 import {
   RECORD_SEPARATOR,
   type ChatHubOptions,
@@ -33,15 +34,7 @@ export class ChatHubClient {
    * Helper to normalize an Agent ID from either a raw string or a full Copilot Agent URL
    */
   public static normalizeAgentId(input?: string): string | undefined {
-    if (!input) return undefined;
-    const trimmed = input.trim();
-    if (!trimmed) return undefined;
-    const match = trimmed.match(/\/chat\/agent\/([^?&#]+)/);
-    if (match) {
-      const decoded = decodeURIComponent(match[1]).trim();
-      return decoded || undefined;
-    }
-    return trimmed;
+    return normalizeAgentId(input);
   }
 
   public updateToken(newToken: ActiveSessionToken): void {

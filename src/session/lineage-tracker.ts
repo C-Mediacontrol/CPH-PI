@@ -89,4 +89,31 @@ export class SessionLineageTracker {
     }
     return currentId;
   }
+
+  /**
+   * 序列化所有血缘节点为 Plain Object 键值对，供持久化至磁盘
+   */
+  public serialize(): Record<string, SessionLineage> {
+    const result: Record<string, SessionLineage> = {};
+    for (const [id, lineage] of this.registry.entries()) {
+      result[id] = {
+        ...lineage,
+        subagentSessionIds: lineage.subagentSessionIds ? [...lineage.subagentSessionIds] : [],
+      };
+    }
+    return result;
+  }
+
+  /**
+   * 反序列化恢复血缘节点
+   */
+  public deserialize(data: any): void {
+    if (!data || typeof data !== "object") return;
+    for (const [id, lineage] of Object.entries(data)) {
+      if (lineage && typeof lineage === "object") {
+        this.register(lineage as SessionLineage);
+      }
+    }
+  }
 }
+

@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { CopilotOrchestrator, type OrchestratorRunOptions } from "./orchestrator.ts";
 import { ToolBridge, type SubagentTaskSpec } from "../protocol/tool-bridge.ts";
-import type { SessionLoggerTree } from "../ui/terminal-logger.ts";
 import { AccountPool } from "../auth/account-pool.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import { SkillLoader, type Skill } from "../skills/skill-loader.ts";
@@ -15,6 +13,22 @@ export const DEFAULT_CODER_AGENT_ID =
 export const DEFAULT_RESEARCHER_AGENT_ID =
   "T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c";
 
+/**
+ * 轻量日志流抽象接口，解耦调度核心层对 UI 终端渲染层的反向依赖
+ */
+export interface ISubagentLoggerStream {
+  write(chunk: string): void | boolean;
+}
+
+/**
+ * 会话日志树轻量抽象接口
+ */
+export interface ISubagentLoggerTree {
+  getSubagentStream?(subId: string): ISubagentLoggerStream | undefined;
+  createSubagentLogStream?(subagentId: string, role?: string): ISubagentLoggerStream | undefined;
+  logTimelineEvent?(event: { type: string; timestamp?: number; [key: string]: any }): void;
+}
+
 export interface SubagentRunnerOptions {
   workspaceRoot: string;
   mainSessionId: string;
@@ -22,7 +36,7 @@ export interface SubagentRunnerOptions {
   researcherAgentId?: string;
   pool?: AccountPool | any;
   chatClientFactory?: (token: any, options: any) => any;
-  loggerTree?: SessionLoggerTree;
+  loggerTree?: ISubagentLoggerTree;
   modelTone?: string;
   createOrchestratorFn?: (opts: any) => any;
   lineageTracker?: SessionLineageTracker;
@@ -48,7 +62,7 @@ export class SubagentRunner {
   private researcherAgentId: string;
   private pool?: any;
   private chatClientFactory?: any;
-  private loggerTree?: SessionLoggerTree;
+  private loggerTree?: ISubagentLoggerTree;
   private modelTone: string;
   private createOrchestratorFn?: (opts: any) => any;
   private lineageTracker?: SessionLineageTracker;
@@ -219,7 +233,9 @@ export class SubagentRunner {
     });
 
     const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
-    const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
+    const logStream = this.loggerTree?.createSubagentLogStream
+      ? this.loggerTree.createSubagentLogStream(subId, role)
+      : this.loggerTree?.getSubagentStream?.(subId);
 
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
@@ -261,29 +277,33 @@ export class SubagentRunner {
           }
         }
 
-        const orchestrator = this.createOrchestratorFn
-          ? this.createOrchestratorFn({
-              workspaceRoot: this.workspaceRoot,
-              customAgentId,
-              subagentRole: role,
-              sessionId: currentSessionId,
-              pool: this.pool,
-              chatClientFactory: this.chatClientFactory,
-              modelTone: this.modelTone,
-              skills: ["handoff"],
-              activeSkills: handoffSkills,
-              task: currentTaskPrompt,
-            })
-          : new CopilotOrchestrator({
-              workspaceRoot: this.workspaceRoot,
-              customAgentId,
-              sessionId: currentSessionId,
-              pool: this.pool,
-              chatClientFactory: this.chatClientFactory,
-              modelTone: this.modelTone,
-              maxTurns: spec.maxTurns || 30,
-              activeSkills: handoffSkills,
-            });
+        let orchestrator: any;
+        if (this.createOrchestratorFn) {
+          orchestrator = this.createOrchestratorFn({
+            workspaceRoot: this.workspaceRoot,
+            customAgentId,
+            subagentRole: role,
+            sessionId: currentSessionId,
+            pool: this.pool,
+            chatClientFactory: this.chatClientFactory,
+            modelTone: this.modelTone,
+            skills: ["handoff"],
+            activeSkills: handoffSkills,
+            task: currentTaskPrompt,
+          });
+        } else {
+          const { CopilotOrchestrator } = await import("./orchestrator.ts");
+          orchestrator = new CopilotOrchestrator({
+            workspaceRoot: this.workspaceRoot,
+            customAgentId,
+            sessionId: currentSessionId,
+            pool: this.pool,
+            chatClientFactory: this.chatClientFactory,
+            modelTone: this.modelTone,
+            maxTurns: spec.maxTurns || 30,
+            activeSkills: handoffSkills,
+          });
+        }
 
         const res = await orchestrator.run({
           task: currentTaskPrompt,

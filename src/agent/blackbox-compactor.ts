@@ -1,4 +1,14 @@
-import type { TurnRecord } from "./compaction.ts";
+export interface TurnRecord {
+  turn: number;
+  userInput?: string;
+  thought?: string;
+  response?: string;
+  action?: any;
+  toolName?: string;
+  toolOutput?: string;
+  success?: boolean;
+  [key: string]: any;
+}
 
 export interface BlackboxCompactorOptions {
   /**
