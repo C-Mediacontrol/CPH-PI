@@ -70,6 +70,65 @@ export class SessionLineageTracker {
   }
 
   /**
+   * 计算指定会话在单向继承链中的代数与被接手次数
+   * generation: 从根节点开始的代数（首任会话为 1，第一代继任者为 2，依此类推）
+   * handoffCount: 被接手次数 (handoffCount = generation - 1)
+   * predecessorIds: 溯源祖先会话 ID 链表（按最近到最早排序）
+   */
+  public getGenerationInfo(sessionId: string): {
+    generation: number;
+    handoffCount: number;
+    predecessorIds: string[];
+  } {
+    let generation = 1;
+    const predecessorIds: string[] = [];
+    const visited = new Set<string>();
+    let currentId = sessionId;
+    visited.add(currentId);
+
+    while (currentId) {
+      const lineage = this.registry.get(currentId);
+      if (!lineage || !lineage.predecessorId) break;
+      if (visited.has(lineage.predecessorId)) break; // 检测并防止循环引用
+      predecessorIds.push(lineage.predecessorId);
+      visited.add(lineage.predecessorId);
+      generation++;
+      currentId = lineage.predecessorId;
+    }
+
+    // 若会话 ID 包含 _genX 显式代数后缀且大于计算代数，提供向下兼容兜底
+    const genMatch = sessionId.match(/_gen(\d+)$/);
+    if (genMatch) {
+      const parsedGen = parseInt(genMatch[1], 10);
+      if (!isNaN(parsedGen) && parsedGen > generation) {
+        generation = parsedGen;
+      }
+    }
+
+    // 若会话 ID 包含 _hopX 显式自主接力代数后缀
+    const hopMatch = sessionId.match(/_hop(\d+)$/);
+    if (hopMatch) {
+      const parsedHop = parseInt(hopMatch[1], 10);
+      if (!isNaN(parsedHop) && parsedHop > generation) {
+        generation = parsedHop;
+      }
+    }
+
+    return {
+      generation,
+      handoffCount: Math.max(0, generation - 1),
+      predecessorIds,
+    };
+  }
+
+  /**
+   * 快捷获取指定会话被接手的次数
+   */
+  public getHandoffCount(sessionId: string): number {
+    return this.getGenerationInfo(sessionId).handoffCount;
+  }
+
+  /**
    * 沿继承链解析最终的活动端点（当前最新的主会话/继承者 ID）
    * 使用 visited 集合检测并防止环状循环引用。
    */

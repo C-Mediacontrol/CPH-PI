@@ -35,6 +35,12 @@ export class TerminalLogger {
   private originalStdoutWrite?: typeof process.stdout.write;
   private originalStderrWrite?: typeof process.stderr.write;
   private isHooked = false;
+  private lastMatrixSummary?: string;
+
+  public static isTuiMatrixRedrawFrame(text: string): boolean {
+    if (!text) return false;
+    return text.includes("多会话子代理协同看板") || text.includes("Sub-Agent Matrix");
+  }
 
   public static getInstance(): TerminalLogger {
     if (!TerminalLogger.instance) {
@@ -120,6 +126,7 @@ export class TerminalLogger {
     }
 
     this.logFilePath = resolvedPath;
+    this.lastMatrixSummary = undefined;
 
     // Save originals
     this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -175,6 +182,7 @@ export class TerminalLogger {
 
     this.isHooked = false;
     this.logFilePath = undefined;
+    this.lastMatrixSummary = undefined;
   }
 
   public isEnabled(): boolean {
@@ -190,12 +198,53 @@ export class TerminalLogger {
     try {
       const text = typeof chunk === "string" ? chunk : chunk?.toString("utf8") || "";
       const cleaned = stripAnsi(text);
-      if (cleaned) {
-        this.stream.write(cleaned);
+      if (!cleaned) return;
+
+      if (TerminalLogger.isTuiMatrixRedrawFrame(cleaned)) {
+        this.writeCompressedMatrixFrame(cleaned);
+        return;
       }
+
+      this.stream.write(cleaned);
     } catch {
       // Non-blocking: write errors must not crash main runtime
     }
+  }
+
+  private writeCompressedMatrixFrame(cleaned: string): void {
+    if (!this.stream) return;
+
+    const lines = cleaned.split(/\r?\n/);
+    const subagentEvents: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("│ [Sub-") || line.startsWith("│ [sub-")) {
+        let entry = line.replace(/^│\s*/, "");
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1].trim();
+          if (nextLine.startsWith("│") && (nextLine.includes("最新动作") || nextLine.includes("└─"))) {
+            const actionText = nextLine.replace(/^│\s*(?:└─\s*)?/, "");
+            entry += ` | ${actionText}`;
+            i++;
+          }
+        }
+        subagentEvents.push(entry);
+      }
+    }
+
+    const summary =
+      subagentEvents.length > 0
+        ? `[Subagent Matrix Sync] ${subagentEvents.join(" ; ")}`
+        : `[Subagent Matrix Sync] 协同看板状态刷新`;
+
+    // Skip consecutive identical matrix frame redraws to avoid log bloat
+    if (this.lastMatrixSummary === summary) {
+      return;
+    }
+
+    this.lastMatrixSummary = summary;
+    this.stream.write(`${summary}\n`);
   }
 }
 

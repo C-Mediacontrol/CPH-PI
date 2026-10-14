@@ -146,9 +146,10 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
       );
       expect(turn2Message.annotations![0].messageAnnotationMetadata.driveId).toBe("b!mockDriveId456");
 
-      // Prompt text must be clean & lightweight: MUST NOT contain the 3000 chars of output!
-      expect(turn2Message.text).not.toContain("Log line 1: processed batch record data");
+      // Prompt text embeds head-tail fact fingerprint while omitting middle lines
+      expect(turn2Message.text).toContain("Log line 1: processed batch record data");
       expect(turn2Message.text).not.toContain("Log line 30: processed batch record data");
+      expect(turn2Message.text).toContain("【物理执行指纹摘要 (Head-Tail Fingerprint)】");
       expect(turn2Message.text).toContain("[TOOL_RESULT for run_command - SUCCESS (ATTACHED)]");
       expect(turn2Message.text).toContain("完整执行结果已作为文件附件");
       expect(turn2Message.text).toContain("云端文档引擎已对该附件进行全量原生解析");

@@ -13,15 +13,14 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
     }
   });
 
-  it("should default cloud attachment thresholds to 0 for aggressive file upload (anti-encoding corruption)", () => {
+  it("should default cloud attachment thresholds to 12000 chars / 200 lines (optimized anti-blindness)", () => {
     const orchestrator = new CopilotOrchestrator({
       workspaceRoot: process.cwd(),
     });
-    const charsThreshold = (orchestrator as any).cloudAttachmentThresholdChars;
-    const linesThreshold = (orchestrator as any).cloudAttachmentThresholdLines;
+    const thresholds = orchestrator.getCloudAttachmentThresholds();
 
-    expect(charsThreshold).toBe(0);
-    expect(linesThreshold).toBe(0);
+    expect(thresholds.chars).toBe(12000);
+    expect(thresholds.lines).toBe(200);
   });
 
   describe("Aggressive Upload Execution Checks", () => {
@@ -94,6 +93,8 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
         chatClient: mockClient,
         customAgentId: "T_test_agent",
         graphTokenProvider: async () => "mock-graph-token",
+        cloudAttachmentThresholdChars: 0,
+        cloudAttachmentThresholdLines: 0,
       });
 
       const runResult = await orchestrator.run({
@@ -119,7 +120,7 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
       expect(uploadedAttachmentData.toolName).toBe("read_file");
       expect(uploadedAttachmentData.attachment.driveItemId).toBe("item-50-lines");
 
-      // Verify Turn 2 contains attachment annotations and attached prompt instead of dumping code in chat
+      // Verify Turn 2 contains attachment annotations and attached prompt with head-tail fact fingerprint
       expect(sentMessages.length).toBe(2);
       const turn2Message = sentMessages[1];
       expect(turn2Message.annotations).toBeDefined();
@@ -128,7 +129,8 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
 
       expect(turn2Message.text).toContain("[TOOL_RESULT for read_file - SUCCESS (ATTACHED)]");
       expect(turn2Message.text).toContain("50 行");
-      expect(turn2Message.text).not.toContain("function sample_0");
+      expect(turn2Message.text).toContain("【物理执行指纹摘要 (Head-Tail Fingerprint)】");
+      expect(turn2Message.text).toContain("function sample_0");
 
       // History retains full original content
       expect(runResult.history[0].toolOutput).toBe(codeLines);

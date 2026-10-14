@@ -17,6 +17,7 @@ describe("TuiRenderer - Virtualization Banners", () => {
     const renderer = new TuiRenderer();
     const banner = renderer.formatSuccessorAwakeningBanner("main_ses_1_gen2", 2);
     expect(banner).toContain("第 2 代主控会话已唤醒");
+    expect(banner).toContain("接手 1 次");
     expect(banner).toContain("main_ses_1_gen2");
     expect(banner).toContain("30 轮");
   });

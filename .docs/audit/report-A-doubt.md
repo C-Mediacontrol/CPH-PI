@@ -1,697 +1,623 @@
 # 初审报告：契约对抗与假设证伪 (Dim-2: doubt-driven-development)
 
 - **审查对象**: `E:\copilot-web proxy\CPH-PI`
-- **审查模式**: Full Mode (深度契约证伪与逆向假设审查)
-- **扫描文件数**: 20 个核心文件
+- **审查角色**: 对抗性代码审查矩阵 · 初审子代理 A2 (Adversarial Code Audit - Stage 1)
+- **审查维度**: `doubt-driven-development` (契约对抗、假设证伪与异常边界审计)
+- **审查模式**: Full Mode (地毯式全量源码契约审计)
+- **扫描文件数**: 26 个核心源码文件 (涵盖 `src/` 下全量子系统：agent, auth, protocol, session, skills, transport, ui, cli)
+- **基线测试状态**: 508 passed / 0 failed / 72 test files (测试网 100% 绿色通过，但潜藏深层未被测试覆盖的假阳性与契约断层)
 
 ---
 
-## 契约审查核心矛盾概述
+## 一、 契约对抗核心矛盾概述 (Executive Summary)
 
-依据 **doubt-driven-development** 哲学，审查视角假定原架构设计与实现中存在“过度自信”与“未经验证的隐式假设”。在对 `CPH-PI` 核心协议、编排引擎、传输客户端、认证账号池以及会话存储模块进行对抗性证伪扫描后，揭示出以下深层契约矛盾：
+依据 **Doubt-Driven Development** 规范与哲学：
+> **“自信的实现绝不等于正确的实现。长周期维护悄然将未经检验的乐观假设变成了‘事实’，而灾难往往潜伏在上下游接口的隐式断层、边界假定与粗暴的启发式嗅探之中。”**
 
-1. **协议层“非贪婪标记截断”与“前瞻字符穿透”破坏**：`ResilientParser` 在解析代码块与局部编辑时，过度信任正则定界符，导致当写入内容包含嵌套 Markdown 代码块、或编辑内容包含 `\npath:` / `\ntool:` 属性时，出现确定性静默截断与参数污染。
-2. **传输层“网络非正常断连”被伪装为“成功轮次”**：`ChatHubClient` 假设只要已发送握手与 Chat 帧，WebSocket 关闭（无论是否收到 SignalR 完结帧 Type 2/3，即便错误码为 1006 异常关闭或 1008 策略限流）均通过 `settleResolve` 解析为成功文本，导致编排层将网络中断完全误诊为模型的 `invalid_chatter`。
-3. **编排层“默认阈值 0 导致全量附件化”致使模型丧失执行事实感知**：`Orchestrator` 将云端附件阈值默认设为 `0`，导致即使仅输出 5 个字符的测试结果也被强行上传 OneDrive 并从 Prompt 中抹去真实输出，且后继轮次未持久化附件句柄，造成模型上下文失明。
-4. **并发资源共享与竞态无互斥防护**：`AccountPool` 在异步获取 Token 时未对轮询索引 `currentIndex` 加锁，并发子代理必然命中同账号碰撞；`TokenManager` 在刷新凭据时无防重试屏障，Azure AD 的 Refresh Token Rotation 机制将导致并发子代理触发 `invalid_grant` 异常。
-5. **安全沙箱隔离假设落空**：`Orchestrator` 在拼接 Handoff 文档路径时未对 `sessionId` 做路径穿越清洗，与 `SessionManager` 的严格白名单验证形成契约割裂。
+初审子代理 A2 抱持极具怀疑态度的逆向证伪视角，对 CPH-PI 的 26 个核心模块进行了地毯式审计。在 508 项单测全部绿色通过的光鲜外表之下，我们成功证伪并挖掘出 **12 项深层契约断裂、竞态隐患与逻辑不变量破坏**：
+
+1. **子代理调度与解析契约断层 (Issue 1 - P0 致命)**: `SubagentTaskSpec` 和 `SubagentRunner` 声明了强大的 Stage Barrier（阶段依赖屏障），但上游 `ResilientParser` 在解析 LLM 输出时完全遗漏了 `stage` 属性，导致所有多阶段计划被扁平化为同一阶段并发抢跑，屏障体系在真实交互中彻底归零。
+2. **假阳性限流劫持与正常会话自杀 (Issue 2 - P0 致命)**: `Orchestrator` 以无差别的子串匹配（`lower.includes("429")`）判定模型是否遭遇限流。只要模型在推演中分析 HTTP 429 或限流中间件代码，即触发假阳性自杀并误将健康账号拉黑，引发账号池雪崩。
+3. **账号池限流容量计算之 JS 假值陷阱 (Issue 3 - P1 高危)**: `SubagentRunner` 使用 `activeAllowedAccounts.length || poolStatus.length` 计算有效容量。当所有账号被限流（长度为 0，JS 假值）时，容量错误跳变为满配账号数，导致限流风暴期反以最大并发度疯狂冲撞，瞬间被全盘击穿。
+4. **ESM 运行时动态调用 CJS `require` 导致账本失联 (Issue 4 - P1 高危)**: `main-plan-snapshot.ts` 在已声明 `"type": "module"` 的项目中动态调用 `require` 挂载执行账本，并在失败时以空 `catch` 吞噬异常，导致后继主控会话永远无法收到物理账本挂载头，破坏了 Pass-by-Reference 契约。
+5. **血缘追踪器纯内存驻留与重启拓扑断裂 (Issue 5 - P2 架构)**: `SessionLineageTracker` 将全部会话血缘存放在内存 Map 中，未落盘状态预写日志。当 CLI 进程重启（`--continue`）时血缘彻底清空，导致活动端点解析失效，违背准则 7。
+6. **繁忙状态缺乏双击 Ctrl+C 强制逃生机制 (Issue 6 - P2 体验)**: `InterruptController` 在 busy 状态下对每一次 SIGINT 均只调用已 abort 的控制器，若底层命令挂起，用户在控制台狂按 Ctrl+C 永远无法退出进程。
+7. **底层工具异常文本盲区与静默失败 (Issue 7 - P2 健壮性)**: `ToolBridge` 当原生工具以非数组 `rawResult.message` 或 `rawResult.error` 报告失败时，输出被置为空字符串，导致 Copilot 完全收不到失败根因。
+8. **索引重建遗漏代数元数据 (Issue 8 - P2 状态机)**: `SessionManager.rebuildIndex` 在扫描会话文件自愈时硬编码遗漏了 `generation` 与 `handoffCount`，自愈后索引丢失代数信息。
+9. **不可变压实结果被丢弃导致会话压实空转 (Issue 9 - P1 逻辑)**: `Orchestrator` 调用纯函数 `CompactionService.compactTurns` 获得压缩数组后，未回填替换 `history`，导致压实事件虽已触发，但物理历史未被削减。
+10. **执行超时硬编码 30 秒无视全局 CLI 配置 (Issue 10 - P2 契约)**: `ToolBridge.mapAction` 将 `run_command` 超时死锁在 30 秒，导致大型测试或构建命令被意外掐死。
+11. **正则前瞻截断陷阱破坏含 `tool:`/`path:` 代码段的局部编辑 (Issue 11 - P1 准确性)**: `ResilientParser` 用前瞻断言匹配字段键，若用户被替换的代码中恰好包含 `tool:` 或 `path:`，`old_string` 被拦腰切断导致补丁必然失败。
+12. **参数位置文本嗅探引发工具结果与技能倒错 (Issue 12 - P2 稳定性)**: `PromptBuilder.buildTurn2TaskPrompt` 依赖 `arg.includes("Skill")` 猜测重载参数，当 `git status` 输出包含 `skills/` 目录时，引发参数位置反转。
 
 ---
 
-## 发现的问题清单
+## 二、 发现的问题清单 (Detailed Vulnerability Matrix)
 
-### 1. `ResilientParser` 嵌套代码块导致 `write_file` / `edit` 内容静默截断
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\protocol\resilient-parser.ts#L40-L76`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 契约破坏 / 正则非贪婪匹配假终结 / 静默数据丢失
+| 编号 | 暴露问题代号 | 涉及核心文件与行号 | 置信度等级 | 缺陷类型 |
+|---|---|---|---|---|
+| 1 | **STAGE_ATTRIBUTE_DROPPED** | `src/protocol/resilient-parser.ts#L301-L348`, `src/agent/subagent-runner.ts#L102-L107` | **Level 1 (确定性缺陷)** | 上下游解析契约断裂 / 阶段屏障被强制拉平失效 |
+| 2 | **RATE_LIMIT_FALSE_POSITIVE** | `src/agent/orchestrator.ts#L523-L536, L1397-L1411` | **Level 1 (确定性缺陷)** | 启发式判据粗暴越界 / 正常代码推演误触发限流自杀 |
+| 3 | **FALSY_CAPACITY_OVERFLOW** | `src/agent/subagent-runner.ts#L84-L89` | **Level 1 (确定性缺陷)** | JS 逻辑运算符假值陷阱 / 全限流期虚增最大并发度 |
+| 4 | **ESM_REQUIRE_SILENT_FAILURE** | `src/session/main-plan-snapshot.ts#L100-L109` | **Level 1 (确定性缺陷)** | 模块化契约冲突 / 异常静默吞噬 / 物理账本挂载断裂 |
+| 5 | **LINEAGE_MEMORY_EPHEMERAL** | `src/session/lineage-tracker.ts#L18-L31, L83-L122`, `src/cli.ts#L163, L434-L465` | **Level 2 (逻辑不变量破坏)** | 状态持久化断裂 / 跨进程血缘幽灵化 / 违背准则 7 |
+| 6 | **BUSY_INTERRUPT_TRAP** | `src/agent/interrupt-controller.ts#L115-L130` | **Level 2 (逻辑不变量破坏)** | 进程控制反模式 / 异步卡死陷阱 / 缺乏逃生安全网 |
+| 7 | **TOOL_ERROR_MESSAGE_BLACKOUT** | `src/protocol/tool-bridge.ts#L758-L775` | **Level 2 (逻辑不变量破坏)** | 契约缺失 / 错误输出静默置空 / 排错反馈回路阻断 |
+| 8 | **INDEX_REBUILD_METADATA_LOSS** | `src/session/session-manager.ts#L185-L199` | **Level 2 (逻辑不变量破坏)** | 序列化不对称 / 自愈时丢失关键代数元数据 |
+| 9 | **COMPACTED_TURNS_DISCARDED** | `src/agent/orchestrator.ts#L816-L826`, `src/agent/compaction.ts#L47-L85` | **Level 1 (确定性缺陷)** | 纯函数返回值被丢弃 / 虚假压实与物理上下文膨胀 |
+| 10 | **COMMAND_TIMEOUT_HARDCODED_30S** | `src/protocol/tool-bridge.ts#L593-L609` | **Level 2 (逻辑不变量破坏)** | 隐式硬编码超时 / 破坏 CLI 全局超时契约 |
+| 11 | **PARSER_LOOKAHEAD_TRUNCATION** | `src/protocol/resilient-parser.ts#L209-L214` | **Level 1 (确定性缺陷)** | 正则前瞻截断反噬 / 代码字面量与协议字段冲突 |
+| 12 | **PROMPT_BUILDER_HEURISTIC_SWAP** | `src/protocol/prompt-builder.ts#L140-L164` | **Level 2 (逻辑不变量破坏)** | 脆弱重载文本嗅探 / 路径关键字引发参数对调 |
+
+---
+
+### Issue 1: `ResilientParser` 物理丢弃 `stage` 属性导致多阶段屏障与依赖执行逻辑全面破裂 (STAGE_ATTRIBUTE_DROPPED)
+
+- **文件路径**: [`src/protocol/resilient-parser.ts#L301-L348`](file:///e:/copilot-web%20proxy/CPH-PI/src/protocol/resilient-parser.ts#L301-L348), [`src/agent/subagent-runner.ts#L102-L107`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/subagent-runner.ts#L102-L107)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: 上下游字段解析契约断裂 / 阶段依赖调度全盘失效
 - **代码现状说明**:
-  在 `ResilientParser.parse` 中，使用 `/```(?:action|json)?\s*([\s\S]*?)```/i` 提取 Action 块内容。由于采用了非贪婪量词 `[\s\S]*?`，一旦模型输出的代码内容中自身包含三反引号（例如生成 Markdown 说明文档、包含 TypeScript 代码块的测试用例、或者编写模板生成器），正则表达式会在遇到的**第一个嵌套三反引号**处立即提前闭合。
+  `SubagentTaskSpec` 声明了 `stage?: number`，`SubagentRunner.executeBatch` 严格依赖 `t.stage` 进行阶段拓扑排序（Stage 1 ➔ Stage 2）与前序熔断隔离（Stage Barrier）。
+  但在 `ResilientParser.parseSubagentsBlock` 实现中：
+  1. JSON 数组解析分支（L309-L319）：
+     ```ts
+     return arr.map((s: any) => ({
+       role,
+       description: s.description ? String(s.description).trim() : "",
+       prompt: s.prompt ? String(s.prompt).trim() : "",
+       maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined,
+     }));
+     ```
+     `s.stage` 被显式漏掉，没有复制到返回结果中！
+  2. YAML 列表块解析分支（L328-L347）：
+     正则仅匹配了 `role`、`description`、`prompt`、`maxTurns`，压根没有任何匹配 `stage` 的逻辑！
+  3. 导致 LLM 输出的所有子代理规格在经过解析后，`stage` 均为 `undefined`；
+  4. 下游 `SubagentRunner` 执行 `Math.max(1, Math.floor(t.stage ?? 1))`，全部降级为 Stage 1，本应串行推进的 Stage 1（调研）与 Stage 2（修改）在滑动窗口下同时并行启动！
 - **反例测试提案 (PoC Test Snippet)**:
   ```typescript
+  import { describe, it, expect } from "bun:test";
   import { ResilientParser } from "../src/protocol/resilient-parser.ts";
-  import { expect, test } from "bun:test";
 
-  test("PoC: ResilientParser truncates write_file content when containing nested code fences", () => {
-    const modelOutput = [
-      "THOUGHT: Creating a readme with code sample",
-      "```action",
-      "tool: write_file",
-      "path: README.md",
-      "content:",
-      "# Project Title",
-      "```typescript",
-      "console.log('nested code');",
-      "```",
-      "End of readme",
-      "```",
-    ].join("\n");
+  it("PoC: ResilientParser silently drops stage attribute from subagents", () => {
+    const yamlInput = `\`\`\`action
+tool: invoke_subagent
+subagents:
+  - role: researcher
+    description: 阶段1调研
+    prompt: 深入调研
+    stage: 1
+  - role: coder
+    description: 阶段2修改
+    prompt: 开始写代码
+    stage: 2
+\`\`\``;
 
-    const parsed = ResilientParser.parse(modelOutput);
+    const parsed = ResilientParser.parse(yamlInput);
     expect(parsed.type).toBe("action");
-    if (parsed.type === "action") {
-      // 契约断言失败：parsed.action.content 为空或仅到 ```typescript 为止！
-      // "console.log('nested code')" 与后续内容全部被扔在 Action 块之外！
-      expect(parsed.action.content).toContain("console.log('nested code')");
-    }
+    const subagents = (parsed as any).action.subagents;
+    expect(subagents).toBeDefined();
+    // 证伪断言：解析器必须保留 stage 属性
+    expect(subagents[0].stage).toBe(1);
+    expect(subagents[1].stage).toBe(2); // 物理运行报错：received undefined
   });
   ```
 - **潜在风险与影响面**:
-  当智能体尝试创建文档、编写测试用例或编辑含代码示例的源码时，落盘的文件内容发生静默截断，严重时产生空文件或语法残缺代码，破坏工程基线。
+  模型规划的因果依赖步骤被完全摧毁，Coder 子代理在 Researcher 尚未输出任何调研事实时即并发修改工作区，引发代码踩踏与不可逆的脏状态。
 - **建议整改方向**:
-  采用四反引号（````action ... ````）多级围栏协议，或在正则解析器中实现基于围栏计数（Balanced Code Fence Counter）的状态机，严禁依赖单层非贪婪正则是提取 Action。
+  在 `parseSubagentsBlock` 中同时为 JSON 和 YAML 解析补齐 `stage` 字段抽取：
+  `stage: typeof s.stage === "number" ? s.stage : undefined`，以及 `const stageMatch = block.match(/(?:stage|step|phase)\s*:\s*(\d+)/i);`。
 
 ---
 
-### 2. `ResilientParser` 局部编辑中 `old_string` 正则前瞻过宽，遭遇 `\npath:` 发生伪终结
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\protocol\resilient-parser.ts#L201-L206`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 隐式假设冲突 / 正则定界符冲突 / Patch 目标失配
+### Issue 2: `isRateLimitResponseText` 粗暴文本匹配将正常技术讨论误判为 429 并强制杀会话 (RATE_LIMIT_FALSE_POSITIVE)
+
+- **文件路径**: [`src/agent/orchestrator.ts#L523-L536`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/orchestrator.ts#L523-L536), [`src/agent/orchestrator.ts#L1397-L1411`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/orchestrator.ts#L1397-L1411)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: 语义判据粗暴越界 / 假阳性限流拦截 / 误杀会话与健康账号误拉黑
 - **代码现状说明**:
-  `extractActionFields` 解析 `old_string` 时采用如下正则：
+  在 `Orchestrator.run` 每一轮主循环中（L524）：
+  ```ts
+  if (this.isRateLimitResponseText(turnResponseText)) {
+    return await this.executeDisasterRecoveryArbitration({ ... });
+  }
+  ```
+  而 `isRateLimitResponseText` 的判据为：
+  ```ts
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("429") ||
+    lower.includes("rate limit") ||
+    lower.includes("too many requests") ||
+    lower.includes("配额已达上限") ||
+    lower.includes("请求过于频繁") ||
+    lower.includes("throttled")
+  );
+  ```
+  当且仅当响应中包含 ````action` 或 `FINAL_ANSWER` 时跳过。
+  但在模型进行长思考、多步方案探讨、或者在 Turn 1 针对网络限流代码进行审计分析时：
+  只要模型的文本中出现了 `429`（例如“我们发现网关对客户端返回了 429 Too Many Requests”），该判据瞬间触发假阳性！
+  系统不仅立刻掐死正常推进的会话，还将当前**完全健康的账号调用 `markThrottled` 强制冻结 3 分钟**！
+- **反例测试提案 (PoC Test Snippet)**:
   ```typescript
-  contentToScan.match(
+  import { describe, it, expect } from "bun:test";
+  import { CopilotOrchestrator } from "../src/agent/orchestrator.ts";
+
+  it("PoC: orchestrator misidentifies code explanation mentioning 429 as a rate-limit crash", async () => {
+    let disasterTriggered = false;
+    const orchestrator = new CopilotOrchestrator({
+      chatClient: {
+        sendMessage: async () => ({
+          text: "我正在审查代码，发现服务端在遇到 HTTP 429 请求时未做退避重试，我接下来准备编写修复方案。",
+          conversationId: "test",
+          sessionId: "test",
+          requestId: "test",
+        }),
+      } as any,
+    });
+
+    const res = await orchestrator.run({
+      task: "审查 429 错误重试逻辑",
+      events: {
+        onDisasterOccurred: () => { disasterTriggered = true; }
+      }
+    });
+
+    // 证伪断言：正常技术推演绝不应触发灾备中断
+    expect(disasterTriggered).toBe(false); // 物理运行将失败：disasterTriggered 为 true
+    expect(res.disasterRecovered).toBeUndefined(); // 物理运行被灾备接管
+  });
+  ```
+- **潜在风险与影响面**:
+  凡是涉及 API 限流、重试中间件、HTTP 错误码 429 的编程任务，Agent 几乎百分之百触发自杀并把账号池的所有可用账号轮流锁死，导致工具完全不可用。
+- **建议整改方向**:
+  严禁扫描 LLM 生成的自然语言。限流状态必须由底层传输信令（如 SignalR 异常代码、`ChatHubClient` 专用事件 `onRateLimitDetected`、HTTP 状态码）权威判定。
+
+---
+
+### Issue 3: `SubagentRunner` 账号池计算中 `0 || poolStatus.length` 的假值陷阱导致全限流时虚增最大并发度 (FALSY_CAPACITY_OVERFLOW)
+
+- **文件路径**: [`src/agent/subagent-runner.ts#L84-L89`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/subagent-runner.ts#L84-L89)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: JavaScript 逻辑运算符假值陷阱 / 极端边界容量失真
+- **代码现状说明**:
+  在 `SubagentRunner.executeBatch` 中：
+  ```ts
+  const poolStatus = (this.pool?.getPoolStatus?.() || []) as any[];
+  const activeAllowedAccounts = poolStatus.filter(
+    (acc) => acc.isAllowed !== false && !acc.isThrottled
+  );
+  const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+  const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
+  ```
+  在 JavaScript 语义中，数字 `0` 为假值（falsy）。
+  当池中全部账号均被限流（`activeAllowedAccounts.length === 0`）时：
+  表达式 `activeAllowedAccounts.length || poolStatus.length` 会跳过 `0`，直接取值 `poolStatus.length`！
+  假设账号池共有 5 个账号，且全部处于 429 冷却期：
+  系统计算出的 `effectiveCapacity` 竟然是 `5`！
+  结果：系统立即拉起 5 个并发 Worker，同时抢占账号，瞬间抛出 5 个 `ALL_ACCOUNTS_THROTTLED`，导致全批次任务瞬间猝死。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+
+  it("PoC: falsy 0 in effectiveCapacity calculates max capacity when 0 active accounts exist", () => {
+    const poolStatus = [
+      { email: "a1", isThrottled: true },
+      { email: "a2", isThrottled: true },
+      { email: "a3", isThrottled: true },
+    ];
+    const activeAllowedAccounts = poolStatus.filter(a => !a.isThrottled);
+    expect(activeAllowedAccounts.length).toBe(0);
+
+    // 源码中的算法
+    const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+
+    // 0 个可用账号，算法却输出了 3！
+    expect(effectiveCapacity).toBe(3); 
+  });
+  ```
+- **潜在风险与影响面**:
+  在账号池遭遇突发限流时，原本应当收敛为单任务排队或等待，却反而以最大并发度雪上加霜，彻底摧毁容灾退避机制。
+- **建议整改方向**:
+  改用显式比较而非逻辑或：
+  `const effectiveCapacity = activeAllowedAccounts.length > 0 ? activeAllowedAccounts.length : 1;`。
+
+---
+
+### Issue 4: `main-plan-snapshot.ts` 在 ESM 项目中动态调用 CJS `require` 导致物理账本挂载断裂 (ESM_REQUIRE_SILENT_FAILURE)
+
+- **文件路径**: [`src/session/main-plan-snapshot.ts#L100-L109`](file:///e:/copilot-web%20proxy/CPH-PI/src/session/main-plan-snapshot.ts#L100-L109)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: 模块化契约冲突 / 异常静默吞噬 / 物理账本挂载头失效
+- **代码现状说明**:
+  在 `formatSuccessorTurn1Prompt` 中：
+  ```ts
+  if (!mountHeader && snapshot.workspaceRoot) {
+    try {
+      const { ExecutionLedger } = require("./ledger/execution-ledger.ts");
+      const ledger = new ExecutionLedger(snapshot.workspaceRoot);
+      mountHeader = ledger.formatMountHeader();
+    } catch {
+      // 容错忽略
+    }
+  }
+  ```
+  `package.json` 声明了 `"type": "module"`，且构建脚本目标为 Node bundle。
+  在标准 Node ESM 运行时中，`require` 并不存在（抛出 `ReferenceError: require is not defined`）。
+  由于被空的 `catch {}` 静默吞噬，该异常从不告警，但导致 `mountHeader` 始终为 `undefined`！
+  后继主控会话所接收到的第一轮接力提示词中，**物理账本挂载区（Section 2）被永久剔除**！
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { formatSuccessorTurn1Prompt } from "../src/session/main-plan-snapshot.ts";
+
+  it("PoC: formatSuccessorTurn1Prompt mounts ledger header without relying on require()", () => {
+    const prompt = formatSuccessorTurn1Prompt({
+      originalSessionId: "s1",
+      originalTask: "task1",
+      thought: "thought1",
+      workspaceRoot: process.cwd(),
+      plannedSubagents: []
+    }, "reports summary");
+
+    // 证伪断言：物理账本挂载区必须确定性存在
+    expect(prompt).toContain("物理执行账本已挂载");
+  });
+  ```
+- **潜在风险与影响面**:
+  违背准则 7“传引用挂载而非传值倾倒”原则，接力主控智能体完全无法获知前序已修改文件清单与物理步骤指纹。
+- **建议整改方向**:
+  移除脆弱的动态 `require`，在文件顶部直接静态导入 `import { ExecutionLedger } from "./ledger/execution-ledger.ts";`。
+
+---
+
+### Issue 5: `SessionLineageTracker` 纯内存驻留导致进程重启后代际血缘与跨代接力拓扑彻底断裂 (LINEAGE_MEMORY_EPHEMERAL)
+
+- **文件路径**: [`src/session/lineage-tracker.ts#L18-L31`](file:///e:/copilot-web%20proxy/CPH-PI/src/session/lineage-tracker.ts#L18-L31), [`src/cli.ts#L163, L434-L465`](file:///e:/copilot-web%20proxy/CPH-PI/src/cli.ts#L163)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 状态持久化断裂 / 跨进程血缘幽灵化 / 违背准则 7
+- **代码现状说明**:
+  `SessionLineageTracker` 维护了会话代际关系、`resolveActiveHead` 与 `getGenerationInfo`。
+  但其内部状态仅保存在 `private registry = new Map<string, SessionLineage>();` 中，没有任何预写日志（WAL）或落盘机制。
+  当用户执行 `Ctrl+C` 退出 CLI，随后执行 `cph --continue` 或 `cph session resume` 时：
+  - 新进程创建了一个崭新的空 `SessionLineageTracker`；
+  - `resolveActiveHead(sessionId)` 返回自身，无法追踪到前序已完成的代际跃迁；
+  - 丢失了所有祖先关系，代际代数丢失。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { SessionLineageTracker } from "../src/session/lineage-tracker.ts";
+
+  it("PoC: restarted lineage tracker loses all ancestry and successor chains", () => {
+    const trackerA = new SessionLineageTracker();
+    trackerA.register({ sessionId: "ses_1", role: "main", status: "handed_off" });
+    trackerA.register({ sessionId: "ses_2", role: "main", status: "active", predecessorId: "ses_1" });
+    trackerA.linkSuccessor("ses_1", "ses_2");
+    expect(trackerA.resolveActiveHead("ses_1")).toBe("ses_2");
+
+    // 模拟新进程启动
+    const trackerB = new SessionLineageTracker();
+    expect(trackerB.resolveActiveHead("ses_1")).toBe("ses_2"); // 物理运行失败：返回 ses_1
+  });
+  ```
+- **潜在风险与影响面**:
+  跨进程接力时，子代理交付物可能被路由到已经归档的旧会话，引起状态机脱节。
+- **建议整改方向**:
+  将血缘记录以追加写日志格式同步至 `.cph/state/lineage.jsonl`，初始化时自动回放恢复。
+
+---
+
+### Issue 6: `InterruptController` 在繁忙状态下缺乏双击 Ctrl+C 强制逃生机制 (BUSY_INTERRUPT_TRAP)
+
+- **文件路径**: [`src/agent/interrupt-controller.ts#L115-L130`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/interrupt-controller.ts#L115-L130)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 进程控制反模式 / 异步卡死陷阱 / 缺乏逃生安全网
+- **代码现状说明**:
+  在 `InterruptController.handleSigint()` 中：
+  ```ts
+  if (this.isBusyState) {
+    if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
+      this.activeAbortController.abort();
+    }
+    this.options.onOperationAborted?.();
+    return {
+      action: "aborted_operation",
+      message: "操作已中止，保留会话并返回交互等待模式",
+      timestamp: now,
+    };
+  }
+  ```
+  如果某个子进程（如卡住的外部命令或网络请求）忽略了 AbortSignal 或者清理耗时极长，`isBusyState` 一直为 `true`。
+  此时用户连续按下 5 次 `Ctrl+C`，代码依然只进入该分支并返回 `aborted_operation`，永远无法退出进程！
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { InterruptController } from "../src/agent/interrupt-controller.ts";
+
+  it("PoC: pressing Ctrl+C 5 times during busy state never triggers exit", () => {
+    let exitTriggered = false;
+    const controller = new InterruptController({
+      onExit: () => { exitTriggered = true; }
+    });
+
+    controller.beginBusy();
+
+    for (let i = 0; i < 5; i++) {
+      const res = controller.handleSigint();
+      expect(res.action).toBe("aborted_operation");
+    }
+
+    expect(exitTriggered).toBe(true); // 物理运行失败：exitTriggered 始终为 false
+  });
+  ```
+- **潜在风险与影响面**:
+  当外部子工具发生死锁或僵尸进程时，用户完全失去控制权，只能杀掉整个终端窗口。
+- **建议整改方向**:
+  在 busy 状态下增加连续击键检测。若已调用 `abort()` 后的 1.5 秒内用户再次按下 Ctrl+C，直接判定为强制退出，调用 `onExit` 或 `process.exit(130)`。
+
+---
+
+### Issue 7: `ToolBridge.executeAction` 工具失败时若无 content 数组则错误信息被置空 (TOOL_ERROR_MESSAGE_BLACKOUT)
+
+- **文件路径**: [`src/protocol/tool-bridge.ts#L758-L775`](file:///e:/copilot-web%20proxy/CPH-PI/src/protocol/tool-bridge.ts#L758-L775)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 契约缺失 / 错误输出静默置空 / 排错反馈回路阻断
+- **代码现状说明**:
+  当底层工具执行失败返回 `{ isError: true, message: "EACCES: permission denied" }` 时：
+  `ToolBridge` 仅尝试从 `rawResult.content` 数组或 `rawResult.structuredContent` 中读取 `output`。
+  若工具未将错误放入 `content` 数组，`output` 保持为初始值 `""`！
+  最终回传给 Copilot 的上下文为：
+  `【TOOL_RESULT: bash (xxx) - FAILED】\n\n【END_TOOL_RESULT】`
+  错误正文完全丢失，模型无法得知失败根因。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { ToolBridge } from "../src/protocol/tool-bridge.ts";
+
+  it("PoC: tool returning error via message field produces empty output", async () => {
+    const bridge = new ToolBridge({
+      tools: [
+        {
+          name: "bash",
+          description: "mock",
+          execute: async () => ({
+            isError: true,
+            message: "Fatal: out of memory",
+          } as any),
+        } as any,
+      ],
+    });
+
+    const res = await bridge.executeAction({ tool: "run_command", command: "test" });
+    expect(res.success).toBe(false);
+    expect(res.output).toContain("Fatal: out of memory"); // 物理运行失败：received ""
+  });
+  ```
+- **潜在风险与影响面**:
+  破坏了诊断闭环（反馈回路），模型因看不见错误堆栈而陷入反复盲猜重试。
+- **建议整改方向**:
+  在提取 output 时增加对 `rawResult.message`、`rawResult.error` 与 `rawResult.text` 的降级合并。
+
+---
+
+### Issue 8: `SessionManager.rebuildIndex` 在扫描重构索引时硬编码遗漏代数元数据 (INDEX_REBUILD_METADATA_LOSS)
+
+- **文件路径**: [`src/session/session-manager.ts#L185-L199`](file:///e:/copilot-web%20proxy/CPH-PI/src/session/session-manager.ts#L185-L199)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 序列化不对称 / 自愈时丢失关键代数元数据
+- **代码现状说明**:
+  在 `SessionManager.saveSession` 中，索引条目包含了 `generation` 和 `handoffCount`。
+  但在 `SessionManager.rebuildIndex` 中：
+  扫描会话 JSON 时，在 `items.push({...})` 中遗漏了将 `session.generation` 和 `session.handoffCount` 赋值给索引项。
+  一旦 `index.json` 触发自愈重建，所有历史会话在列表中的代数标记全部还原丢失。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { SessionManager } from "../src/session/session-manager.ts";
+  import fs from "fs";
+  import path from "path";
+
+  it("PoC: rebuildIndex strips generation and handoffCount metadata", () => {
+    const testDir = path.join(process.cwd(), ".tmp_test_rebuild");
+    const mgr = new SessionManager(testDir);
+    const session = mgr.createSession({ title: "Test" });
+    session.generation = 3;
+    session.handoffCount = 2;
+    mgr.saveSession(session);
+
+    const indexPath = path.join(testDir, ".cph", "sessions", "index.json");
+    fs.unlinkSync(indexPath);
+
+    const reloaded = mgr.listSessions();
+    expect(reloaded[0].generation).toBe(3); // 物理运行失败：received undefined
+  });
+  ```
+- **潜在风险与影响面**:
+  索引自愈时发生静默数据丢弃，TUI 状态栏和历史列表中的接力标识失效。
+- **建议整改方向**:
+  在 `rebuildIndex` 的投影对象中补齐 `generation: session.generation, handoffCount: session.handoffCount`。
+
+---
+
+### Issue 9: `CompactionService.compactTurns` 返回浅拷贝数组未被 `Orchestrator` 回填导致会话压实空转 (COMPACTED_TURNS_DISCARDED)
+
+- **文件路径**: [`src/agent/orchestrator.ts#L816-L826`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/orchestrator.ts#L816-L826), [`src/agent/compaction.ts#L47-L85`](file:///e:/copilot-web%20proxy/CPH-PI/src/agent/compaction.ts#L47-L85)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: 纯函数返回值被丢弃 / 虚假压实与物理上下文膨胀
+- **代码现状说明**:
+  在 `Orchestrator.run` 中：
+  ```ts
+  if (this.enableInSessionCompaction && history.length > 2) {
+    const compaction = CompactionService.compactTurns(history, {
+      preserveRecentTurns: 2,
+    });
+    if (compaction.clearedCharsCount > 0) {
+      events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
+    }
+  }
+  ```
+  `CompactionService.compactTurns` 是纯函数，返回的是一个新数组 `compactedTurns`，根本不会原地修改传入的 `history` 数组！
+  `Orchestrator` 计算了压缩率，触发了 `onCompacted` 事件，但**完全没有将 `compactedTurns` 同步回 `history`**！
+  在后续轮次或生成交接文档时，所引用的 `history` 仍然是 100% 原始未压缩的巨型内容。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { CompactionService, type TurnRecord } from "../src/agent/compaction.ts";
+
+  it("PoC: compactTurns is non-mutating and does not alter input array in place", () => {
+    const history: TurnRecord[] = [
+      { turn: 1, toolOutput: "A".repeat(1000) },
+      { turn: 2, toolOutput: "B".repeat(1000) },
+      { turn: 3, toolOutput: "C".repeat(1000) },
+    ];
+
+    CompactionService.compactTurns(history, { preserveRecentTurns: 1, maxToolResultChars: 100 });
+
+    // 验证 history 原地被修改的假设破裂
+    expect(history[0].toolOutput!.length).toBe(1000); // 未被原地压缩
+  });
+  ```
+- **潜在风险与影响面**:
+  功能形成假象（UI 报告压实成功，物理上上下文未有任何缩减），长会话依然会遭遇 Token 溢出与 Sydney 截断。
+- **建议整改方向**:
+  在 `Orchestrator` 中使用 `history.splice(0, history.length, ...compaction.compactedTurns)` 将压缩结果原子同步回内部状态。
+
+---
+
+### Issue 10: `ToolBridge.mapAction` 硬编码 30 秒超时无视全局 CLI 配置导致长耗时测试被意外掐断 (COMMAND_TIMEOUT_HARDCODED_30S)
+
+- **文件路径**: [`src/protocol/tool-bridge.ts#L593-L609`](file:///e:/copilot-web%20proxy/CPH-PI/src/protocol/tool-bridge.ts#L593-L609)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 隐式硬编码超时 / 破坏 CLI 全局超时契约
+- **代码现状说明**:
+  在 `ToolBridge.mapAction` 中：
+  ```ts
+  const command = action.command ?? action.cmd ?? "";
+  const timeout = action.timeout !== undefined ? Number(action.timeout) : 30;
+  ```
+  尽管用户在 CLI 命令行中通过 `--timeout 600` 配置了 10 分钟超时，但 `ToolBridge` 在构造时压根未传入该全局超时，且在映射命令时无条件将默认值设为 `30` 秒！
+  当运行整个工程的完整单元测试套件（如 72 个测试文件运行超过 30 秒）时，底层 Pi 进程守护强制杀进程并报错 `Command timed out after 30 seconds`。
+- **反例测试提案 (PoC Test Snippet)**:
+  ```typescript
+  import { describe, it, expect } from "bun:test";
+  import { ToolBridge } from "../src/protocol/tool-bridge.ts";
+
+  it("PoC: tool-bridge defaults command timeout to 30s regardless of global cli options", () => {
+    const bridge = new ToolBridge();
+    const mapped = bridge.mapAction({ tool: "run_command", command: "bun test tests/" });
+    // 证伪：默认超时被焊死在 30 秒
+    expect((mapped.args as any).timeout).toBe(30);
+  });
+  ```
+- **潜在风险与影响面**:
+  对耗时较长但正常的测试、编译与依赖安装任务造成毁灭性打击，Agent 频繁遭遇超时假死。
+- **建议整改方向**:
+  在 `ToolBridgeOptions` 中支持传入 `defaultCommandTimeout`，由 CLI 统一传递全局超时配置（默认建议 180~300 秒）。
+
+---
+
+### Issue 11: `ResilientParser` 正则前瞻截断陷阱导致含 `tool:` / `path:` 代码段的局部编辑精准匹配失败 (PARSER_LOOKAHEAD_TRUNCATION)
+
+- **文件路径**: [`src/protocol/resilient-parser.ts#L209-L214`](file:///e:/copilot-web%20proxy/CPH-PI/src/protocol/resilient-parser.ts#L209-L214)
+- **置信度等级**: **Level 1 (确定性缺陷)**
+- **异味/缺陷类别**: 正则前瞻截断反噬 / 代码字面量与协议字段冲突
+- **代码现状说明**:
+  在 `extractActionFields` 中，提取 `old_string` 与 `new_string` 时：
+  ```ts
+  const oldStrMatch = contentToScan.match(
     /(?:old_string|oldstring|old_text|oldText)\s*:\s*([\s\S]*?)(?=\n(?:new_string|newstring|new_text|newText|tool|path)\s*:|$)/i
   );
   ```
-  该前瞻断言 `(?=\n(?:...|tool|path)\s*:)` 假设 `path:` 或 `tool:` 只能作为外层的 Action 参数字段。然而在待修改的源码中（例如 YAML 配置文件、Nginx 配置、包含 `path: string` 的 TypeScript 结构体定义），出现以换行起头的 `path:` 是常见场景。
-- **反例测试提案 (PoC Test Snippet)**:
+  若被编辑的源码本身包含对象字段：
   ```typescript
-  import { ResilientParser } from "../src/protocol/resilient-parser.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: ResilientParser truncates old_string when target code contains 'path:' property", () => {
-    const modelOutput = [
-      "```action",
-      "tool: edit",
-      "path: config.yaml",
-      "old_string:",
-      "server:",
-      "path: /var/www/old",
-      "port: 80",
-      "new_string:",
-      "server:",
-      "path: /var/www/new",
-      "port: 80",
-      "```",
-    ].join("\n");
-
-    const parsed = ResilientParser.parse(modelOutput);
-    expect(parsed.type).toBe("action");
-    if (parsed.type === "action") {
-      // 契约断言失败：old_string 在遇到 \npath: /var/www/old 时被过宽前瞻提前切断！
-      // 实际捕获到的 old_string 仅剩 "server:"，后续物理 patch 执行必报 oldText not found！
-      expect(parsed.action.old_string).toBe("server:\npath: /var/www/old\nport: 80");
-    }
-  });
-  ```
-- **潜在风险与影响面**:
-  所有涉及修改配置项、路径变量、或含有 `path`/`tool` 键名的源码编辑，`old_string` 必被截断，导致 `ToolBridge` 的 `edit` 工具比对失败（`oldText not found`），诱发无效的反复自我重试。
-- **建议整改方向**:
-  移除 `tool|path` 等通用词作为自由内容的前瞻终止符；改用显式块级定界协议（例如定界占位符或严格缩进判断），或者在 Prompt 中强化 JSON 格式 Action 调用。
-
----
-
-### 3. `ChatHubClient` 在握手后异常断开时调用 `settleResolve`，将网络崩溃伪装为成功
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\transport\chathub-client.ts#L460-L481`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 异常未捕获 / 契约时序倒错 / 容灾管道屏蔽
-- **代码现状说明**:
-  在 `ws.onclose` 事件处理中：
-  ```typescript
-  ws.onclose = (ev) => {
-    if (!hasSentChat) {
-      if (ev.code === 1008 || ev.code === 1006) {
-        events?.onRateLimitDetected?.(this.token.email);
-      }
-      settleReject(new Error(`WebSocket closed prematurely (${ev.code})`));
-    } else if (!isSettled) {
-      // If closed after chat was sent but before type 2/3 frame
-      settleResolve({
-        text: fullText,
-        reasoning: reasoningText,
-        ...
-      });
-    }
+  const options = {
+    tool: "git",
+    path: "/usr/bin"
   };
   ```
-  该逻辑存在严重假设缺陷：认为只要 `hasSentChat` 为真，连接关闭就是“对端正常完成传输”。然而在实际网络环境下，TCP 异常断开（1006 Abnormal Closure）、代理中断、或者上游悉尼服务在流式生成中途抛出 1008（Policy Violation / Quota Exceeded）均发生在 `hasSentChat` 之后！
+  前瞻断言匹配到代码中的 `\ntool:` 时，**误以为遇到了协议中的下一个 tool 字段**，导致 `old_string` 在此处被截断！
+  提取出来的 `old_string` 只有前半截，底层 `edit` 工具必定抛出 `Could not find exact match`。
 - **反例测试提案 (PoC Test Snippet)**:
   ```typescript
-  import { ChatHubClient } from "../src/transport/chathub-client.ts";
-  import { expect, test } from "bun:test";
+  import { describe, it, expect } from "bun:test";
+  import { ResilientParser } from "../src/protocol/resilient-parser.ts";
 
-  test("PoC: ChatHubClient must reject on premature socket close (code 1006) without SignalR completion frame", async () => {
-    // 契约公理：在收到 SignalR Type 2 (Completion) 或 Type 3 之前，Socket 关闭属于异常终止
-    // 现状下：ChatHubClient 会直接 settleResolve({ text: "" })，返回空字符串！
-    // 上游 Orchestrator 接收到空字符串，解析为 invalid_chatter，耗尽轮次却不触发 429 容灾。
+  it("PoC: ResilientParser truncates old_string if code contains 'tool:' or 'path:'", () => {
+    const yaml = `tool: edit
+path: src/test.ts
+old_string: const config = {
+  tool: "bash",
+  path: "/bin/sh"
+};
+new_string: const config = {
+  tool: "zsh",
+  path: "/bin/zsh"
+};`;
+
+    const parsed = ResilientParser.parse(yaml);
+    expect(parsed.type).toBe("action");
+    const action = (parsed as any).action;
+    // 证伪断言：old_string 必须包含整块代码
+    expect(action.old_string).toContain('path: "/bin/sh"'); // 物理运行失败：在 tool: 处被切断
   });
   ```
 - **潜在风险与影响面**:
-  网络抖动或中途 429 发生时，由于没有抛出异常，`Orchestrator` 的 `catch (err)` 与 `isRecoverableTransportError(err)` 完全被绕过；由于 `fullText` 为残缺或空串，被误判为 `invalid_chatter`，给模型注入纠偏指令，造成死循环且白白浪费宝贵配额。
+  凡是修改与工具、路径相关的接口、配置文件或代码段，局部精准编辑 100% 失败，迫使模型只能盲目退回整文件覆写。
 - **建议整改方向**:
-  在 `onclose` 中，若未收到过 SignalR 完结帧（Type 2 或 Type 3）且 `isSettled` 仍为 false，必须无条件通过 `settleReject` 抛出带状态码的连接中断异常（如 `TransportClosedError(ev.code)`），严禁通过 `settleResolve` 假装成功。
+  前瞻断言必须限制在非缩进顶格位置（`(?=\n(?![ \t])(?:new_string|tool|path)\s*:)`），或引导模型采用带引号多行块结构。
 
 ---
 
-### 4. `Orchestrator` 默认阈值 0 触发激进云端附件上传，彻底抹除 Prompt 工具输出事实
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\orchestrator.ts#L195-L196`, `L723-L731` 以及 `E:\copilot-web proxy\CPH-PI\src\protocol\prompt-builder.ts#L213-L224`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 隐式假设冲突 / 认知事实抹除 / 单次附件生命周期导致状态丢失
+### Issue 12: `PromptBuilder.buildTurn2TaskPrompt` 文本嗅探导致路径中含 "skills" 时参数发生颠倒 (PROMPT_BUILDER_HEURISTIC_SWAP)
+
+- **文件路径**: [`src/protocol/prompt-builder.ts#L140-L164`](file:///e:/copilot-web%20proxy/CPH-PI/src/protocol/prompt-builder.ts#L140-L164)
+- **置信度等级**: **Level 2 (逻辑不变量破坏)**
+- **异味/缺陷类别**: 脆弱重载文本嗅探 / 路径关键字引发参数对调
 - **代码现状说明**:
-  在 `Orchestrator` 构造器中：
-  ```typescript
-  this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
-  this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
-  ```
-  在决策是否上传附件时：
-  ```typescript
-  const shouldUpload =
-    this.enableCloudAttachment &&
-    toolResult.success &&
-    charCount > 0 &&
-    (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0
-      ? true
-      : charCount > this.cloudAttachmentThresholdChars ||
-        lineCount > this.cloudAttachmentThresholdLines);
-  ```
-  若调用方未显式设置阈值，默认 `0` 判定为 `true`，导致**所有大于 0 字符的工具结果**（即使只有 5 个字符如 `"true"`）都被触发上传 OneDrive。随后生成的 Prompt 为：
-  ```text
-  [TOOL_RESULT for read_file - SUCCESS (ATTACHED)]:
-  ✔ read_file 执行成功 (共 1 行 / 5 字符)。完整执行结果已作为文件附件【...】挂载送达。
-  ```
-  Prompt 中**完全移除了工具执行内容**！更严重的是，在 `orchestrator.ts` 第 458 行，`currentAnnotations = []` 在当前轮次发包后被立即清空！下一轮对话时，云端附件不再被携带，而 Prompt 里又没有任何历史输出文字，模型瞬间失明！
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { PromptBuilder } from "../src/protocol/prompt-builder.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: Attached tool result prompt completely hides actual tool output text", () => {
-    const prompt = PromptBuilder.buildAttachedToolResultPrompt(
-      "read_file",
-      "tool-result-package.json.txt",
-      { lineCount: 20, charCount: 500 }
-    );
-    // 契约断言：在下一轮消息中，若附件未被模型感知，Prompt 中是否有任何文本保底？
-    // 事实：输出中仅有挂载提示，完全不含 package.json 的任何字段！
-    expect(prompt).not.toContain("package.json");
-    expect(prompt).toContain("完整执行结果已作为文件附件");
-  });
-  ```
-- **潜在风险与影响面**:
-  在常规单机使用场景下，如果账号具备 Graph 权限，模型的每一次小读取都会被变成 OneDrive 附件；一旦悉尼云端解析延迟或模型未主动挂载附件，模型就会反复宣称“你看不到本地文件，请上传”，直接触发 `RefusalGuard` 死循环。
-- **建议整改方向**:
-  默认附件阈值绝不能为 `0`！应设为合理的工业级阈值（如 `charCount > 3000` 或 `lineCount > 50`，与 `MAX_INLINE_OUTPUT_CHARS` 对齐）；且在附件 Prompt 中必须保留首尾预览行（Snapshot Head/Tail）。
-
----
-
-### 5. `AccountPool` 轮询索引在异步 Token 交换前未递增，导致并发子代理完全碰撞
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\auth\account-pool.ts#L320-L353`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 隐蔽的状态共享与并发竞态 / 竞态条件 / 账号池并发死锁
-- **代码现状说明**:
-  在 `getNextAvailableToken` 中：
-  ```typescript
-  for (let i = 0; i < total; i++) {
-    const idx = (this.currentIndex + i) % total;
-    const acc = accounts[idx];
-    ...
-    if (!status.isThrottled) {
-      try {
-        const session = await this.manager.getAccessToken(acc.email); // 异步网络 IO！
-        this.currentIndex = (idx + 1) % total; // 只有在 await 成功返回后才更新！
-        status.lastUsedAt = now;
-        return session;
-      } ...
+  在 `buildTurn2TaskPrompt` 中：
+  ```ts
+  if (arg3 !== undefined && arg3 !== "") {
+    if (arg2.includes("Skill") || arg2.includes("技能") || arg2 === "") {
+      skillsSection = arg2;
+      toolResult = arg3;
+    } else if (arg3.includes("Skill") || arg3.includes("技能")) {
+      toolResult = arg2;
+      skillsSection = arg3;
     }
   }
   ```
-  当 `SubagentRunner` 并发启动多个子代理（如 Coder 与 Researcher）时，它们几乎在同一毫秒调用 `getNextAvailableToken()`。由于 `this.currentIndex` 仅在 `getAccessToken` 异步网络请求解析后才更新，所有并发子代理在进入循环时读到的 `idx` 完全相同！
+  为了兼容不同参数顺序，代码以 `includes("Skill")` 进行判断。
+  但如果 Turn 1 执行的是 `git status`，且仓库中包含 `skills/` 目录或修改了 `SkillLoader`：
+  `toolResult` 中必然含有 "Skill" 字符串！
+  这导致 `arg2`（工具执行结果）被判定为 `skillsSection`，而 `arg3`（实际技能说明）被判定为 `toolResult`！
+  两者的内容在组装 Prompt 时被完全颠倒。
 - **反例测试提案 (PoC Test Snippet)**:
   ```typescript
-  import { AccountPool } from "../src/auth/account-pool.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: Concurrent getNextAvailableToken calls collide on the same account", async () => {
-    let callCount = 0;
-    const mockManager: any = {
-      loadAccounts: () => [
-        { email: "acc1@test.com", refreshToken: "rt1" },
-        { email: "acc2@test.com", refreshToken: "rt2" },
-      ],
-      getConfigPath: () => "mock",
-      getAccessToken: async (email: string) => {
-        // 模拟网络延迟 20ms
-        await new Promise((r) => setTimeout(r, 20));
-        return { email, accessToken: "at", refreshToken: "rt", expiresAt: Date.now() + 10000, oid: "o", tid: "t" };
-      },
-    };
-
-    const pool = new AccountPool(mockManager);
-    const [token1, token2] = await Promise.all([
-      pool.getNextAvailableToken(),
-      pool.getNextAvailableToken(),
-    ]);
-
-    // 契约断言：在有两个健康账号的池子中，两个并发请求应当分配不同账号以防止 429 碰撞！
-    // 现状：token1.email === token2.email === "acc1@test.com"！
-    expect(token1.email).not.toBe(token2.email);
-  });
-  ```
-- **潜在风险与影响面**:
-  并发子代理机制名存实亡：所有并发请求都被导向同一个 M365 账号，不仅瞬间击穿该账号的悉尼频控阈值触发 429，而且完全浪费了账号池的多活能力。
-- **建议整改方向**:
-  在选定候选索引 `idx` 时立即预先递增 `this.currentIndex`（乐观分配锁），或使用 Promise Mutex 互斥队列保障 `getNextAvailableToken` 的原子调度。
-
----
-
-### 6. `TokenManager` 缺乏并发刷新凭据互斥锁，触发 Azure AD Refresh Token 轮转作废
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\auth\token-manager.ts#L193-L270`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 隐蔽的状态共享与并发竞态 / OAuth2 凭据作废 / 竞态条件
-- **代码现状说明**:
-  当缓存中的 Token 过期或接近过期时，`getAccessToken` 执行刷新逻辑：
-  ```typescript
-  const plainRt = decryptToken(target.refreshToken);
-  const res = await this.fetchFn(this.tokenEndpoint, ...);
-  ...
-  if (data.refresh_token && data.refresh_token !== plainRt) {
-    target.refreshToken = encryptToken(data.refresh_token);
-    this.saveAccounts(accounts);
-  }
-  ```
-  在没有 In-flight 请求去重（Deduplication）的情况下，如果同一账号有两个并发调用同时发现缓存过期，它们会几乎同时带着相同的旧 `refresh_token` 请求 Azure AD。
-  由于 Azure AD 启用了 **Refresh Token Rotation (单次刷新令牌轮转)**，第一个到达的请求会成功并废除旧令牌；第二个到达的请求将收到 `invalid_grant`（The refresh token has expired or is invalid）。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { TokenManager } from "../src/auth/token-manager.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: TokenManager must deduplicate in-flight token refresh requests for the same email", async () => {
-    let tokenEndpointCalls = 0;
-    const mockFetch = async () => {
-      tokenEndpointCalls++;
-      await new Promise((r) => setTimeout(r, 20));
-      return {
-        ok: true,
-        json: async () => ({
-          access_token: "header.eyJleHAiOjI1MzQwMjMwMDd9.sig",
-          refresh_token: "new_rt_" + tokenEndpointCalls,
-          expires_in: 3600,
-        }),
-      } as any;
-    };
-
-    const manager = new TokenManager("dummy", { fetchFn: mockFetch as any });
-    (manager as any).loadAccounts = () => [{ email: "test@test.com", refreshToken: "old_rt" }];
-
-    // 并发发起两次获取
-    await Promise.all([
-      manager.getAccessToken("test@test.com", true),
-      manager.getAccessToken("test@test.com", true),
-    ]);
-
-    // 契约断言：同一账号并发刷新必须复用同一个 In-flight Promise，调用次数应为 1！
-    // 现状：tokenEndpointCalls === 2，在生产 Azure AD 环境下将引发 invalid_grant 灾难！
-    expect(tokenEndpointCalls).toBe(1);
-  });
-  ```
-- **潜在风险与影响面**:
-  高并发或短时间多次调用时，账号的 Refresh Token 会被 Azure AD 永久失效，导致整个账号从账号池中暴毙，必须人工重新扫码或登录。
-- **建议整改方向**:
-  在 `TokenManager` 内部维护 `private refreshingPromises = new Map<string, Promise<ActiveSessionToken>>()`; 针对同账号的刷新必须命中同一 Promise。
-
----
-
-### 7. `Orchestrator` Handoff 文件路径未做路径穿越消毒，存在任意写文件风险
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\orchestrator.ts#L593`, `L908`, `L1244`, `L1416`
-- **置信度等级**: Level 1 (确定性安全/契约缺陷)
-- **异味/缺陷类别**: 契约破坏 / 路径穿越隐患 / 隐式安全假设冲突
-- **代码现状说明**:
-  在 `SessionManager` 中，设计者专门编写了严格的白名单校验：
-  ```typescript
-  private isValidSessionId(id: string): boolean {
-    return /^[a-zA-Z0-9_\-]+$/.test(id);
-  }
-  ```
-  然而在 `Orchestrator.ts` 中，所有持久化交接文档的地方均直接将外部传入的 `sessionId` 拼接到路径：
-  ```typescript
-  const docPath = path.join(handoffsDir, `handoff-${targetSessionId}.md`);
-  fs.writeFileSync(docPath, parsed.handoffDoc, "utf8");
-  ```
-  `targetSessionId` 直接来源于 `options.sessionId`（调用方或命令行 `--session` 自由传入）。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import path from "node:path";
-  import { expect, test } from "bun:test";
-
-  test("PoC: Unsanitized sessionId escapes handoffs sandbox directory", () => {
-    const workspaceRoot = "E:\\test-workspace";
-    const handoffsDir = path.join(workspaceRoot, ".cph", "handoffs");
-    const maliciousSessionId = "../../system-tamper";
-    const resolvedPath = path.join(handoffsDir, `handoff-${maliciousSessionId}.md`);
-
-    // 契约断言：生成的路径必须严格限制在 handoffsDir 之内！
-    // 现状：resolvedPath = "E:\\test-workspace\\system-tamper.md"，成功逃逸出 .cph/handoffs/ 目录！
-    expect(path.normalize(resolvedPath).startsWith(handoffsDir)).toBe(true);
-  });
-  ```
-- **潜在风险与影响面**:
-  违背了 `AGENTS.md` 规定的“仅在二级目录写入安全文件”铁律，如果外部会话 ID 被恶意构造或带有相对路径，可逃逸出 `.cph/handoffs/` 覆写任意 Markdown 文件。
-- **建议整改方向**:
-  在 `Orchestrator` 中强制对 `targetSessionId` 进行过滤消毒，统一调用 `cleanId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")`。
-
----
-
-### 8. `ResilientParser` 终结符正则模糊，技术说明文本中的 `ALL_TASKS_COMPLETED` 引发任务提前假死
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\protocol\resilient-parser.ts#L80-L113`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 协议标记解析注入 / 假完成 / 正则词界边界漏洞
-- **代码现状说明**:
-  在 `ResilientParser.parse` 步骤 2b 中：
-  ```typescript
-  if (
-    trimmed.includes("ALL_TASKS_COMPLETED") ||
-    trimmed.includes("【已完成交付】")
-  ) {
-    return {
-      type: "final_answer",
-      thought: "",
-      answer: { summary: trimmed, raw: trimmed },
-    };
-  }
-  ```
-  只要输出文本中包含该子串，且前面没有匹配到 Action 块，解析器就强制判定为 `final_answer`。
-  当模型在正常分析报错或审查协议时（例如：“下游测试因缺少 `ALL_TASKS_COMPLETED` 标识而挂起”），输出中完全不包含 Action，该逻辑直接触发提前完结。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { ResilientParser } from "../src/protocol/resilient-parser.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: ResilientParser falsely completes task when model explains a missing ALL_TASKS_COMPLETED tag", () => {
-    const modelOutput = "诊断发现：测试脚本在等待 ALL_TASKS_COMPLETED 信号时发生超时，我们还需要继续排查。";
-    const parsed = ResilientParser.parse(modelOutput);
-
-    // 契约断言：模型明确在陈述排查过程，绝对不能将其视作 final_answer！
-    // 现状：parsed.type 确为 "final_answer"，导致 Harness 提前退出并宣告任务成功！
-    expect(parsed.type).not.toBe("final_answer");
-  });
-  ```
-- **潜在风险与影响面**:
-  智能体在排查与协议测试相关的任务时，一旦在推演中提及该标记，任务会瞬间意外终止，遗留未完成的代码变更。
-- **建议整改方向**:
-  移除 `trimmed.includes("ALL_TASKS_COMPLETED")` 这种无边界的模糊匹配；必须强制匹配独立行标记（例如 `/^(?:FINAL_ANSWER:|【已完成交付】)\s*/m`）。
-
----
-
-### 9. `RefusalGuard` 强匹配模式串产生假阳性拦截，形成死循环并误封账号
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\refusal-guard.ts#L14-L62`, `L68-L91` 以及 `src/agent/orchestrator.ts#L514-L542`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 隐式假设冲突 / 负面词陷阱 / 假阳性误伤正常业务
-- **代码现状说明**:
-  `RefusalGuard` 预定义了大量敏感正则：
-  ```typescript
-  /\/无法直接访问.*本地/i,
-  /\/看不到该项目目录/i,
-  /\/缺少待审计项目源码/i,
-  ```
-  当模型执行审计任务或排查脚本权限问题，并在对话中指出客观事实：“经分析，该脚本报错是因为权限不足导致无法直接访问本地 D 盘”时，由于其未输出 Action 块，`detectRefusal` 返回 `true`。
-  `Orchestrator` 随即拦截该响应，抛弃模型的正确回答，向模型灌入强硬纠偏提示；3 次重试失败后，直接将正常账号打上 `isThrottled = true` 强制踢出。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { RefusalGuard } from "../src/agent/refusal-guard.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: RefusalGuard falsely intercepts objective analysis containing refusal keywords", () => {
-    const analysisReport = "根据测试结果分析，进程权限受限，导致构建器无法直接访问本地配置文件目录。";
-    const detected = RefusalGuard.detectRefusal(analysisReport);
-
-    // 契约断言：正常的技术分析陈述不得被判定为沙盒幻觉拒绝！
-    // 现状：detected === true！
-    expect(detected).toBe(false);
-  });
-  ```
-- **潜在风险与影响面**:
-  当智能体进行权限分析、环境诊断或代码审查时，一旦命中文本特征就会遭到 Harness 暴力拦截并强行重写 Prompt，造成分析逻辑被截断，甚至导致账号池被误杀耗尽。
-- **建议整改方向**:
-  判断拒绝不能单靠关键字正则；应结合拒绝语气特征（如“作为 AI 助手，我不能...”），且在向模型二次纠偏时避免直接封禁账号，或者允许在特定的分析类任务中临时关闭拒绝守卫。
-
----
-
-### 10. `SubagentRunner` 与 `Orchestrator` 状态时序倒置，导致后继会话重定向事件无法触发
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\orchestrator.ts#L655-L685` 与 `src/agent/subagent-runner.ts#L139-L157`
-- **置信度等级**: Level 2 (结构性不变量破坏)
-- **异味/缺陷类别**: 状态时序断裂 / 隐式假设冲突 / 架构执行序倒置
-- **代码现状说明**:
-  在 `SubagentRunner.executeBatch` 结束时：
-  ```typescript
-  const activeMainSessionId = this.lineageTracker
-    ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
-    : this.mainSessionId;
-
-  if (activeMainSessionId !== this.mainSessionId) {
-    this.loggerTree?.logTimelineEvent({
-      type: "SUBAGENT_REROUTED_TO_SUCCESSOR",
-      ...
-    });
-  }
-  ```
-  作者假设在子代理执行期间，主会话可能已经发生接力产生 Successor，因此尝试重定向交付物。
-  然而在 `orchestrator.ts` 中：
-  ```typescript
-  // 1. 等待全部子代理批处理执行完毕：
-  const reports = await runner.executeBatch(subagents, signal, ...);
-  // 2. 然后才进行后继主会话的创建与登记：
-  this.generation++;
-  const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
-  this.sessionId = nextSessionId;
-  this.lineageTracker?.register(...);
-  this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
-  ```
-  在子代理批处理运行期间，主会话根本还没有推进到代际迁移代码！`resolveActiveHead(this.mainSessionId)` 永远返回当前的 `this.mainSessionId`。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { SessionLineageTracker } from "../src/session/lineage-tracker.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: resolveActiveHead during subagent execution never resolves to successor due to sequential orchestration", () => {
-    const tracker = new SessionLineageTracker();
-    const gen1 = "ses_main_gen1";
-    tracker.register({ sessionId: gen1, role: "main", status: "active" });
-
-    // 子代理执行过程中查询 active head：
-    const headDuringRun = tracker.resolveActiveHead(gen1);
-    // 必然是 gen1，因为 gen2 的 linkSuccessor 必须等 executeBatch resolve 后才能执行
-    expect(headDuringRun).toBe(gen1);
-  });
-  ```
-- **潜在风险与影响面**:
-  设计规范中承诺的“子代理成果动态路由至唤醒的主控后继会话”特性在正常主流程中实际上是一段永远无法生效的死代码（Dead Code），且造成了交付报告的归属元数据滞留在前代会话。
-- **建议整改方向**:
-  在主会话进入虚拟化派发（`createMainPlanSnapshot`）时，即刻完成当前代主会话的挂起与后继主会话占位（Pre-allocate Next Generation），使子代理在执行生命周期内能正向感知其对应的接收方。
-
----
-
-### 11. `InterruptController` 在繁忙与空闲切换边界存在双击退出信号竞态
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\interrupt-controller.ts#L115-L155`
-- **置信度等级**: Level 2 (时序竞态缺陷)
-- **异味/缺陷类别**: 竞态条件 / 状态切换不同步 / 用户意图误杀
-- **代码现状说明**:
-  当工具正在执行慢速命令（例如运行全量测试）时，用户按下 Ctrl+C：
-  1. `handleSigint` 捕获并触发 `activeAbortController.abort()`，返回 `aborted_operation`；
-  2. 底层进程正在被 kill，`orchestrator.run` 处于异步展开与清理中，此时 `isBusyState` 依然为 `true`；
-  3. 用户若在 500ms 内再次按下 Ctrl+C 期望强制杀掉 CLI 终端，此时 `handleSigint` 发现 `isBusyState === true`，依然只返回 `aborted_operation`，且不记录空闲退出时间戳 `lastIdleSigintTime`；
-  4. 随后 `orchestrator.run` 彻底退出，`endBusy()` 将状态置为空闲。用户之前的两次 Ctrl+C 均被判定为“忙碌中止”，用户仍然被困在交互等待终端中。
-  反向竞态：若在用户按下 Ctrl+C 的瞬间任务刚好自然结束，`handleSigint` 判定为空闲第一次，若用户习惯性连按，会导致进程在没有任何警告的情况下直接 `process.exit(0)`。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { InterruptController } from "../src/agent/interrupt-controller.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: Rapid double Ctrl+C during busy teardown fails to trigger emergency exit", () => {
-    const controller = new InterruptController({ idleExitTimeoutMs: 1500 });
-    controller.beginBusy();
-
-    // 第一次按 Ctrl+C：中止任务
-    const res1 = controller.handleSigint();
-    expect(res1.action).toBe("aborted_operation");
-
-    // 假设底层子进程需要时间清理，处于忙碌撕裂期，用户 200ms 后再次按 Ctrl+C 期望强退
-    const res2 = controller.handleSigint();
-    // 现状：依然是 aborted_operation，未触发紧急强退逻辑
-    expect(res2.action).toBe("aborted_operation");
-  });
-  ```
-- **潜在风险与影响面**:
-  当外部命令卡死或无视 SIGINT 时，用户无法通过快速双击 Ctrl+C 强制退出进程，造成终端假死体验；或者在任务结束边缘误杀会话。
-- **建议整改方向**:
-  在 `busy` 状态下增加双击强制退出检测：如果在 busy 状态下 1000ms 内连续接收到 2 次 SIGINT，视为用户期望强行脱壳，直接触发 `process.exit(1)`。
-
----
-
-### 12. `Orchestrator` 代际轮换重置 `turn = 0` 破坏 `history` 轮次单调性与折叠器不变量
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\agent\orchestrator.ts#L710`, `L761`, `L823` 与 `src/agent/blackbox-compactor.ts#L442-L465`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 状态时序断裂 / 结构不变量破坏 / 轮次索引冲突
-- **代码现状说明**:
-  当执行 `invoke_subagent` 激活后继主控时，为了赋予后继主控完整的 30 轮推理预算：
-  ```typescript
-  if (this.generation <= this.maxGenerations) {
-    turn = 0; // 重置轮次计数器！
-  }
-  ```
-  在循环末尾 `turn++` 后变为 `turn = 1`。
-  然而，`history`（`TurnRecord[]`）并**没有清空**，它是一个贯穿整个 `run()` 生命周期的累计数组。后继轮次继续向 `history` 中压入 `turn: 1`, `turn: 2`。
-  此时 `history` 中的 `turn` 序列呈现 `[1, 2, 3, 4, 1, 2, 3]`。
-  在 `BlackboxCompactor.buildFoldedBlock` 中，代码假设 `turns` 的轮次是全局严格单调递增的：
-  ```typescript
-  const firstTurn = turns[0].turn;
-  const lastTurn = turns[turns.length - 1].turn;
-  return `- Turns ${firstTurn} ~ ${lastTurn}: ...`;
-  ```
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { BlackboxCompactor } from "../src/agent/blackbox-compactor.ts";
-  import { expect, test } from "bun:test";
-
-  test("PoC: Non-monotonic turn sequence produces absurd BlackboxCompactor range summary", () => {
-    // 模拟经历过代际重置后的历史记录
-    const corruptedHistory: any[] = [
-      { turn: 1, toolName: "read_file", success: true },
-      { turn: 2, toolName: "invoke_subagent", success: true },
-      { turn: 1, toolName: "edit", success: true },
-      { turn: 2, toolName: "run_command", success: true },
-    ];
-
-    const blackbox = BlackboxCompactor.extractDisasterBlackbox(corruptedHistory, "Crash", {
-      preserveRecentTurns: 1,
-    });
-
-    // 契约断言：时间线聚合摘要不得出现 Turns 1 ~ 1 这种时序错乱倒置的摘要说明！
-    expect(blackbox).not.toContain("Turns 1 ~ 1: 3 轮历史步骤已聚合折叠");
-  });
-  ```
-- **潜在风险与影响面**:
-  当长任务跨代发生 429 容灾时，提取的黑匣子快照中轮次编号完全混乱重复；Handoff 仲裁者模型无法分清哪个是前代动作、哪个是当代动作，进而推导得出错误的接力决策。
-- **建议整改方向**:
-  代际转移时不应重置 `turn = 0`，而应维护独立的 `currentGenerationTurn` 与 `globalTurn`；或者在代际转移时对 `history` 进行物理切片归档，各代拥有独立的轮次命名空间。
-
----
-
-### 13. `SessionManager` 在并发会话保存时对 `index.json` 无文件锁保护导致覆盖丢失
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\session\session-manager.ts#L128-L158`, `L253-L278`
-- **置信度等级**: Level 1 (确定性缺陷)
-- **异味/缺陷类别**: 竞态条件 / 隐蔽的状态共享 / 文件并发非原子写覆盖
-- **代码现状说明**:
-  `saveSession(session)` 的实现为：
-  1. 读取磁盘上的 `index.json`（`this.readIndex()`）；
-  2. 在内存数组中更新或添加当前会话项；
-  3. 通过 `fs.writeFileSync(this.indexFile, ...)` 写回磁盘。
-  若存在两个并发执行流程（例如多个子代理会话同时更新状态，或者主会话与后台轮询同时更新），流程 A 读入索引后，流程 B 也读入索引；流程 A 写回索引后，流程 B 的写回会彻底抹掉流程 A 刚才写入的修改！
-  此外，`fs.writeFileSync` 不是原子操作（非临时文件写入 + rename），若在写入中途进程崩溃，`index.json` 会变为空文件或残缺 JSON。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { SessionManager } from "../src/session/session-manager.ts";
-  import { expect, test } from "bun:test";
-  import fs from "node:fs";
-  import os from "node:os";
-  import path from "node:path";
-
-  test("PoC: Interleaved saveSession calls drop concurrent session index entries", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-session-race-"));
-    const sm = new SessionManager(tempDir);
-
-    const s1 = sm.createSession({ id: "ses_race_1", title: "Task 1" });
-    const s2 = sm.createSession({ id: "ses_race_2", title: "Task 2" });
-
-    // 契约断言：在并发落盘后，index.json 必须完整包含两个会话
-    const list = sm.listSessions();
-    expect(list.some((s) => s.id === "ses_race_1")).toBe(true);
-    expect(list.some((s) => s.id === "ses_race_2")).toBe(true);
-
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-  ```
-- **潜在风险与影响面**:
-  并发模式下历史会话索引出现静默丢失；用户执行 `/sessions` 查看会话列表时发现部分会话凭空消失。
-- **建议整改方向**:
-  采用基于临时文件的原子写入模式（`write to .tmp` -> `fs.renameSync`），并在修改 `index.json` 时引入简单的跨进程文件锁（Lockfile）或在写失败时自动调用 `rebuildIndex` 自愈。
-
----
-
-### 14. `ToolBridge.formatResult` 与 `PromptBuilder.buildToolResultPrompt` 协议双轨冲突
-- **文件路径**: `E:\copilot-web proxy\CPH-PI\src\protocol\tool-bridge.ts#L802` 与 `src/protocol/prompt-builder.ts#L188-L207`
-- **置信度等级**: Level 2 (设计异味 / 协议不一致)
-- **异味/缺陷类别**: 隐式假设冲突 / 协议双轨割裂 / 冗余死代码
-- **代码现状说明**:
-  在 `ToolBridge` 中：
-  `formatResult` 输出格式为：
-  ```text
-  【TOOL_RESULT: read_file (src/cli.ts) - SUCCESS】
-  <output>
-  【END_TOOL_RESULT】
-  ```
-  而在 `Orchestrator.ts` 运行时（第 805 行）：
-  ```typescript
-  currentPrompt = PromptBuilder.buildToolResultPrompt(
-    parsed.action.tool || toolResult.actionName,
-    toolResult.success,
-    toolResult.output
-  );
-  ```
-  `PromptBuilder` 输出格式为：
-  ```text
-  [TOOL_RESULT for read_file - SUCCESS]:
-  <output>
-
-  【交接协议铁律 (Turn Protocol Contract)】...
-  ```
-  `Orchestrator` 完全弃用了 `ToolBridge.executeAction` 返回的 `toolResult.formatted`，而是自行重新包装了一套互不兼容的定界符格式。
-- **反例测试提案 (PoC Test Snippet)**:
-  ```typescript
-  import { ToolBridge } from "../src/protocol/tool-bridge.ts";
+  import { describe, it, expect } from "bun:test";
   import { PromptBuilder } from "../src/protocol/prompt-builder.ts";
-  import { expect, test } from "bun:test";
 
-  test("PoC: Divergent protocol envelope representations between ToolBridge and PromptBuilder", () => {
-    const bridgeFormatted = new ToolBridge().formatResult({
-      toolName: "read_file",
-      target: "foo.txt",
-      success: true,
-      output: "content",
-    });
-    const promptFormatted = PromptBuilder.buildToolResultPrompt("read_file", true, "content");
+  it("PoC: toolResult containing 'skills' gets mistakenly swapped as skillsSection", () => {
+    const task = "排查问题";
+    const toolResult = "Git status:\n  Untracked files: skills/new-feature.ts";
+    const skillsSection = "【Skill: TDD】请遵循测试驱动开发";
 
-    // 契约断言：系统内关于 TOOL_RESULT 的定界契约应当具备单一真实来源 (SSOT)
-    // 现状：一处采用中文括号【TOOL_RESULT: ...】，一处采用英文括号[TOOL_RESULT for ...]
-    expect(bridgeFormatted.startsWith("【TOOL_RESULT")).toBe(true);
-    expect(promptFormatted.startsWith("[TOOL_RESULT")).toBe(true);
+    const prompt = PromptBuilder.buildTurn2TaskPrompt(task, toolResult, skillsSection);
+
+    const toolResultIdx = prompt.indexOf("[TOOL_RESULT - SUCCESS]:");
+    const gitStatusIdx = prompt.indexOf("Git status:");
+    expect(gitStatusIdx).toBeGreaterThan(toolResultIdx);
+    expect(gitStatusIdx).toBeLessThan(prompt.indexOf("【当前已激活的专业技能")); // 物理运行失败：位置被对调
   });
   ```
 - **潜在风险与影响面**:
-  下游工具（如 `RefusalGuard`、测试用例、日志回放）如果依赖定界符，常常因两套格式不统一导致正则漏判；给大模型的注意力机制带来不一致的协议噪音。
+  在对包含 skills 模块的仓库进行操作时，Turn 2 任务提示词产生严重错乱，模型看到的执行事实与技能指南彻底对调。
 - **建议整改方向**:
-  统一收敛到单一格式（推荐统一以 `PromptBuilder.buildToolResultPrompt` 为准），`ToolBridge.formatResult` 直接代理调用 `PromptBuilder`。
+  废弃脆弱的模糊文本嗅探重载，使用具名接口对象替代多参数模糊重载。
 
 ---
 
-## 契约审查综合评定与建议整改优先级
+## 三、 总结与治理决议
 
-| 序号 | 缺陷简述 | 置信度等级 | 类别 | 整改优先级 |
-|---|---|---|---|---|
-| 1 | `ResilientParser` 嵌套代码块导致 `write_file` 截断 | **Level 1** | 契约破坏 | P0 (致命数据丢失) |
-| 2 | `ResilientParser` `edit` 中 `old_string` 前瞻误截断 | **Level 1** | 边界崩溃 | P0 (核心工具瘫痪) |
-| 3 | `ChatHubClient` 异常断网通过 `settleResolve` 伪装成功 | **Level 1** | 异常未捕获 | P0 (容灾失效死循环) |
-| 4 | `Orchestrator` 附件阈值 0 导致真实工具输出被抹除 | **Level 1** | 隐式假设冲突 | P1 (认知致盲) |
-| 5 | `AccountPool` 异步查询中 `currentIndex` 竞态碰撞 | **Level 1** | 竞态条件 | P1 (并发瘫痪) |
-| 6 | `TokenManager` 凭据刷新缺乏 Promise 去重 | **Level 1** | 凭据失效 | P1 (OAuth 致命失效) |
-| 7 | `Orchestrator` Handoff 路径拼接未清洗 `sessionId` | **Level 1** | 路径穿越隐患 | P1 (安全隔离破坏) |
-| 8 | `ResilientParser` 技术解释触发 `ALL_TASKS_COMPLETED` 假死 | **Level 1** | 协议标记注入 | P2 (提前假完结) |
-| 9 | `RefusalGuard` 强正则误伤技术分析产生死循环 | **Level 1** | 负面拦截反模式 | P2 (假阳性误伤) |
-| 10 | `SubagentRunner` 与主控代际执行序倒置 | **Level 2** | 状态时序断裂 | P2 (架构死逻辑) |
-| 11 | `InterruptController` 繁忙清理期双击退出竞态 | **Level 2** | 竞态条件 | P2 (交互体验受阻) |
-| 12 | 代际轮换重置 `turn = 0` 破坏 `history` 时序单调性 | **Level 1** | 不变量破坏 | P2 (审计追踪混乱) |
-| 13 | `SessionManager` 并发落盘非原子写破坏 `index.json` | **Level 1** | 竞态条件 | P2 (索引丢失) |
-| 14 | `ToolBridge` 与 `PromptBuilder` 双轨协议格式不一致 | **Level 2** | 设计异味 | P3 (代码坏味道) |
-
-### 核心结论
-`CPH-PI` 拥有清晰的分层架构和极高的测试覆盖率（476 个单元测试全部通过），但现有测试套件过多聚焦于“黄金路径”与“规范格式 Mock 输入”。一旦进入真实的对抗性边界（嵌套代码围栏、源码含有属性关键字、WebSocket 突然中途断连、多子代理并发申请 Token、跨代代际轮换），原作者对**单行正则表达式、同步递增时序、全量附件挂载策略**的过度自信便会立即暴露，形成连环故障级联。建议下一阶段按上述优先级开展契约加固与测试用例红区覆盖。
+本次全量契约审查严格遵循【只读门禁】，未修改代码库中任何文件。
+上述 12 项缺陷均附带了具体的代码定位、失败反例用例断言及风险分析。建议优先按照以下拓扑次序安排整改：
+1. **P0 底层契约阻断修复**: 修复 `ResilientParser` 的 `stage` 属性丢弃问题（Issue 1）与 `isRateLimitResponseText` 假阳性自杀问题（Issue 2）；
+2. **P1 调度与模块通信加固**: 修复 `SubagentRunner` 假值容量计算（Issue 3）、`main-plan-snapshot.ts` 的 ESM `require` 漏洞（Issue 4）与压实数组回填丢失（Issue 9）；
+3. **P2 状态与健壮性提升**: 固化 `SessionLineageTracker` 磁盘持久化（Issue 5）、解决正则截断（Issue 11）与消除超时硬编码（Issue 10）。

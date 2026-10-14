@@ -20,3 +20,4 @@ export interface LedgerEntry {
   /** 结构化简短指纹（截取前 5 行或关键错误，单条限制 300 字符内） */
   briefSummary: string;
 }
+

@@ -126,7 +126,7 @@ export class ExecutionLedger {
       `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
       `- 累计物理操作: ${totalSteps} 步 | 核心变更文件: ${filesSummary}`,
       `- 最新验证状态: ${latestBadge}`,
-      `- 查阅契约: 上述客观事实已由系统物理验证。如需回溯某一步的详细改动或命令输出，请使用 read_file / view_file 工具定向查看账本文件，严禁在对话流中全量回放日志。`,
+      `- 查阅契约: 上述客观事实已由系统物理验证。如需回溯某一步的详细改动或命令输出，请使用 read_file / view_file 工具定向查看账本文件，通过调阅物理账本或关键指纹获取执行事实。`,
     ].join("\n");
   }
 
@@ -153,3 +153,4 @@ export class ExecutionLedger {
     fs.writeFileSync(this.mdPath, content, "utf8");
   }
 }
+

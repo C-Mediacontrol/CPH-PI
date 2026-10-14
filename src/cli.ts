@@ -4,7 +4,7 @@ import fs from "node:fs";
 import chalk from "chalk";
 import { CopilotOrchestrator, type IOrchestratorChatClient } from "./agent/orchestrator.ts";
 import { InterruptController } from "./agent/interrupt-controller.ts";
-import { TuiRenderer, type SessionStatusInfo, type ActiveSubagentState } from "./ui/tui-renderer.ts";
+import { TuiRenderer, type SessionStatusInfo, type ActiveSubagentState, type SubagentLiveState } from "./ui/tui-renderer.ts";
 import { AccountPool } from "./auth/account-pool.ts";
 import { ToolBridge, type MappedQuestionArgs } from "./protocol/tool-bridge.ts";
 import { SkillLoader, type Skill } from "./skills/skill-loader.ts";
@@ -66,6 +66,8 @@ export interface CphPiCliOptions {
   rl?: readline.Interface;
   debug?: boolean;
   debugLogPath?: string;
+  cloudAttachmentThresholdChars?: number;
+  cloudAttachmentThresholdLines?: number;
 }
 
 export type CliOptions = CphPiCliOptions;
@@ -196,6 +198,8 @@ export class CphPiCli {
         coderAgentId: this.coderAgentId,
         researcherAgentId: this.researcherAgentId,
         timeoutMs,
+        cloudAttachmentThresholdChars: options.cloudAttachmentThresholdChars,
+        cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines,
       } as any);
     (this.orchestrator as any).timeoutMs = timeoutMs;
 
@@ -496,6 +500,13 @@ export class CphPiCli {
           : this.customAgentId)
       : "通用握手模式";
 
+    const gen = this.orchestrator
+      ? (this.orchestrator as any).getGeneration?.()
+      : session.generation || 1;
+    const handoffs = this.orchestrator
+      ? (this.orchestrator as any).getHandoffCount?.()
+      : session.handoffCount || 0;
+
     const info: SessionStatusInfo = {
       sessionId: session.id,
       turnCount: session.turnCount,
@@ -505,6 +516,8 @@ export class CphPiCli {
       compactionRatio: this.lastCompactionRatio,
       currentAccount: currentAcc,
       agentName: agentBadge,
+      generation: gen,
+      handoffCount: handoffs,
     };
 
     this.renderer.renderStatusBar(info);
@@ -1403,8 +1416,9 @@ export class CphPiCli {
             onTurnStart: (turn) => this.renderer.renderTurnHeader(turn),
             onToolStart: (action) => this.renderer.renderToolBadge(action),
             onToolEnd: (result) => this.renderer.renderToolResult(result),
-            onSubagentStart: (id, role, spec) => {
+            onSubagentStart: (id, role, spec, initialHop) => {
               subagentStartTimes.set(id, Date.now());
+              const hop = initialHop || 1;
               activeSubagents.set(id, {
                 id,
                 role: role === "coder" ? "coder" : "researcher",
@@ -1413,15 +1427,22 @@ export class CphPiCli {
                 currentTurn: 1,
                 durationMs: 0,
                 lastAction: "正在启动会话与加载技能...",
+                hopCount: hop,
+                handoffCount: Math.max(0, hop - 1),
               });
               this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
             },
-            onSubagentProgress: (id, turn, _delta, action) => {
+            onSubagentProgress: (id, turn, _delta, action, hopCount) => {
               const state = activeSubagents.get(id);
               if (!state) return;
               const startTime = subagentStartTimes.get(id) || Date.now();
               state.durationMs = Date.now() - startTime;
               let changed = false;
+              if (hopCount && hopCount !== state.hopCount) {
+                state.hopCount = hopCount;
+                state.handoffCount = Math.max(0, hopCount - 1);
+                changed = true;
+              }
               if (turn > 0 && turn !== state.currentTurn) {
                 state.currentTurn = turn;
                 state.lastAction = `第 ${turn} 轮推理思考中...`;
@@ -1445,6 +1466,8 @@ export class CphPiCli {
                   report.durationMs ||
                   Date.now() - (subagentStartTimes.get(report.id) || Date.now());
                 state.currentTurn = report.turnsCount || state.currentTurn;
+                if (report.hopCount) state.hopCount = report.hopCount;
+                if (report.handoffCount !== undefined) state.handoffCount = report.handoffCount;
                 state.lastAction = report.success
                   ? "成果交付并完成自验证"
                   : `异常中断: ${report.error || "执行未完成"}`;
@@ -1473,8 +1496,11 @@ export class CphPiCli {
                 snapshot?.originalSessionId || currentSession.id,
                 path
               ),
-            onSuccessorAwakened: (newSessionId, generation) =>
-              this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation),
+            onSuccessorAwakened: (newSessionId, generation) => {
+              currentSession.generation = generation;
+              currentSession.handoffCount = Math.max(0, generation - 1);
+              this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation);
+            },
           },
         });
 
@@ -1510,6 +1536,13 @@ export class CphPiCli {
           });
         }
         currentSession.turnCount = currentSession.turns.length;
+
+        if (this.orchestrator) {
+          currentSession.generation =
+            (this.orchestrator as any).getGeneration?.() || currentSession.generation || 1;
+          currentSession.handoffCount =
+            (this.orchestrator as any).getHandoffCount?.() || currentSession.handoffCount || 0;
+        }
 
         if (result.completed) {
           currentSession.status = "completed";
@@ -2042,6 +2075,8 @@ export async function runCli(
     allowedAccounts: parsed.allowedAccounts || customOptions.allowedAccounts,
     debug: parsed.debug ?? customOptions.debug,
     debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
+    cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
+    cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
   };
 
   const cli = new CphPiCli(options);

@@ -227,7 +227,7 @@ describe("E2E Custom Agent Full Lifecycle & Direct Execution", () => {
       const promptTurn2 = mockClient.sentPrompts[1];
       expect(promptTurn2).toContain("【环境握手完成：本地工具与工作区已就绪】");
       expect(promptTurn2).toContain(genericTask);
-      expect(promptTurn2).toContain("【交接协议铁律 (Turn Protocol Contract)】");
+      expect(promptTurn2).toContain("【交接协议规范 (Turn Protocol Contract)】");
 
       // 3. Re-bind custom agent via /agent <url>
       const newAgentUrl = "https://m365.cloud.microsoft/chat/agent/T_rebound_agent_999?es=Click";

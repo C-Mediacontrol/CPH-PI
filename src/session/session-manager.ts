@@ -36,6 +36,8 @@ export interface SessionRecord {
   handoffSnapshot?: string;
   handoffDocPath?: string;
   disasterBlackbox?: string;
+  generation?: number;
+  handoffCount?: number;
 }
 
 /**
@@ -54,6 +56,8 @@ export interface SessionIndexItem {
   handoffSnapshot?: string;
   handoffDocPath?: string;
   disasterBlackbox?: string;
+  generation?: number;
+  handoffCount?: number;
 }
 
 /**
@@ -266,6 +270,8 @@ export class SessionManager {
       handoffSnapshot: session.handoffSnapshot,
       handoffDocPath: session.handoffDocPath,
       disasterBlackbox: session.disasterBlackbox,
+      generation: session.generation,
+      handoffCount: session.handoffCount,
     };
 
     if (existingIdx >= 0) {

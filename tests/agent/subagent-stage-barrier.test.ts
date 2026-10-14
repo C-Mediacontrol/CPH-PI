@@ -140,3 +140,4 @@ describe("SubagentRunner - Stage Barrier & Causality Guard", () => {
     expect(reports.every((r) => r.success)).toBe(true);
   });
 });
+

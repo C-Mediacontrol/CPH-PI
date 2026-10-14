@@ -272,7 +272,9 @@ FINAL_ANSWER:
             interruptController,
             chatClient,
             pool: mockPool,
-          }
+            cloudAttachmentThresholdChars: 0,
+            cloudAttachmentThresholdLines: 0,
+          } as any
         );
 
         // 4. Assertions on execution result

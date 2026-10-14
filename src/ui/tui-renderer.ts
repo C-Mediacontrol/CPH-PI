@@ -15,17 +15,23 @@ export interface SessionStatusInfo {
   compactionRatio?: number;
   currentAccount?: string;
   agentName?: string;
+  generation?: number;
+  handoffCount?: number;
 }
 
-export interface ActiveSubagentState {
+export interface SubagentLiveState {
   id: string;
-  role: "researcher" | "coder";
-  description: string;
-  status: "running" | "completed" | "failed";
-  currentTurn: number;
-  durationMs: number;
+  role: "researcher" | "coder" | string;
+  description?: string;
+  status: "running" | "completed" | "failed" | string;
+  currentTurn?: number;
+  durationMs?: number;
   lastAction?: string;
+  hopCount?: number;
+  handoffCount?: number;
 }
+
+export type ActiveSubagentState = SubagentLiveState;
 
 /**
  * TUI Renderer bridging Pi ANSI styles, stream tokens, diff visualization, and tool badges.
@@ -692,6 +698,19 @@ export class TuiRenderer {
    */
   public formatStatusBar(info: SessionStatusInfo): string {
     const sessionIdStr = this.c.cyan(info.sessionId || "未命名");
+    const gen =
+      info.generation ??
+      (info.handoffCount !== undefined ? info.handoffCount + 1 : undefined);
+    const handoffCount =
+      info.handoffCount ?? (gen !== undefined ? Math.max(0, gen - 1) : undefined);
+    let genBadge = "";
+    if (gen !== undefined && handoffCount !== undefined) {
+      genBadge =
+        handoffCount > 0
+          ? this.c.yellow(` [第 ${gen} 代 (接手 ${handoffCount} 次)]`)
+          : this.c.gray(` [第 1 代 (接手 0 次)]`);
+    }
+
     const agentBadge = this.c.green(info.agentName || "通用握手模式");
     const turnCount = info.turnCount ?? 0;
     const maxTurns = info.maxTurns ?? 25;
@@ -729,6 +748,7 @@ export class TuiRenderer {
       prefix +
       this.c.dim("会话: ") +
       sessionIdStr +
+      genBadge +
       div +
       this.c.dim("智能体: ") +
       agentBadge +
@@ -755,26 +775,50 @@ export class TuiRenderer {
   }
 
   /**
+   * Formats a single compact event line for a subagent status update.
+   * e.g. "[Subagent Event] [Sub-1] [researcher] 状态: running | 动作: reading file\n"
+   */
+  public formatSubagentMatrixEvent(state: SubagentLiveState): string {
+    const rawId = state.id || "sub-unknown";
+    const displayId = rawId.replace(/^sub-/i, "Sub-");
+    const role = state.role || "unknown";
+    const status = state.status || "unknown";
+    const action = state.lastAction || "";
+    return `[Subagent Event] [${displayId}] [${role}] 状态: ${status} | 动作: ${action}\n`;
+  }
+
+  /**
    * Formats multi-subagent execution progress matrix card.
    */
-  public formatSubagentMatrix(states: ActiveSubagentState[]): string {
+  public formatSubagentMatrix(states: ActiveSubagentState[], compact = false): string {
+    if (compact) {
+      return states.map((s) => this.formatSubagentMatrixEvent(s).trimEnd()).join("\n");
+    }
+
     const lines: string[] = [];
     lines.push(this.c.bold.cyan("┌─ [多会话子代理协同看板 (Sub-Agent Matrix)] " + "─".repeat(30)));
 
     for (let i = 0; i < states.length; i++) {
       const s = states[i];
       const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const hop = s.hopCount ?? (s.handoffCount !== undefined ? s.handoffCount + 1 : 1);
+      const subHandoffs = s.handoffCount ?? Math.max(0, hop - 1);
+      const hopBadge =
+        subHandoffs > 0
+          ? this.c.yellow(`[Hop ${hop} (接手 ${subHandoffs} 次)]`)
+          : this.c.gray(`[Hop 1 (接手 0 次)]`);
+
       const statusBadge =
         s.status === "completed"
           ? this.c.green("✅ 已完成")
           : s.status === "failed"
           ? this.c.red("❌ 失败")
           : this.c.cyan("🔄 运行中");
-      const durationSec = (s.durationMs / 1000).toFixed(1);
+      const durationSec = ((s.durationMs ?? 0) / 1000).toFixed(1);
 
       lines.push(
         this.c.bold(`│ [Sub-${i + 1}] `) +
-          `${roleBadge} ${s.description.slice(0, 30)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`
+          `${roleBadge} ${hopBadge} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`
       );
       if (s.lastAction) {
         lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
@@ -788,8 +832,14 @@ export class TuiRenderer {
   /**
    * Renders the multi-subagent progress matrix card.
    */
-  public renderSubagentMatrix(states: ActiveSubagentState[]): void {
-    this.writer(this.formatSubagentMatrix(states) + "\n");
+  public renderSubagentMatrix(states: ActiveSubagentState[], compact = false): void {
+    if (compact) {
+      for (const s of states) {
+        this.writer(this.formatSubagentMatrixEvent(s));
+      }
+    } else {
+      this.writer(this.formatSubagentMatrix(states) + "\n");
+    }
   }
 
   /**
@@ -818,9 +868,11 @@ export class TuiRenderer {
    */
   public formatSuccessorAwakeningBanner(sessionId: string, generation: number): string {
     const border = "─".repeat(60);
+    const handoffCount = Math.max(0, generation - 1);
+    const title = `🚀 [第 ${generation} 代主控会话已唤醒 (接手 ${handoffCount} 次)] ${sessionId}`;
     return [
       this.c.green(`┌${border}┐`),
-      this.c.green(`│ 🚀 [第 ${generation} 代主控会话已唤醒] ${sessionId.padEnd(33)} │`),
+      this.c.green(`│ ${title.padEnd(58)} │`),
       this.c.green(`│ 注入前序架构快照与子任务结题成果，重置满额 30 轮推理预算   │`),
       this.c.green(`│ 进入系统交叉验证与交付审阅阶段...                        │`),
       this.c.green(`└${border}┘`),

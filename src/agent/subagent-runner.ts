@@ -3,7 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { CopilotOrchestrator, type OrchestratorRunOptions } from "./orchestrator.ts";
 import { ToolBridge, type SubagentTaskSpec } from "../protocol/tool-bridge.ts";
-import type { SessionLoggerTree } from "../ui/terminal-logger.ts";
+import { TerminalLogger, type SessionLoggerTree } from "../ui/terminal-logger.ts";
 import { AccountPool } from "../auth/account-pool.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import { SkillLoader, type Skill } from "../skills/skill-loader.ts";
@@ -39,6 +39,8 @@ export interface SubagentTaskReport {
   durationMs: number;
   error?: string;
   targetSessionId?: string;
+  hopCount?: number;
+  handoffCount?: number;
 }
 
 export class SubagentRunner {
@@ -61,7 +63,9 @@ export class SubagentRunner {
     this.researcherAgentId = options.researcherAgentId || DEFAULT_RESEARCHER_AGENT_ID;
     this.pool = options.pool;
     this.chatClientFactory = options.chatClientFactory;
-    this.loggerTree = options.loggerTree;
+    this.loggerTree =
+      options.loggerTree ||
+      TerminalLogger.getInstance().initSessionTree(this.mainSessionId, this.workspaceRoot);
     this.modelTone = options.modelTone || "Gpt_61_Sol_Reasoning";
     this.createOrchestratorFn = options.createOrchestratorFn;
     this.lineageTracker = options.lineageTracker;
@@ -120,6 +124,13 @@ export class SubagentRunner {
       if (maxConcurrency <= 1) {
         // Strict serial execution within stage
         for (const item of stageTasks) {
+          if (circuitBreakerTriggered) {
+            settled[item.index] = {
+              status: "rejected",
+              reason: new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 任务因前序任务失败被自动熔断阻断`),
+            };
+            continue;
+          }
           if (signal?.aborted) {
             settled[item.index] = {
               status: "rejected",
@@ -171,6 +182,19 @@ export class SubagentRunner {
         await Promise.all(workers);
       }
 
+      // Stage fallback guard: ensure all tasks in the current stage are settled (no holes)
+      for (const item of stageTasks) {
+        if (!settled[item.index]) {
+          const reason = signal?.aborted
+            ? new Error("Subagent execution aborted")
+            : new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 任务因熔断或中断未执行`);
+          settled[item.index] = {
+            status: "rejected",
+            reason,
+          };
+        }
+      }
+
       // Check if any task in this stage failed to lock down next stages
       for (const item of stageTasks) {
         const res = settled[item.index];
@@ -178,6 +202,16 @@ export class SubagentRunner {
           circuitBreakerTriggered = true;
           break;
         }
+      }
+    }
+
+    // Global guard: ensure no empty slots remain in settled array
+    for (let idx = 0; idx < tasks.length; idx++) {
+      if (!settled[idx]) {
+        settled[idx] = {
+          status: "rejected",
+          reason: new Error("STAGE_CIRCUIT_BREAKER: 任务未执行或被熔断阻断"),
+        };
       }
     }
 
@@ -202,22 +236,25 @@ export class SubagentRunner {
     }
 
     return settled.map((result, idx) => {
-      if (result.status === "fulfilled") {
+      const task = tasks[idx] || ({} as SubagentTaskSpec);
+      const role = task.role === "coder" ? "coder" : "researcher";
+      const description = task.description || `Task ${idx + 1}`;
+
+      if (result?.status === "fulfilled" && result.value) {
         return {
           ...result.value,
           targetSessionId: activeMainSessionId,
         };
       }
-      const role = tasks[idx].role === "coder" ? "coder" : "researcher";
-      const reason = result.reason;
+      const reason = result?.reason;
       const isThrottled =
         reason?.code === "ALL_ACCOUNTS_THROTTLED" ||
         /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(
-          reason?.message || String(reason)
+          reason?.message || String(reason || "")
         );
-      const isStageBreaker = String(reason?.message || reason).includes("STAGE_CIRCUIT_BREAKER");
+      const isStageBreaker = String(reason?.message || reason || "").includes("STAGE_CIRCUIT_BREAKER");
 
-      let errorMsg = String(reason?.message || reason);
+      let errorMsg = String(reason?.message || reason || "STAGE_CIRCUIT_BREAKER");
       let finalAnswer = `子代理执行异常中断: ${errorMsg}`;
 
       if (isThrottled) {
@@ -240,7 +277,7 @@ export class SubagentRunner {
       return {
         id: `sub-${idx + 1}`,
         role,
-        description: tasks[idx].description,
+        description,
         success: false,
         finalAnswer,
         turnsCount: 0,
@@ -271,6 +308,7 @@ export class SubagentRunner {
 
     const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
     const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
+    logStream?.write(`\n=== 任务目标与初始提示词 ===\n${spec.prompt}\n============================\n\n`);
 
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
@@ -342,17 +380,17 @@ export class SubagentRunner {
           events: {
             onDelta: (delta: string) => {
               logStream?.write(delta);
-              events?.onSubagentProgress?.(subId, -1, delta);
+              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount);
             },
             onTurnStart: (turn: number) => {
               logStream?.write(`\n--- [Hop ${hopCount}] Turn ${turn} ---\n`);
-              events?.onSubagentProgress?.(subId, turn);
+              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount);
             },
             onToolStart: (action: any) => {
               const actName = action?.tool || action?.action || "tool";
               const target = action?.path || action?.filePath || action?.command || "";
               logStream?.write(`\n[Tool Start] ${actName} ${target}\n`);
-              events?.onSubagentProgress?.(subId, -1, undefined, action);
+              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount);
             },
             onToolEnd: (toolRes: any) => {
               logStream?.write(`\n[Tool End] ${toolRes?.toolName || toolRes?.actionName} (success: ${toolRes?.success})\n`);
@@ -411,6 +449,12 @@ export class SubagentRunner {
 
           currentSessionId = nextSessionId;
 
+          logStream?.write(
+            `\n========================================\n` +
+            `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} <<<\n` +
+            `========================================\n\n`
+          );
+
           this.loggerTree?.logTimelineEvent({
             type: "SUBAGENT_CONTINUED",
             subagentId: subId,
@@ -448,6 +492,12 @@ export class SubagentRunner {
         ? this.lineageTracker.resolveActiveHead(this.mainSessionId)
         : this.mainSessionId;
 
+      const subHandoffCount = Math.max(0, hopCount - 1);
+      logStream?.write(
+        `\n=== [Subagent ${subId} Finished: ${success ? "SUCCESS" : "FAILED"}] ` +
+        `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次) ===\n`
+      );
+
       const report: SubagentTaskReport = {
         id: subId,
         role,
@@ -457,6 +507,8 @@ export class SubagentRunner {
         turnsCount: totalTurns,
         durationMs,
         targetSessionId,
+        hopCount,
+        handoffCount: subHandoffCount,
       };
 
       events?.onSubagentEnd?.(report);
@@ -468,6 +520,8 @@ export class SubagentRunner {
         turnsCount: report.turnsCount,
         durationMs,
         targetSessionId,
+        hopCount,
+        handoffCount: subHandoffCount,
         timestamp: Date.now(),
       });
 
@@ -498,6 +552,12 @@ export class SubagentRunner {
         });
       }
 
+      const subHandoffCount = Math.max(0, hopCount - 1);
+      logStream?.write(
+        `\n=== [Subagent ${subId} Error: ${errorMsg}] ` +
+        `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次) ===\n`
+      );
+
       const report: SubagentTaskReport = {
         id: subId,
         role,
@@ -508,17 +568,42 @@ export class SubagentRunner {
         durationMs,
         error: errorMsg,
         targetSessionId,
+        hopCount: Math.max(1, hopCount),
+        handoffCount: subHandoffCount,
       };
       events?.onSubagentEnd?.(report);
       return report;
     } finally {
       if (logStream) {
-        logStream.end();
+        try {
+          if (typeof (logStream as any).end === "function") {
+            await new Promise<void>((resolve) => {
+              let finished = false;
+              const timer = setTimeout(() => {
+                if (!finished) {
+                  finished = true;
+                  resolve();
+                }
+              }, 100);
+              (logStream as any).end(() => {
+                if (!finished) {
+                  finished = true;
+                  clearTimeout(timer);
+                  resolve();
+                }
+              });
+            });
+          }
+        } catch {}
       }
     }
   }
 
   public formatReportSummary(reports: SubagentTaskReport[]): string {
+    if (!reports || !Array.isArray(reports)) {
+      return "### 🎯 子代理多会话并发执行报告 (共 0 个子任务)\n";
+    }
+
     const parts: string[] = [
       `### 🎯 子代理多会话并发执行报告 (共 ${reports.length} 个子任务)`,
       ``,
@@ -526,12 +611,15 @@ export class SubagentRunner {
 
     for (let i = 0; i < reports.length; i++) {
       const r = reports[i];
+      if (!r) continue;
       const statusIcon = r.success ? "✅ 成功" : "❌ 失败";
-      const durationSec = (r.durationMs / 1000).toFixed(1);
-      parts.push(`#### [Sub-${i + 1}] [${r.role}] ${r.description}`);
-      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount} 轮)`);
+      const durationSec = ((r.durationMs ?? 0) / 1000).toFixed(1);
+      const handoffs = r.handoffCount ?? Math.max(0, (r.hopCount || 1) - 1);
+      const handoffLabel = handoffs > 0 ? ` (经 ${handoffs} 次接力)` : ` (接手 0 次)`;
+      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}] ${r.description || ""}${handoffLabel}`);
+      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次)`);
       parts.push(`- **交付结论**:`);
-      parts.push(r.finalAnswer.trim());
+      parts.push((r.finalAnswer || "").trim());
       parts.push(``);
     }
 

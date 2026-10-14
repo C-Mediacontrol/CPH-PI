@@ -1,16 +1,16 @@
 # 工作区深度审查综合决议报告与落地蓝图 (FINAL-AUDIT-REPORT)
 
-- **审查对象**: `E:\copilot-web proxy\CPH-PI` (Copilot M365 x Pi Autonomous Coding Terminal)
-- **审查轮次**: 4 维度初审 (Tasks 1~4) + 4 维度独立对抗复核 (Tasks 5~8)，共 8 组子代理矩阵闭环审计
-- **基线测试状态**: 476 passed / 0 failed / 63 test files (100% 绿色通行)
-- **结论概览**: 
-  - 累计排查初始指控 43 项
-  - 确认确凿真实缺陷 `[CONFIRMED]`: **27 项**
-  - 纠偏/确认既定设计 `[INTENDED-DESIGN]`: **6 项**
-  - 查实违反项目宪章 `[VIOLATES-GOVERNANCE-RULE]`: **2 项**
-  - 查实设计与实现脱节 `[DRIFT-DESYNC]`: **5 项**
-  - 证伪误报与事实幻觉 `[FALSE-POSITIVE]`: **3 项**
-  - 提炼系统级核心矛盾: **5 大跨维度交汇高危瓶颈**
+- **目标工程**: `E:\copilot-web proxy\CPH-PI` (Copilot M365 x Pi Autonomous Coding Terminal)
+- **审查模式**: Full Mode 全量深度审查 (覆盖全部 26 个核心源码模块，9,760 行，72 个测试套件，508 项单测)
+- **审核轮次**: 4 维度初审矩阵 (Agent A1~A4) + 4 维度独立对抗复核矩阵 (Agent B1~B4)，共 8 组子代理完成闭环对抗审计
+- **基线测试防护网**: **508 passed / 0 failed / 72 test files / 2235 assertions (100% 绿灯全通)**
+- **综合裁决统计概览**:
+  - 确认确凿真实缺陷与坏味道 `[CONFIRMED]`: **16 项** (高危致命级 5 项，架构与契约级 7 项，代码坏味道 4 项)
+  - 判定违背项目治理宪章 `[VIOLATES-GOVERNANCE-RULE]`: **2 项** (orchestrator.ts 硬编码 .NET/winget 特化补丁；Harness 层拦截改写 Shell 建议)
+  - 纠偏/核准既定设计 `[INTENDED-DESIGN]`: **5 项** (CopilotAction 非受信边界 DTO、Lineage 正则恢复兜底、Interrupt 繁忙保护、多代接力预算重置、多态 CLI 解析)
+  - 识别设计与实现脱节 `[DRIFT-DESYNC]`: **4 项** (Stage 屏障漏采、命令 30s 硬编码超时、Compaction 废弃代码、CphPiCli 双重接力割裂)
+  - 证伪初审误报与陈旧复读 `[FALSE-POSITIVE]`: **6 项** (成功反驳已修复的稀疏数组、空响应死循环、附件 0 阈值、负面词残留、Lineage 正则断言失真、DTO 联合类型)
+- **绝对只读门禁声明**: 本次审计全周期遵循【绝对只读门禁】，未修改任何生产代码与测试代码。必须呈报用户批准后方可切入实施。
 
 ---
 
@@ -18,260 +18,223 @@
 
 ```mermaid
 flowchart TD
-    subgraph Core1["矛盾 1: 协议解析与工具输出真实性断层"]
-        P1["ResilientParser 嵌套围栏与 \\npath: 前瞻正则截断"]
-        P2["Orchestrator 附件阈值误设为 0 (工具输出全量抹除/失明)"]
-        P3["PromptBuilder includes('Skill') 脆弱动态参数嗅探"]
+    subgraph Core1["核心矛盾 1: Stage 屏障属性解析丢失，多阶段任务并发抢跑 (P0 致命)"]
+        Bug1["ResilientParser.parseSubagentsBlock: 完全遗漏 stage 属性解析提取"]
+        Bug2["SubagentRunner: Math.max(1, t.stage ?? 1) 永远降级为 Stage 1"]
+        Bug3["模型规划的串行 Stage 1 -> Stage 2 依赖被拉平，全部任务并发抢跑崩溃"]
+        Bug1 --> Bug2 --> Bug3
     end
 
-    subgraph Core2["矛盾 2: 治理宪章破坏与 Harness 特化污染"]
-        G1["Orchestrator 硬编码针对 .NET/winget 的特化正则与负面禁止词"]
-        G2["PromptBuilder 第 27 行 '严禁输出工具块' 违背正向引导铁律"]
-        G3["RefusalGuard 误伤技术文本与重试 3 次错封健康账号"]
+    subgraph Core2["核心矛盾 2: 429 文本粗暴匹配误杀与全限流假值并发溢出 (P0 致命)"]
+        L1["Orchestrator.isRateLimitResponseText: 粗暴匹配 lower.includes('429')"]
+        L2["模型探讨 'HTTP 429' 或输出包含 'Line 429' 时被 Harness 误杀自杀，误冻健康账号 3 分钟"]
+        L3["SubagentRunner: 0 || poolStatus.length 假值求值错误，全池限流时反以满额并发冲击"]
+        L4["AccountPool: await getAccessToken 异步间隙无锁，多个并发 worker 瞬间挤占同一账号"]
+        L1 --> L2
+        L3 --> L4
     end
 
-    subgraph Core3["矛盾 3: 双千行上帝巨石类与拓扑依赖紊乱"]
-        B1["cli.ts (2082 行) 混杂 8 组关注点，as any 强行篡改编排器"]
-        B2["orchestrator.ts (1646 行) 三巨头方法垄断 73% 行数"]
-        B3["循环依赖 Orchestrator ⇄ SubagentRunner 与反向依赖 Auth ➔ Transport"]
+    subgraph Core3["核心矛盾 3: Harness 治理宪章违背与特化补丁污染通用抽象 (P1 违宪)"]
+        G1["orchestrator.ts#L1105-L1127: 硬编码特化 .NET/winget/0x80070005 异常嗅探"]
+        G2["向交接快照中强行注入 '切勿盲目重复调用 winget' 负面禁止词"]
+        G3["严重践踏准则 1 (Harness 中立)、准则 3 (正向引导) 与准则 6 (黑盒契约)，非 .NET 项目产生幻觉"]
+        G1 --> G2 --> G3
     end
 
-    subgraph Core4["矛盾 4: 并发安全与鉴权状态机竞态"]
-        C1["AccountPool 轮询指针在异步获取后递增导致 Worker 碰撞"]
-        C2["TokenManager 缺少 Single-Flight 导致 Azure AD 刷新令牌作废"]
-        C3["ChatHubClient 1006/1008 异常断连通过 settleResolve 伪装成功"]
+    subgraph Core4["核心矛盾 4: 字符串启发式嗅探颠倒事实与 ESM 动态 require 物理账本失联 (P1 契约)"]
+        P1["PromptBuilder.buildTurn2TaskPrompt: 依赖 arg.includes('Skill') 模糊猜测重载位置"]
+        P2["当工具输出包含 'Skill' (如读取技能代码或报错) 时，客观事实与技能文档发生灾难性反转"]
+        P3["main-plan-snapshot.ts: ESM 模块动态调用 CommonJS require 在纯 Node 环境抛异常静默丢失账本挂载头"]
+        P4["ToolBridge.recordToLedger: 硬编码 role: 'main' 抹杀多子代理与继任者审计证据链 (违背准则 7)"]
+        P1 --> P2
+        P3 --> P4
     end
 
-    subgraph Core5["矛盾 5: 容灾血缘持久化脱节与遗留死代码"]
-        D1["SessionLineageTracker 内存血缘漏落盘 (违反规格书 4.1 节)"]
-        D2["compaction.ts 早期微压实死代码与循环 Barrel 导出"]
-        D3["Orchestrator Handoff 路径拼接未清洗 sessionId"]
+    subgraph Core5["核心矛盾 5: 单体上帝类失控与状态机越界撕裂 (P2 架构)"]
+        C1["cli.ts (2,122 行) 上帝单体承担 6 大职责，外部暴力篡改 orchestrator.isHandshakePending"]
+        C2["orchestrator.ts (1,702 行) 核心 run() 方法 584 行，子任务就地重置 turn = 0 控制流异味"]
+        C3["SessionManager 贫血模型导致 rebuildIndex 自愈重建时遗漏 generation 与 handoffCount 字段"]
+        C1 --> C2 --> C3
     end
 ```
-
-### 1. 协议解析与工具上下文真实性断层 (Dim-2 ⇄ Dim-3 ⇄ Dim-4)
-- **表现**: 
-  - `ResilientParser` 采用非贪婪匹配 ````(?:action|json)?\s*([\s\S]*?)````，在生成含 Markdown 嵌套围栏的代码时提前闭合，导致写入静默丢失；局部编辑正则前瞻 `(?=\n(?:...|path)\s*:)` 遇到目标代码含有 `\npath:` 即提前截断，引发 Patch 必败；`trimmed.includes("ALL_TASKS_COMPLETED")` 模糊匹配导致技术性陈述被误解析为任务终结；
-  - `Orchestrator` 附件阈值 `attachmentThreshold` 硬编码为 `0`，而设计规格书中明确规定为 `120,000` 字符。当前行为导致只要工具返回 >0 字符，真实内容就被全量转入 OneDrive 且在 Prompt 中被彻底清空，导致后续轮次模型严重“失明”；
-  - `PromptBuilder.buildTurn2TaskPrompt` 依靠 `arg.includes("Skill")` 模糊推断参数角色，代码若含 "Skill" 字符会发生形参反向错位。
-
-### 2. 治理宪章破坏与 Harness 特化污染 (Dim-3 ⇄ Dim-4)
-- **表现**: 
-  - `src/agent/orchestrator.ts#L1050-L1071` 与 `L1132-L1136` 硬编码针对 `.NET SDK`、`dotnet`、`winget`、`[System.IO.Path]` 的专用正则匹配与“切勿盲目重复调用 winget”等负面禁止词，严重违背 `AGENTS.md` 准则 1（Harness 纯粹中立，严禁替模型擦屁股）与准则 3（正向引导铁律，摒弃负面禁止词）；
-  - `PromptBuilder.PROTOCOL_REMINDER` 第 27 行包含“严禁输出工具块”，正面触碰准则 3 红线；
-  - `RefusalGuard` 采用粗暴正则匹配拒答，极易误伤技术分析与代码审计输出，且在 3 次重试失败后错误调用 `accountPool.markThrottled`，导致正常账号被永久错封。
-
-### 3. 双千行上帝巨石类与分层依赖拓扑紊乱 (Dim-1 ⇄ Dim-3 ⇄ Dim-4)
-- **表现**: 
-  - `src/cli.ts` (2082 行) 严重超载，手写解析器、15 个命令巨大 if 链、多行 Readline、报表渲染、多代接力调度全部耦合；且存在 7 处通过 `(this.orchestrator as any)...` 强行篡改编排器私有状态和注入无效幽灵属性（`timeoutMs`）；
-  - `src/agent/orchestrator.ts` (1646 行) 三巨头方法（`run` 558行、`generateHandoffSnapshot` 362行、`executeDisasterRecoveryArbitration` 285行）垄断 73% 代码，在循环内部篡改 `turn = 0` 破坏轮次单调性；
-  - 依赖拓扑存在 2 处闭环与 2 处反向依赖：`Orchestrator` ⇄ `SubagentRunner` 双向实例化闭环；`AccountPool` ➔ `ChatHubClient`（认证层反向依赖传输层）；`SubagentRunner` ➔ `TerminalLogger`（核心调度反向依赖 UI 渲染层）。
-
-### 4. 并发安全与鉴权状态机竞态 (Dim-2)
-- **表现**: 
-  - `AccountPool.getAvailableAccount` 轮询指针在异步获取 AccessToken 成功后才推进，并发 Worker 启动时必抢占同一账号发生冲突；
-  - `TokenManager` 缺少 In-flight Promise 去重，并发刷新同一账号必然触发 Azure AD Refresh Token Rotation 作废机制，致第二路遭遇 `invalid_grant`；
-  - `ChatHubClient` 在异常断连（WebSocket 1006 / 1008）时，若已发送 Chat 帧，依然调用 `settleResolve({ text: "" })`，向上游伪装成成功交付空文本，导致容灾管道完全失效，误诊为 `invalid_chatter`。
-
-### 5. 容灾血缘持久化脱节与遗留死代码 (Dim-2 ⇄ Dim-3 ⇄ Dim-4)
-- **表现**: 
-  - `SessionLineageTracker` 完全基于内存 Map 记录三代理血缘，未实现设计规格书（`2026-10-12-tri-agent-handoff-and-lineage-architecture-design.md` 4.1节）明确要求的磁盘持久化，进程中断即血缘断绝；
-  - `compaction.ts` (140行) 早期会话内滑动微压实在确立容灾黑匣子后已被硬编码禁用，成为死代码与循环导出污染源；
-  - `Orchestrator` 生成 Handoff 文件名时未清洗外部 `sessionId`，存在跨目录写文件的路径逃逸隐患。
 
 ---
 
 ## 二、 修复依赖拓扑次序图 (Topological Execution Flow)
 
-为确保重构不引发级联崩溃并持续保持 476 个自动化测试绿灯通行，必须严格遵循以下单向拓扑顺序推进：
+严格按照自底向上原则：**先修复协议解析与数据契约 ➔ 再固化调度并发与容灾防线 ➔ 继而清除违宪特化补丁 ➔ 最后完成上帝类模块解耦**：
 
 ```mermaid
 flowchart TD
-    subgraph Step1["阶段一：底层契约与协议坚固化 (Zero Blast Radius)"]
-        S1_1["1.1 修复 ResilientParser 围栏嵌套、\\npath 前瞻与任务终结正则"]
-        S1_2["1.2 修复 ChatHubClient 1006/1008 异常走 reject"]
-        S1_3["1.3 修复 AccountPool 轮询指针前置递增与 TokenManager Single-Flight"]
-        S1_4["1.4 修复 PromptBuilder.buildTurn2TaskPrompt 强类型实参"]
-        S1_5["1.5 清洗 Orchestrator handoff sessionId 路径"]
-    end
+    Step1["第一步: 固化底层协议解析与强类型契约 (CR-1)<br>• ResilientParser: 补齐 stage 属性解析，修复 YAML content 贪婪前瞻<br>• PromptBuilder: 废弃 includes('Skill') 嗅探，采用强类型对象签名<br>• main-plan-snapshot: 改为静态 import，消除 ESM require 隐患<br>• ToolBridge: 透传真实 role 与 sessionId，消除 'main' 硬编码"]
+    
+    Step2["第二步: 调度并发容灾加固与限流防线治理 (CR-2)<br>• Orchestrator: 剔除 lower.includes('429') 文本误杀，采用精准协议与信令判定<br>• SubagentRunner: 修复 0 || poolStatus 假值并发溢出缺陷<br>• AccountPool: 增加异步锁与占用租约标记 (isLeased)，防止并发挤占同一账号<br>• SessionManager: 修复 rebuildIndex 遗漏 generation / handoffCount 拷贝"]
+    
+    Step3["第三步: 彻底清除违宪特化补丁，恢复 Harness 纯粹中立 (CR-3)<br>• orchestrator.ts: 物理删除 .NET/winget 特化异常嗅探与负面禁止词注入 (L1105-L1127, L1188-L1192)<br>• ToolBridge: 限制单元测试徽章抓取仅针对测试类命令生效，消除抽象泄漏<br>• compaction.ts: 移除废弃休眠代码，收敛压实职责至 BlackboxCompactor"]
 
-    subgraph Step2["阶段二：治理宪章对齐与中立性复归 (Governance Alignment)"]
-        S2_1["2.1 彻底切除 Orchestrator 中针对 .NET/winget 的特化规则与负面禁止词"]
-        S2_2["2.2 重写 PromptBuilder 中的 '严禁输出工具块' 为正向行动引导"]
-        S2_3["2.3 纠偏 RefusalGuard 误伤机制，保护技术诊断与健康账号"]
-        S2_4["2.4 对齐 Orchestrator 附件阈值为 120,000 字符，修复上下文失明"]
-    end
+    Step4["第四步: 上帝类职责拓扑解耦与代码柔道精炼 (CR-4)<br>• cli.ts (2122行 -> 300行): 保持多态参数兼容抽离 src/cli/args.ts、commands.ts、relay-runner.ts<br>• Orchestrator 封装显式状态迁移方法，杜绝外部篡改 isHandshakePending<br>• tui-renderer.ts: 抽离 Intra-line Word Diff 算法至 diff-highlighter.ts<br>• 提炼统一的 RateLimitClassifier 与 ToolResultFormatter 消除重复代码"]
 
-    subgraph Step3["阶段三：分层依赖净化与模块深层化 (Layer Purification)"]
-        S3_1["3.1 抽离 URL 工具函数，解耦 Auth ➔ Transport 反向依赖"]
-        S3_2["3.2 抽象 SessionFileLogger，解耦 Agent ➔ UI 反向依赖"]
-        S3_3["3.3 依赖注入解除 Orchestrator ⇄ SubagentRunner 循环依赖"]
-        S3_4["3.4 彻底移除 compaction.ts 遗留死代码，收敛至 BlackboxCompactor"]
-        S3_5["3.5 SessionLineageTracker 补齐磁盘落盘持久化"]
-    end
-
-    subgraph Step4["阶段四：上帝巨石类外科手术解构 (God Class Decomposition)"]
-        S4_1["4.1 解构 cli.ts: 抽离 args.ts、CommandDispatcher 与报表组件"]
-        S4_2["4.2 解构 orchestrator.ts: 抽离 HandoffGenerator 与 DisasterArbitrator"]
-        S4_3["4.3 清除 cli.ts 内部所有的 (orchestrator as any) 私有篡改与幽灵属性"]
-        S4_4["4.4 提取 ToolBridge 统一错误构建器，消除样板复制"]
-    end
-
-    Step1 --> Step2
-    Step2 --> Step3
-    Step3 --> Step4
+    Step1 --> Step2 --> Step3 --> Step4
 ```
 
 ---
 
-## 三、 预填 CHANGE-REQUEST 草案 (对接 change-protocol)
+## 三、 确凿问题分类明细与物理证据链
 
-### CR-01: 坚固化 ResilientParser 与协议上下文真实性
-- **变更类型**: 🛠️ 契约与解析层缺陷修复
-- **关联缺陷**: 矛盾 1 (Items A2-1, A2-2, A2-4, A2-8, A1-5, A4-5)
-- **修改文件**: 
-  - `src/protocol/resilient-parser.ts`
-  - `src/protocol/prompt-builder.ts`
-  - `src/agent/orchestrator.ts`
-- **原始逻辑**:
-  1. 正则 ````(?:action|json)?\s*([\s\S]*?)```` 遇嵌套代码块提前闭合；
-  2. 编辑操作前瞻断言 `(?=\n(?:...|path)\s*:)` 遇 `\npath:` 提前截断；
-  3. `buildTurn2TaskPrompt` 靠 `includes("Skill")` 动态反推参数；
-  4. `attachmentThreshold` 硬编码为 `0`。
-- **重构逻辑**:
-  1. 改用基于平衡标记计数或贪婪围栏匹配，并校验代码围栏配对闭合；
-  2. 编辑工具精准锚定到 YAML 顶层字段边界，消除局部属性误切；
-  3. `buildTurn2TaskPrompt` 升级为显式对象入参 `{ taskPrompt: string; skillName?: string }`；
-  4. `attachmentThreshold` 恢复为规范规定的 `120000` 字符阈值。
+### 1. 协议解析与契约漏洞 (Doubt & Contract Breakage)
+
+#### [Issue D-1] `ResilientParser.parseSubagentsBlock` 物理丢弃 `stage` 属性导致 Stage Barrier 屏障全盘失效
+- **物理源码**: `src/protocol/resilient-parser.ts#L309-L347`
+- **缺陷核查**: JSON 与 YAML 两个解析分支均未提取 `stage` 字段。下游 `subagent-runner.ts#L105` 的 `Math.max(1, Math.floor(t.stage ?? 1))` 永远得到 `undefined`，导致模型规划的串行多阶段任务（例如 Stage 1 调研 ➔ Stage 2 编码）在实战中全部被拉平为同一批并发抢跑。
+- **单测盲区**: `tests/agent/subagent-stage-barrier.test.ts` 直接在内存中硬编码了 `tasks: SubagentTaskSpec[]`，绕过了解析器；而解析器单测未包含 `stage` 断言。
+
+#### [Issue D-2] `PromptBuilder.buildTurn2TaskPrompt` 字符串嗅探倒置客观事实与技能文档
+- **物理源码**: `src/protocol/prompt-builder.ts#L140-L164`
+- **缺陷核查**: 代码使用 `arg2.includes("Skill") || arg2.includes("技能")` 暴力猜测参数顺序。当工具输出（如查看文件、代码搜索、单测报错日志）中包含单词 `"Skill"` 或 `"技能"` 时，`toolResult` 与 `skillsSection` 发生反向颠倒，导致模型在 Turn 2 收到的提示词严重错乱。
+
+#### [Issue D-3] `ResilientParser` YAML 动作块 `content:` 贪婪正则吞噬元数据
+- **物理源码**: `src/protocol/resilient-parser.ts#L208, L248-L265`
+- **缺陷核查**: 正则 `([\s\S]*)$` 贪婪匹配到末尾。若 Copilot 模型在 `content:` 之后输出 `path:` 或其他元数据，后续同级键值全部被吞入文件正文，导致写入文件的代码受到物理污染。
+
+#### [Issue D-4] `main-plan-snapshot.ts` ESM 模块动态调用 CommonJS `require` 导致物理账本挂载头静默丢失
+- **物理源码**: `src/session/main-plan-snapshot.ts#L102-L108`
+- **缺陷核查**: 在 `"type": "module"` 的工程中，直接调用 CommonJS `require` 在标准 Node.js 环境下抛出 `ReferenceError`，外层空 `catch {}` 静默吞没，导致后继主控会话丢失物理账本挂载指纹，直接违背《AGENTS.md》准则 7。
+
+#### [Issue D-5] `ToolBridge.recordToLedger` 硬编码静态身份 `role: "main"`
+- **物理源码**: `src/protocol/tool-bridge.ts#L485-L488`
+- **缺陷核查**: 写入 ExecutionLedger 时硬编码 `role: "main", sessionId: "main"`。多子代理 (Coder / Researcher) 与多代继任者执行工具时真实调用方身份被抹除，破坏客观溯源证据链。
+
+---
+
+### 2. 调度并发、容灾与限流防线缺陷 (Concurrency & Resilience)
+
+#### [Issue R-1] `Orchestrator.isRateLimitResponseText` 粗暴文本匹配导致正常技术推演被误杀
+- **物理源码**: `src/agent/orchestrator.ts#L1397-L1411`
+- **缺陷核查**: 仅豁免 `action` 与 `FINAL_ANSWER`，任何包含 `429`、`throttled` 或 `"Line 429"` 的普通技术分析文本均被误判为云端限流，强行中断会话并将健康账号关入 3 分钟禁闭，严重破坏 Harness 中立性。
+
+#### [Issue R-2] `SubagentRunner` 账号容量计算中 `0 || poolStatus.length` 的假值并发溢出
+- **物理源码**: `src/agent/subagent-runner.ts#L88`
+- **缺陷核查**: 当所有账号均处于限流冷却期时（`activeAllowedAccounts.length === 0`），JavaScript 中 `0 || poolStatus.length` 错误回退为总池账号数，导致限流风暴期反以最大并发冲撞。
+
+#### [Issue R-3] `AccountPool.getNextAvailableToken` 异步间隙无锁导致并发 worker 挤占同账号
+- **物理源码**: `src/auth/account-pool.ts#L339-L346`
+- **缺陷核查**: 在 `await this.manager.getAccessToken` 异步 I/O 挂起期间，第二个并发 worker 进入循环，此时 `this.currentIndex` 尚未更新且无租约占用标记，多个并发子任务必然获取完全相同的账号，冲击单账号连接上限。
+
+#### [Issue R-4] `SessionManager.rebuildIndex` 自愈重建遗漏代际元数据
+- **物理源码**: `src/session/session-manager.ts#L185-L199`
+- **缺陷核查**: 扁平 DTO 缺乏封装，`saveSession` 保存了 `generation` 与 `handoffCount`，但在 `rebuildIndex` 索引重建中遗漏了这两个字段的拷贝，导致索引重建后会话代数丢失归零。
+
+---
+
+### 3. 治理宪章违背与特化补丁异味 (Charter Governance & Cleanliness)
+
+#### [Issue G-1] `orchestrator.ts` 硬编码特化 .NET/winget 异常诊断与系统卡点建议
+- **物理源码**: `src/agent/orchestrator.ts#L1105-L1127, L1188-L1192`
+- **裁决**: **`[VIOLATES-GOVERNANCE-RULE]` (严重违宪)**
+- **违宪事实**: 硬编码针对 `.NET SDK`、`winget`、`0x80070005` 的特化异常诊断，并在交接文档中强行注入“切勿盲目重复调用 winget”等负面禁止词。直接违反《AGENTS.md》准则 1（Harness 纯粹与中立原则）、准则 3（正向引导铁律，摒弃负面词）与准则 6（黑盒契约与操作者视角），在非 .NET 项目中诱发严重模型幻觉。必须无条件彻底物理删除。
+
+#### [Issue G-2] `tool-bridge.ts` 通用工具桥接层无差别抓取测试状态徽章
+- **物理源码**: `src/protocol/tool-bridge.ts#L479-L484`
+- **缺陷核查**: 正则在底层通用 bash 工具层对所有命令输出无差别生效，任意含 `password`、`failover`、`compass` 的输出均会被误抓为测试徽章。应仅限测试命令生效。
+
+#### [Issue G-3] `compaction.ts` 废弃滑动微压实属于休眠死代码
+- **物理源码**: `src/agent/compaction.ts#L24-L134, orchestrator.ts#L815-L826`
+- **缺陷核查**: 物理账本与事故黑匣子架构落地后，会话内破坏性滑动压实被默认禁用。两套压缩概念并存造成认知冗余，应清理收敛至 Blackbox。
+
+---
+
+### 4. 上帝类、代码坏味道与架构深度 (Refactoring & Architecture)
+
+#### [Issue S-1] `src/cli.ts` (2,122 行) 上帝单体膨胀与外部篡改状态机
+- **物理源码**: `src/cli.ts#L75-L2122`
+- **缺陷核查**: 单体类持有 27 个实例字段，承担参数解析、Readline 输入、Slash 路由、配置落盘、状态卡渲染、多代接力编排等 6 大领域职责；且在 L446、L457 等处直接外部暴力赋值 `this.orchestrator.isHandshakePending = false`，破坏状态机封装。
+
+#### [Issue S-2] `src/agent/orchestrator.ts` (1,702 行) 核心循环超载与子任务内部就地重置 `turn = 0`
+- **物理源码**: `src/agent/orchestrator.ts#L425-L898`
+- **缺陷核查**: 核心 `run()` 单体长达 584 行，嵌套了多代接力、网络流式、握手、压实等多层分支；深层子任务内部就地突变外层 `while` 的 `turn = 0`，隐式副作用增加心智负担。
+
+#### [Issue S-3] `orchestrator.ts` 与 `subagent-runner.ts` 强双向循环依赖
+- **物理源码**: `src/agent/orchestrator.ts#L24 vs src/agent/subagent-runner.ts#L4`
+- **缺陷核查**: 两者相互静态导入并直接 `new` 对方具体类，构成强循环耦合，违背依赖倒置原则。
+
+#### [Issue S-4] `tui-renderer.ts` 视图类混合 138 行 Intra-line Word Diff 算法
+- **物理源码**: `src/ui/tui-renderer.ts#L157-L295`
+- **缺陷核查**: 纯展示层内嵌复杂的词级 Diff 比较与高亮算法，内聚度失调，应剥离为独立模块。
+
+#### [Issue S-5] 重复代码：ToolBridge 6 分支结果构造样板与 3 处散落的 429 正则
+- **物理源码**: `src/protocol/tool-bridge.ts#L644-L826`, `src/auth/account-pool.ts`, `src/agent/orchestrator.ts`
+- **缺陷核查**: ToolBridge 6 处分支复制相同样板；429 限流正则三处分散且各不相同，缺乏统一源头真理。
+
+---
+
+## 四、 预填 CHANGE-REQUEST 草案 (对接 change-protocol)
+
+### CR-1: 固化底层协议解析、强类型契约与账本保真度
+- **类型**: 🛠️ 契约与稳定性重构
+- **目标**: 补齐 `ResilientParser` 的 `stage` 解析；重构 `PromptBuilder` 为强类型参数；消除 ESM 动态 `require`；`ToolBridge` 透传真实身份。
 - **7 类制品双向冲击面评估**:
-  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险等级 |
-  |---|---|---|---|
-  | 函数/接口 | `PromptBuilder.buildTurn2TaskPrompt` 改用配置对象 | `cli.ts` 与 `subagent-runner.ts` 调用点同步改用命名参数 | 🟢 低 (TypeScript 编译保障) |
-  | 配置/常量 | `attachmentThreshold` 设为 120,000 | 大文本输出不再全量上云，直接流入 Prompt 上下文 | 🟢 低 (与 Sydney 模型窗口匹配) |
-  | 数据/存储 | 提取的代码与 Patch 参数 | 目标文件内容无损写入，杜绝截断丢代码 | 🟢 低 |
+  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险 | 缓解措施 |
+  |---|---|---|---|---|
+  | **函数/接口** | `ResilientParser.parseSubagentsBlock`, `PromptBuilder.buildTurn2TaskPrompt` | `SubagentRunner`, `Orchestrator` | 🟡 中 | 保持参数对象字段自适应，保留单测兼容签名 |
+  | **数据/存储** | `SubagentTaskSpec.stage` | `StageBarrier` 阶段分组 | 🟢 低 | `stage` 缺省安全归为 1 |
+  | **配置** | 无变更 | 无变更 | 🟢 低 | 无 |
+  | **资源** | `main-plan-snapshot.ts` 静态加载 | 磁盘账本读取 | 🟢 低 | 消除动态 require 运行时隐患 |
+  | **全局状态** | 无变更 | 无变更 | 🟢 低 | 无 |
+  | **常量** | YAML 正则同级前瞻 | 动作块解析 | 🟢 低 | 增加同级关键字前瞻断言 |
+  | **依赖** | `import { ExecutionLedger }` | 依赖图谱 | 🟢 低 | 静态 ESM 导入 |
 
----
-
-### CR-02: 落实 AGENTS.md 宪章治理：切除 Harness 特化与负面词
-- **变更类型**: ⚖️ 架构中立性与治理宪章对齐
-- **关联缺陷**: 矛盾 2 (Items A4-1, B4-1, A3-8, B3-8, A2-9, B2-9)
-- **修改文件**:
-  - `src/agent/orchestrator.ts`
-  - `src/protocol/prompt-builder.ts`
-  - `src/agent/refusal-guard.ts`
-- **原始逻辑**:
-  1. `orchestrator.ts` 硬编码针对 `.NET SDK/dotnet/winget` 的特化正则及“切勿盲目重复调用 winget”等负面禁止词；
-  2. `PromptBuilder.PROTOCOL_REMINDER` 包含“严禁输出工具块”；
-  3. `RefusalGuard` 强行拦截技术分析并错封账号。
-- **重构逻辑**:
-  1. 彻底删除 `orchestrator.ts` 中针对特定命令/环境的硬编码 if 判断与报错拼接，让 Harness 保持纯粹与调度中立；
-  2. 将系统提示词中所有“严禁……”、“切勿……”全面重写为建设性的正向行动指引（例如将“严禁输出工具块”改写为“请直接给出总结说明与后续方案，工具调用由系统自动解析”）；
-  3. 优化 `RefusalGuard` 判定逻辑，避免代码审计与安全分析报告触发限流错封。
+### CR-2: 调度并发容灾加固、限流误杀拦截与无锁竞态防护
+- **类型**: 🛡️ 容灾与并发健壮性加固
+- **目标**: 消除 429 文本误杀；修复 0 假值并发溢出；为 AccountPool 增加租约锁；修复 SessionManager 索引重建。
 - **7 类制品双向冲击面评估**:
-  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险等级 |
-  |---|---|---|---|
-  | 共享常量 | 系统提示词协议常量变更 | Copilot 大模型注意力更集中，消除粉色大象效应 | 🟢 低 (正向改进) |
-  | 全局状态 | `AccountPool.markThrottled` | 不再被误调，避免健康账号被误冻结 | 🟢 低 |
+  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险 | 缓解措施 |
+  |---|---|---|---|---|
+  | **函数/接口** | `Orchestrator.isRateLimitResponseText`, `AccountPool.getNextAvailableToken` | `Orchestrator` 调度循环, `SubagentRunner` | 🟡 中 | 429 文本判断限定仅在纯异常状态码与固定信令触发 |
+  | **全局状态** | `AccountPool.isLeased` 账号租约状态 | 所有获取 Token 的 worker | 🟡 中 | 保证在 `finally` 块中 100% 释放租约 |
+  | **数据/存储** | `SessionManager.rebuildIndex` | `index.json` 索引文件 | 🟢 低 | 补齐 `generation` 与 `handoffCount` 拷贝 |
 
----
-
-### CR-03: 认证池并发安全与传输网络异常透传
-- **变更类型**: 🔒 并发竞态与传输健壮性修复
-- **关联缺陷**: 矛盾 4 (Items A2-3, A2-5, A2-6)
-- **修改文件**:
-  - `src/auth/account-pool.ts`
-  - `src/auth/token-manager.ts`
-  - `src/transport/chathub-client.ts`
-- **原始逻辑**:
-  1. `AccountPool` 轮询指针在获取 Token 成功后才递增；
-  2. `TokenManager` 刷新 Token 无并发合并；
-  3. `ChatHubClient` 在 1006/1008 异常关闭时通过 `settleResolve({ text: "" })` 吞掉错误。
-- **重构逻辑**:
-  1. `AccountPool` 在进入异步 Token 获取前原子递增指针；
-  2. `TokenManager` 引入 `refreshPromises: Map<string, Promise<string>>` 实现 Single-Flight 并发去重；
-  3. `ChatHubClient` 在异常关闭且未正常结束流时，直接调用 `settleReject(new Error(...))`，让编排层正常触发故障转移与账号轮换。
+### CR-3: 彻底清除违宪特化补丁，恢复 Harness 纯粹中立
+- **类型**: 🧹 治理宪章归正与死代码清理
+- **目标**: 物理删除 `orchestrator.ts` 中的 .NET/winget 特化异常诊断；收敛死代码压实服务。
 - **7 类制品双向冲击面评估**:
-  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险等级 |
-  |---|---|---|---|
-  | 函数/接口 | `TokenManager.getAccessToken` 保持签名 | 并发调用共享同一 Promise，保护 Refresh Token 轮转安全 | 🟢 低 |
-  | 全局状态 | 账号轮换指针与活跃 Promise 集合 | 并发子代理平滑调度，无同账号碰撞 | 🟢 低 |
-  | 依赖/库 | SignalR WebSocket 断开处理 | 编排器能准确捕获 1006 异常并触发容灾接力 | 🟡 中 (需保持单测全绿) |
+  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险 | 缓解措施 |
+  |---|---|---|---|---|
+  | **函数/接口** | `Orchestrator.generateHandoffMarkdown` | 继任者会话 Prompt | 🟢 低 | 移除特化环境卡点生成，保持通用错误呈现 |
+  | **常量/提示词**| 交接文档建议部分 | 下一代 Agent 认知 | 🟢 低 | 消除负面词，遵守《AGENTS.md》准则 1 与 3 |
+  | **依赖** | 废弃 `src/agent/compaction.ts` | `orchestrator.ts` | 🟢 低 | 统一使用 `BlackboxCompactor` |
 
----
-
-### CR-04: 分层净化、解除循环依赖与补齐血缘持久化
-- **变更类型**: 🏛️ 分层架构治理
-- **关联缺陷**: 矛盾 3 & 5 (Items A3-1, A3-3, A3-4, A3-6, A3-7, A4-4, B3-3)
-- **修改文件**:
-  - `src/auth/account-pool.ts`
-  - `src/transport/chathub-client.ts`
-  - `src/agent/subagent-runner.ts`
-  - `src/agent/orchestrator.ts`
-  - `src/agent/compaction.ts` (删除)
-  - `src/agent/blackbox-compactor.ts`
-  - `src/session/lineage-tracker.ts`
-  - `src/session/session-manager.ts`
-- **重构逻辑**:
-  1. 将 `normalizeAgentId` 移入独立的 `src/utils/url-utils.ts`，断开 `auth` ➔ `transport` 反向依赖；
-  2. 将会话日志输出下沉至 Session 领域层，断开 `agent` ➔ `ui` 反向依赖；
-  3. 通过接口抽象与构造注入，解除 `Orchestrator` 与 `SubagentRunner` 循环依赖；
-  4. 清理 `compaction.ts`，将 `TurnRecord` 统合至 `blackbox-compactor.ts`，消除循环 Barrel；
-  5. 在 `SessionManager` 中为 `SessionRecord` 增加 `lineage` 字段，实现树状血缘断电持久化。
+### CR-4: 上帝类职责拓扑解耦与代码柔道精炼
+- **类型**: 🏗️ 架构拓扑重构
+- **目标**: 解耦 `cli.ts` (2122行) 与 `orchestrator.ts` (1702行)；保持多态参数零破坏；抽离独立子模块。
 - **7 类制品双向冲击面评估**:
-  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险等级 |
-  |---|---|---|---|
-  | 数据/存储 | `SessionManager.saveSession` | `index.json` 包含血缘数据，重启后可持续追踪 | 🟢 低 (向上兼容) |
-  | 模块依赖 | 依赖关系单向流动 | 彻底消除 ESM 运行时循环引用隐患 | 🟢 低 |
+  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险 | 缓解措施 |
+  |---|---|---|---|---|
+  | **函数/接口** | `src/cli/args.ts`, `src/cli/commands.ts`, `src/cli/relay-runner.ts` | `cph-pi.bat/ps1`, 外部命令行调用 | 🟡 中 | 编写形式化参数单测，锁定 `-t` 多态语义 |
+  | **全局状态** | `Orchestrator` 自治状态迁移方法 | `CphPiCli` | 🟢 低 | 消除外部暴力赋值，提供受控 API |
 
 ---
 
-### CR-05: 外科手术式解构双千行上帝巨石类
-- **变更类型**: ✂️ 深度代码重构 (Code Judo)
-- **关联缺陷**: 矛盾 3 (Items A1-1, A1-2, A1-4, A4-2, A4-3, A4-8, B1-1, B1-2, B4-2, B4-3)
-- **修改文件**:
-  - `src/cli.ts` (从 2082 行瘦身至 400 行以内)
-  - `src/agent/orchestrator.ts` (从 1646 行瘦身至 600 行以内)
-  - 新增/抽离模块：
-    - `src/cli/args.ts` (声明式 CLI 参数解析)
-    - `src/cli/commands/` (Slash 命令注册表与分发器)
-    - `src/agent/handoff-generator.ts` (独立快照生成器)
-    - `src/agent/disaster-arbitrator.ts` (独立容灾仲裁器)
-- **重构逻辑**:
-  1. 将 `cli.ts` 中的 15 组命令 if 链拆解为标准 Command 模式；
-  2. 将 `orchestrator.ts` 中的三巨头方法抽离为独立服务，消灭对私有状态的 `as any` 篡改；
-  3. 修复 `turn = 0` 破坏时序单调性问题，轮次保持全局单调递增。
-- **7 类制品双向冲击面评估**:
-  | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 风险等级 |
-  |---|---|---|---|
-  | 函数/接口 | `CphPiCli` 与 `CopilotOrchestrator` 保持公开 API | 外部 `cph-pi.ts` 启动脚本零改动 | 🟢 低 |
-  | 全局状态 | 单调轮次计数器 | 压实摘要不再出现 `Turns 4 ~ 2` 倒置 | 🟢 低 |
+## 五、 已排除的误报与治理保护项 (Audit Trail)
+
+为避免未来重复质疑与误判，以下项目已被复审矩阵 B 证伪并予以永久归档保护：
+
+1. **`[FALSE-POSITIVE]` 稀疏数组并发崩溃 (A3 Issue 1)**：已在 2026-10-14 CR-1 彻底修复，具备密集初始化与非空守卫，单测锁死。
+2. **`[FALSE-POSITIVE]` 空响应死循环 (A3 Issue 9)**：已在 2026-10-14 CR-2 修复为 `empty_response` 分流与指数退避，单测锁死。
+3. **`[FALSE-POSITIVE]` 云端附件 0 阈值 (A3 Issue 10)**：已在 2026-10-14 CR-3 默认调优为 12,000 字符与 200 行并嵌入指纹，单测锁死。
+4. **`[FALSE-POSITIVE]` 提示词负面词 (A3 Issue 12)**：已在 2026-10-14 CR-4 全量清洗完毕，单测 `prompt-builder-governance.test.ts` 绿灯通过。
+5. **`[FALSE-POSITIVE]` LineageTracker 正则反解代数 (A4 Issue 7)**：A4 反例断言错误，源码正则含尾部 `$` 锚点，且作为跨进程恢复兜底属于合理防守设计。
+6. **`[FALSE-POSITIVE]` CopilotAction 30+ 属性 (A1 Issue 13)**：初审误解了系统非受信边界 DTO 与内部领域模型的划分，边界必须宽容。
+7. **`[VIOLATES-GOVERNANCE-RULE]` Harness 改写 Shell 命令 (A3 Issue 11)**：严禁在 Harness 替模型擦屁股，已在系统提示词正向认知塑形中闭环。
+8. **`[INTENDED-DESIGN]` 否决使用 `util.parseArgs` (A4 Issue 1)**：原生库不支持 `-t` 多态与可选值参数，草率套用必破坏 CLI 兼容性。
 
 ---
 
-## 四、 已排除的误报与既定设计保护项 (Audit Trail)
+## 六、 用户裁决入口 (Decision Gate)
 
-为避免未来重复审计产生误判，以下项目经对抗辩护已被证实为合理设计或误报，严禁进行破坏性修改：
+根据【绝对只读门禁】，本次审计未修改任何生产代码。请人类用户审查上述拓扑执行流与 CR 草案并做出决策：
 
-| 编号 | 审查项 | 初审定性 | 终审裁决 | 对抗辩护核心依据与保护结论 |
-|---|---|---|---|---|
-| 1 | `IOrchestratorChatClient` Seam | 伪 Seam / 抽象泄漏 | `[INTENDED-DESIGN]` | **离线测试生命线**。全库 30+ 自动化单测依赖该接口进行 mock。若删除此 Seam，单测必须连真实微软接口，测试基建直接崩溃。予以坚决保护保留。 |
-| 2 | 主控与子代理接力循环 | 逻辑克隆 / 霰弹修改 | `[INTENDED-DESIGN]` | **初审存在事实幻觉**（`cli.ts` 中根本没有 `lineageTracker`）。前台交互 REPL 宿主与后台批量代理工作流属于正交领域模型，强行抽取抽象违背高内聚原则。 |
-| 3 | `TurnRecord` 与 `SessionTurnRecord` 双轨制 | 数据泥团 / 契约重复 | `[INTENDED-DESIGN]` | 内存紧凑运算模型与磁盘 JSON 存储模型的分层解耦完全合理，只需在 `SessionManager` 内部封装转换胶水即可。 |
-| 4 | `InterruptController` 繁忙期双击退出 | 竞态条件 / 信号丢失 | `[INTENDED-DESIGN]` | **实测与既定设计完全吻合**。繁忙时连按仅取消当前操作，空闲时双击才退出进程，系防用户误杀当前长会话的防御性设计。 |
-| 5 | `SessionManager` 并发落盘非原子写 | 数据破坏风险 | `[FALSE-POSITIVE]` | **单线程事实证伪**。`saveSession` 全程纯同步（无 await），在 Node/Bun 单线程机制下不可能发生交错竞态；476 项测试全绿，且已有 `rebuildIndex` 磁盘兜底。 |
-| 6 | `invoke_subagent` 未下沉 ToolBridge | 架构分层混杂 | `[INTENDED-DESIGN]` | `invoke_subagent` 属于包含主会话虚拟化快照与重定向的元控制流跃迁，由编排器直管属于合理的既定设计。 |
-| 7 | A3 声称编排器持有网络违反 Rule 6 | 违背项目宪章 | `[FALSE-POSITIVE]` | **准则误读纠偏**。`AGENTS.md` 准则 6 严格限定在“Agent 系统提示词与 Skill 中严禁向模型解释底层机制”，属于面向大模型防污染的提示词契约，不可用于批判 Harness 内部 TypeScript 源码。 |
+- [ ] **方案 A (推荐 - 全面治理与重构)**: 严格按拓扑次序图分阶段执行 **CR-1 ➔ CR-2 ➔ CR-3 ➔ CR-4**，彻底拔除 P0 缺陷与违宪特化补丁，完成千行巨石解耦。
+- [ ] **方案 B (保守 - 核心缺陷止血)**: 仅执行 **CR-1** (协议契约) + **CR-2** (429/并发容灾) + **CR-3** (违宪补丁删除)，暂缓 CR-4 上帝类架构大重构。
+- [ ] **方案 C (仅治理违宪补丁)**: 仅执行 **CR-3** 物理删除 `orchestrator.ts` 中违宪的 .NET/winget 异常诊断代码。
 
----
-
-## 五、 用户裁决入口 (Hard Read-Only Gate)
-
-> [!CAUTION]
-> **绝对只读门禁约束中**：当前所有审查产物均已落盘，**生产代码未做任何修改**。
-> 请用户检阅并选择执行方案。只有在用户明确给出指令后，方可切入实施代码变更。
-
-- [ ] **方案 A (全量工业级重构，强烈推荐)**：严格按照拓扑次序执行 `CR-01` ➔ `CR-02` ➔ `CR-03` ➔ `CR-04` ➔ `CR-05`，一次性根治协议截断、治理违规、并发碰撞与千行大文件异味，重构后全量跑通 476+ 自动化测试。
-- [ ] **方案 B (最小破坏性修复)**：仅执行 `CR-01` (协议与解析截断修复)、`CR-02` (治理宪章违规切除) 与 `CR-03` (并发与网络健壮性)，暂缓 `CR-04` 和 `CR-05` 的千行大文件架构解构。
-- [ ] **方案 C (仅治理合规修复)**：仅执行 `CR-02`，切除 `Orchestrator` 与提示词中的违规负面禁止词和业务特化规则，其余逻辑保持现状。
-- [ ] **方案 D (保持现状)**：不修改任何代码，仅将本审计报告归档备查。
-
+*(请在对话中输入您的选择，获得明确批准后方可切入实施)*

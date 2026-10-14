@@ -17,14 +17,14 @@ export interface ReGroundingOptions {
 }
 
 export class PromptBuilder {
-  public static readonly PROTOCOL_REMINDER = `【交接协议铁律 (Turn Protocol Contract)】
+  public static readonly PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
    - 读取文件: tool: read_file \\n path: <path> \\n start_line: 1 \\n end_line: 100
    - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
-2. 若全部步骤已完成且无需后续动作，严禁输出工具块，必须直接输出交付格式：
+2. 当所有目标已达成且验证充分时，直接在独立一行输出最终交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
 
   /**
@@ -207,18 +207,46 @@ ${this.PROTOCOL_REMINDER}`;
   }
 
   /**
+   * Generates a head-tail excerpt fingerprint for large content.
+   * If line count > (maxHeadLines + maxTailLines) (default 50 lines),
+   * extracts the first maxHeadLines and last maxTailLines, with an omission note in between.
+   * If line count <= (maxHeadLines + maxTailLines), returns the raw text directly.
+   */
+  public static generateHeadTailExcerpt(
+    rawContent: string,
+    maxHeadLines = 25,
+    maxTailLines = 25
+  ): string {
+    const lines = rawContent.split(/\r?\n/);
+    const threshold = maxHeadLines + maxTailLines;
+    if (lines.length <= threshold) {
+      return rawContent;
+    }
+    const omittedCount = lines.length - maxHeadLines - maxTailLines;
+    const head = lines.slice(0, maxHeadLines).join("\n");
+    const tail = lines.slice(lines.length - maxTailLines).join("\n");
+    return `${head}\n... (省略 ${omittedCount} 行) ...\n${tail}`;
+  }
+
+  /**
    * Builds high-efficiency tool result prompt when output is attached as a cloud file.
    * Completely avoids dumping massive texts into chat, preventing attention dilution and timeouts.
+   * Embeds physical execution fingerprint if excerpt is provided.
    */
   public static buildAttachedToolResultPrompt(
     toolName: string,
     fileName: string,
-    summary: { lineCount: number; charCount: number }
+    summary: { lineCount: number; charCount: number },
+    excerpt?: string
   ): string {
+    const fingerprintBlock = excerpt
+      ? `\n\n【物理执行指纹摘要 (Head-Tail Fingerprint)】:\n${excerpt}`
+      : "";
+
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ ${toolName} 执行成功 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)。
 完整执行结果已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}
 
 ${this.PROTOCOL_REMINDER}`;
   }
@@ -231,11 +259,16 @@ ${this.PROTOCOL_REMINDER}`;
     skillsSection: string,
     toolName: string,
     fileName: string,
-    summary: { lineCount: number; charCount: number }
+    summary: { lineCount: number; charCount: number },
+    excerpt?: string
   ): string {
+    const fingerprintBlock = excerpt
+      ? `\n\n【物理执行指纹摘要 (Head-Tail Fingerprint)】:\n${excerpt}`
+      : "";
+
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 
 【环境握手完成：本地工具与工作区已就绪】
 ${skillsSection ? `【当前已激活的专业技能 (Skill)】\n${skillsSection}\n\n` : ""}

@@ -32,6 +32,17 @@ var __toESM = (mod, isNodeMode, target) => {
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
+var __esm = (fn, res, err) => () => {
+  if (fn)
+    try {
+      res = fn(fn = 0);
+    } catch (e) {
+      err = [e];
+    }
+  if (err)
+    throw err[0];
+  return res;
+};
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // pi/node_modules/isexe/windows.js
@@ -8544,6 +8555,126 @@ ${val.stack}`;
   wasm.__wbindgen_start();
 });
 
+// src/session/ledger/execution-ledger.ts
+import fs7 from "node:fs";
+import path7 from "node:path";
+
+class ExecutionLedger {
+  workspaceRoot;
+  stateDir;
+  jsonlPath;
+  mdPath;
+  currentStepIndex = 0;
+  cachedEntries = [];
+  constructor(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+    this.stateDir = path7.join(this.workspaceRoot, ".cph", "state");
+    this.jsonlPath = path7.join(this.stateDir, "execution-ledger.jsonl");
+    this.mdPath = path7.join(this.stateDir, "execution-ledger.md");
+    this.initFromDisk();
+  }
+  getPaths() {
+    return {
+      jsonlPath: this.jsonlPath,
+      mdPath: this.mdPath
+    };
+  }
+  initFromDisk() {
+    try {
+      if (!fs7.existsSync(this.stateDir)) {
+        fs7.mkdirSync(this.stateDir, { recursive: true });
+      }
+      if (fs7.existsSync(this.jsonlPath)) {
+        const lines = fs7.readFileSync(this.jsonlPath, "utf8").split(`
+`).map((l) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            this.cachedEntries.push(entry);
+            if (entry.stepIndex > this.currentStepIndex) {
+              this.currentStepIndex = entry.stepIndex;
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.error(`[ExecutionLedger] 初始化读取异常:`, err);
+    }
+  }
+  recordStep(input) {
+    this.currentStepIndex += 1;
+    const entry = {
+      ...input,
+      stepIndex: this.currentStepIndex,
+      timestamp: Date.now(),
+      briefSummary: (input.briefSummary || "").slice(0, 300)
+    };
+    this.cachedEntries.push(entry);
+    try {
+      if (!fs7.existsSync(this.stateDir)) {
+        fs7.mkdirSync(this.stateDir, { recursive: true });
+      }
+      fs7.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
+`, "utf8");
+      this.writeMarkdownView();
+    } catch (err) {
+      console.error(`[ExecutionLedger] 账本落盘告警:`, err);
+    }
+    return entry;
+  }
+  getLatestEntries(limit) {
+    if (limit && limit > 0) {
+      return this.cachedEntries.slice(-limit);
+    }
+    return [...this.cachedEntries];
+  }
+  formatMountHeader() {
+    const totalSteps = this.currentStepIndex;
+    const modifiedFiles = new Set;
+    let latestBadge = "NONE";
+    for (const e of this.cachedEntries) {
+      if (e.modifiedFiles && Array.isArray(e.modifiedFiles)) {
+        for (const f of e.modifiedFiles) {
+          modifiedFiles.add(f);
+        }
+      }
+      if (e.statusBadge) {
+        latestBadge = e.statusBadge;
+      }
+    }
+    const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
+    const relativeMdPath = path7.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
+    return [
+      `【系统物理执行账本已挂载】`,
+      `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
+      `- 累计物理操作: ${totalSteps} 步 | 核心变更文件: ${filesSummary}`,
+      `- 最新验证状态: ${latestBadge}`,
+      `- 查阅契约: 上述客观事实已由系统物理验证。如需回溯某一步的详细改动或命令输出，请使用 read_file / view_file 工具定向查看账本文件，通过调阅物理账本或关键指纹获取执行事实。`
+    ].join(`
+`);
+  }
+  writeMarkdownView() {
+    const header = [
+      `# CPH 物理执行账本 (Execution Ledger)`,
+      `- 更新时间: ${new Date().toISOString()}`,
+      `- 累计物理步骤: ${this.currentStepIndex} 步`,
+      ``,
+      `| 步数 | 角色 | 工具 | 目标/动作 | 状态 | 关键指标/结果 |`,
+      `|---|---|---|---|---|---|`
+    ];
+    const rows = this.cachedEntries.map((e) => {
+      const cleanTarget = (e.target || "-").replace(/\|/g, "\\|").slice(0, 50);
+      const cleanBadge = (e.statusBadge || e.briefSummary || "-").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").slice(0, 60);
+      return `| ${e.stepIndex} | ${e.role} | ${e.tool} | ${cleanTarget} | ${e.status} | ${cleanBadge} |`;
+    });
+    const content = header.concat(rows).join(`
+`) + `
+`;
+    fs7.writeFileSync(this.mdPath, content, "utf8");
+  }
+}
+var init_execution_ledger = () => {};
+
 // pi/node_modules/diff/libcjs/diff/base.js
 var require_base = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
@@ -10376,8 +10507,8 @@ var require_libcjs = __commonJS(function(exports) {
 
 // src/cli.ts
 import readline from "node:readline";
-import path10 from "node:path";
-import fs10 from "node:fs";
+import path11 from "node:path";
+import fs11 from "node:fs";
 
 // pi/node_modules/chalk/source/utilities.js
 function stringReplaceAll(string, substring, postfix) {
@@ -10935,8 +11066,8 @@ var source_default = chalk;
 
 // src/agent/orchestrator.ts
 import crypto5 from "crypto";
-import fs7 from "fs";
-import path7 from "path";
+import fs9 from "fs";
+import path9 from "path";
 import { execSync as execSync2 } from "child_process";
 
 // src/auth/token-manager.ts
@@ -21388,6 +21519,7 @@ class ToolBridge {
   cwd;
   tools = new Map;
   onQuestion;
+  ledger;
   bashOperations;
   constructor(options) {
     if (typeof options === "string") {
@@ -21395,6 +21527,7 @@ class ToolBridge {
     } else {
       this.cwd = options?.cwd ?? process.cwd();
       this.onQuestion = options?.onQuestion;
+      this.ledger = options?.ledger;
     }
     const customTools = typeof options === "object" ? options?.tools : undefined;
     if (customTools) {
@@ -21429,6 +21562,36 @@ class ToolBridge {
   }
   getAllTools() {
     return new Map(this.tools);
+  }
+  getLedger() {
+    return this.ledger;
+  }
+  setLedger(ledger) {
+    this.ledger = ledger;
+  }
+  recordToLedger(toolName, target, canonicalTool, success, output) {
+    if (!this.ledger || typeof this.ledger.recordStep !== "function")
+      return;
+    try {
+      const modifiedFiles = canonicalTool === "edit" || canonicalTool === "write" ? [target] : undefined;
+      let statusBadge = undefined;
+      if (canonicalTool === "bash") {
+        const match = output.match(/(\d+\s*pass[^\n\r]*|\d+\s*fail[^\n\r]*|PASS[^\n\r]*|FAIL[^\n\r]*)/i);
+        if (match) {
+          statusBadge = match[1].slice(0, 30);
+        }
+      }
+      this.ledger.recordStep({
+        role: "main",
+        sessionId: "main",
+        tool: toolName,
+        target,
+        status: success ? "SUCCESS" : "FAILURE",
+        modifiedFiles,
+        statusBadge,
+        briefSummary: output.slice(0, 200)
+      });
+    } catch {}
   }
   mapAction(action) {
     const rawToolName = (action.tool ?? action.action ?? action.name ?? "").trim();
@@ -21660,6 +21823,7 @@ ${rawResult.details.diff}`;
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
       const success = !isError;
+      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -21682,6 +21846,7 @@ ${rawResult.details.diff}`;
       let output = err instanceof Error ? err.message : String(err);
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
+      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -21725,14 +21890,14 @@ ${output}
 
 // src/protocol/prompt-builder.ts
 class PromptBuilder {
-  static PROTOCOL_REMINDER = `【交接协议铁律 (Turn Protocol Contract)】
+  static PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
    - 读取文件: tool: read_file \\n path: <path> \\n start_line: 1 \\n end_line: 100
    - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
-2. 若全部步骤已完成且无需后续动作，严禁输出工具块，必须直接输出交付格式：
+2. 当所有目标已达成且验证充分时，直接在独立一行输出最终交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
   static buildTurn1Prompt(options) {
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
@@ -21880,18 +22045,41 @@ Output: ${output}
 ${this.PROTOCOL_REMINDER}`;
     }
   }
-  static buildAttachedToolResultPrompt(toolName, fileName, summary) {
+  static generateHeadTailExcerpt(rawContent, maxHeadLines = 25, maxTailLines = 25) {
+    const lines = rawContent.split(/\r?\n/);
+    const threshold = maxHeadLines + maxTailLines;
+    if (lines.length <= threshold) {
+      return rawContent;
+    }
+    const omittedCount = lines.length - maxHeadLines - maxTailLines;
+    const head = lines.slice(0, maxHeadLines).join(`
+`);
+    const tail = lines.slice(lines.length - maxTailLines).join(`
+`);
+    return `${head}
+... (省略 ${omittedCount} 行) ...
+${tail}`;
+  }
+  static buildAttachedToolResultPrompt(toolName, fileName, summary, excerpt) {
+    const fingerprintBlock = excerpt ? `
+
+【物理执行指纹摘要 (Head-Tail Fingerprint)】:
+${excerpt}` : "";
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ ${toolName} 执行成功 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)。
 完整执行结果已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}
 
 ${this.PROTOCOL_REMINDER}`;
   }
-  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary) {
+  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary, excerpt) {
+    const fingerprintBlock = excerpt ? `
+
+【物理执行指纹摘要 (Head-Tail Fingerprint)】:
+${excerpt}` : "";
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 
 【环境握手完成：本地工具与工作区已就绪】
 ${skillsSection ? `【当前已激活的专业技能 (Skill)】
@@ -21965,6 +22153,12 @@ ${this.PROTOCOL_REMINDER}`;
 class ResilientParser {
   static parse(text) {
     const trimmed = (text || "").trim();
+    if (!trimmed || trimmed.length === 0) {
+      return {
+        type: "empty_response",
+        thought: ""
+      };
+    }
     const handoffMatch = trimmed.match(/```handoff\s*([\s\S]*?)```/i);
     if (handoffMatch) {
       const handoffDoc = handoffMatch[1].trim();
@@ -22972,9 +23166,155 @@ ${s.content}` : "";
 }
 
 // src/agent/subagent-runner.ts
+import fs6 from "node:fs";
+import path6 from "node:path";
+import crypto4 from "node:crypto";
+
+// src/ui/terminal-logger.ts
 import fs5 from "node:fs";
 import path5 from "node:path";
-import crypto4 from "node:crypto";
+function stripAnsi2(str) {
+  if (!str)
+    return "";
+  return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+class TerminalLogger {
+  static instance;
+  logFilePath;
+  stream;
+  originalStdoutWrite;
+  originalStderrWrite;
+  isHooked = false;
+  static getInstance() {
+    if (!TerminalLogger.instance) {
+      TerminalLogger.instance = new TerminalLogger;
+    }
+    return TerminalLogger.instance;
+  }
+  initSessionTree(sessionId, workspaceRoot) {
+    const root = workspaceRoot || process.cwd();
+    const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sessionDir = path5.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path5.join(sessionDir, "subagents");
+    fs5.mkdirSync(subagentsDir, { recursive: true });
+    const mainLogPath = path5.join(sessionDir, "main.log");
+    if (!fs5.existsSync(mainLogPath)) {
+      fs5.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
+`, "utf8");
+    }
+    const timelineLogPath = path5.join(sessionDir, "timeline.jsonl");
+    return {
+      sessionDir,
+      mainLogPath,
+      timelineLogPath,
+      createSubagentLogStream: (subagentId, role) => {
+        const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const subLogPath = path5.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs5.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
+`);
+        return stream;
+      },
+      logTimelineEvent: (event) => {
+        const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
+`;
+        try {
+          fs5.appendFileSync(timelineLogPath, line, "utf8");
+        } catch {}
+      }
+    };
+  }
+  resolveDefaultLogPath(workspaceRoot) {
+    const root = workspaceRoot || process.cwd();
+    const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const logDir = path5.join(root, ".cph", "logs");
+    try {
+      fs5.mkdirSync(logDir, { recursive: true });
+    } catch {}
+    return path5.join(logDir, `cph-terminal-${dateStr}.log`);
+  }
+  start(options = {}) {
+    if (this.isHooked && this.logFilePath) {
+      return this.logFilePath;
+    }
+    const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
+    const resolvedPath = path5.resolve(targetPath);
+    try {
+      const parentDir = path5.dirname(resolvedPath);
+      fs5.mkdirSync(parentDir, { recursive: true });
+      this.stream = fs5.createWriteStream(resolvedPath, {
+        flags: "a",
+        encoding: "utf8"
+      });
+    } catch (err) {
+      process.stderr.write(`[TerminalLogger Error] 无法创建日志文件: ${err.message}
+`);
+      return resolvedPath;
+    }
+    this.logFilePath = resolvedPath;
+    this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    this.originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (chunk, encodingOrCb, cb) => {
+      const ret = this.originalStdoutWrite(chunk, encodingOrCb, cb);
+      this.writeToLog(chunk);
+      return ret;
+    };
+    process.stderr.write = (chunk, encodingOrCb, cb) => {
+      const ret = this.originalStderrWrite(chunk, encodingOrCb, cb);
+      this.writeToLog(chunk);
+      return ret;
+    };
+    this.isHooked = true;
+    this.stream.write(`
+=== [CPH-PI Terminal Log Started at ${new Date().toISOString()}] ===
+`);
+    return resolvedPath;
+  }
+  stop() {
+    if (!this.isHooked)
+      return;
+    if (this.originalStdoutWrite) {
+      process.stdout.write = this.originalStdoutWrite;
+      this.originalStdoutWrite = undefined;
+    }
+    if (this.originalStderrWrite) {
+      process.stderr.write = this.originalStderrWrite;
+      this.originalStderrWrite = undefined;
+    }
+    if (this.stream) {
+      try {
+        this.stream.write(`=== [CPH-PI Terminal Log Closed at ${new Date().toISOString()}] ===
+
+`);
+        this.stream.end();
+      } catch {}
+      this.stream = undefined;
+    }
+    this.isHooked = false;
+    this.logFilePath = undefined;
+  }
+  isEnabled() {
+    return this.isHooked;
+  }
+  getLogFilePath() {
+    return this.logFilePath;
+  }
+  writeToLog(chunk) {
+    if (!this.stream || !this.isHooked)
+      return;
+    try {
+      const text = typeof chunk === "string" ? chunk : chunk?.toString("utf8") || "";
+      const cleaned = stripAnsi2(text);
+      if (cleaned) {
+        this.stream.write(cleaned);
+      }
+    } catch {}
+  }
+}
+
+// src/agent/subagent-runner.ts
 var DEFAULT_MAIN_AGENT_ID = "T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852";
 var DEFAULT_CODER_AGENT_ID = "T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296";
 var DEFAULT_RESEARCHER_AGENT_ID = "T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c";
@@ -22998,7 +23338,7 @@ class SubagentRunner {
     this.researcherAgentId = options.researcherAgentId || DEFAULT_RESEARCHER_AGENT_ID;
     this.pool = options.pool;
     this.chatClientFactory = options.chatClientFactory;
-    this.loggerTree = options.loggerTree;
+    this.loggerTree = options.loggerTree || TerminalLogger.getInstance().initSessionTree(this.mainSessionId, this.workspaceRoot);
     this.modelTone = options.modelTone || "Gpt_61_Sol_Reasoning";
     this.createOrchestratorFn = options.createOrchestratorFn;
     this.lineageTracker = options.lineageTracker;
@@ -23006,7 +23346,9 @@ class SubagentRunner {
   }
   async executeBatch(tasks, signal, events) {
     const poolStatus = this.pool?.getPoolStatus?.() || [];
-    const maxConcurrency = poolStatus.length <= 1 ? 1 : Math.min(poolStatus.length, tasks.length);
+    const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled);
+    const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+    const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
     this.loggerTree?.logTimelineEvent({
       type: "SUBAGENT_QUEUE_SCHEDULED",
       totalTasks: tasks.length,
@@ -23015,34 +23357,103 @@ class SubagentRunner {
       timestamp: Date.now()
     });
     const settled = new Array(tasks.length);
-    if (maxConcurrency <= 1) {
-      for (let index = 0;index < tasks.length; index++) {
-        if (signal?.aborted) {
-          settled[index] = {
+    const taskStageMap = tasks.map((t, idx) => ({
+      index: idx,
+      task: t,
+      stage: Math.max(1, Math.floor(t.stage ?? 1))
+    }));
+    const uniqueStages = Array.from(new Set(taskStageMap.map((t) => t.stage))).sort((a, b) => a - b);
+    let circuitBreakerTriggered = false;
+    for (const stage of uniqueStages) {
+      const stageTasks = taskStageMap.filter((t) => t.stage === stage);
+      if (circuitBreakerTriggered) {
+        for (const item of stageTasks) {
+          settled[item.index] = {
             status: "rejected",
-            reason: new Error("Subagent execution aborted")
+            reason: new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 因前序阶段任务失败被自动熔断阻断`)
           };
-          continue;
         }
-        const taskSpec = tasks[index];
-        const subId = `sub-${index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
-        const role = taskSpec.role === "coder" ? "coder" : "researcher";
-        try {
-          const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
-          settled[index] = { status: "fulfilled", value: report };
-        } catch (err) {
-          settled[index] = { status: "rejected", reason: err };
+        continue;
+      }
+      if (maxConcurrency <= 1) {
+        for (const item of stageTasks) {
+          if (circuitBreakerTriggered) {
+            settled[item.index] = {
+              status: "rejected",
+              reason: new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 任务因前序任务失败被自动熔断阻断`)
+            };
+            continue;
+          }
+          if (signal?.aborted) {
+            settled[item.index] = {
+              status: "rejected",
+              reason: new Error("Subagent execution aborted")
+            };
+            continue;
+          }
+          const taskSpec = item.task;
+          const subId = `sub-${item.index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+          const role = taskSpec.role === "coder" ? "coder" : "researcher";
+          try {
+            const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+            settled[item.index] = { status: "fulfilled", value: report };
+            if (!report.success) {
+              circuitBreakerTriggered = true;
+            }
+          } catch (err) {
+            settled[item.index] = { status: "rejected", reason: err };
+            circuitBreakerTriggered = true;
+          }
+        }
+      } else {
+        let stageCursor = 0;
+        const stageWorker = async () => {
+          while (stageCursor < stageTasks.length) {
+            if (signal?.aborted || circuitBreakerTriggered)
+              return;
+            const itemIndex = stageCursor++;
+            const item = stageTasks[itemIndex];
+            const taskSpec = item.task;
+            const subId = `sub-${item.index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+            const role = taskSpec.role === "coder" ? "coder" : "researcher";
+            try {
+              const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
+              settled[item.index] = { status: "fulfilled", value: report };
+              if (!report.success) {
+                circuitBreakerTriggered = true;
+              }
+            } catch (err) {
+              settled[item.index] = { status: "rejected", reason: err };
+              circuitBreakerTriggered = true;
+            }
+          }
+        };
+        const workers = Array.from({ length: Math.min(maxConcurrency, stageTasks.length) }, () => stageWorker());
+        await Promise.all(workers);
+      }
+      for (const item of stageTasks) {
+        if (!settled[item.index]) {
+          const reason = signal?.aborted ? new Error("Subagent execution aborted") : new Error(`STAGE_CIRCUIT_BREAKER: 阶段 ${stage} 任务因熔断或中断未执行`);
+          settled[item.index] = {
+            status: "rejected",
+            reason
+          };
         }
       }
-    } else {
-      const executing = tasks.map(async (taskSpec, index) => {
-        const subId = `sub-${index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
-        const role = taskSpec.role === "coder" ? "coder" : "researcher";
-        return this.runSingleSubagent(subId, role, taskSpec, signal, events);
-      });
-      const results = await Promise.allSettled(executing);
-      for (let i = 0;i < results.length; i++) {
-        settled[i] = results[i];
+      for (const item of stageTasks) {
+        const res = settled[item.index];
+        if (res?.status === "rejected" || res?.status === "fulfilled" && !res.value.success) {
+          circuitBreakerTriggered = true;
+          break;
+        }
+      }
+    }
+    for (let idx = 0;idx < tasks.length; idx++) {
+      if (!settled[idx]) {
+        settled[idx] = {
+          status: "rejected",
+          reason: new Error("STAGE_CIRCUIT_BREAKER: 任务未执行或被熔断阻断")
+        };
       }
     }
     const activeMainSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
@@ -23062,16 +23473,19 @@ class SubagentRunner {
       });
     }
     return settled.map((result, idx) => {
-      if (result.status === "fulfilled") {
+      const task = tasks[idx] || {};
+      const role = task.role === "coder" ? "coder" : "researcher";
+      const description = task.description || `Task ${idx + 1}`;
+      if (result?.status === "fulfilled" && result.value) {
         return {
           ...result.value,
           targetSessionId: activeMainSessionId
         };
       }
-      const role = tasks[idx].role === "coder" ? "coder" : "researcher";
-      const reason = result.reason;
-      const isThrottled = reason?.code === "ALL_ACCOUNTS_THROTTLED" || /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(reason?.message || String(reason));
-      let errorMsg = String(reason?.message || reason);
+      const reason = result?.reason;
+      const isThrottled = reason?.code === "ALL_ACCOUNTS_THROTTLED" || /all accounts.*(?:throttled|rate limit|429)|429.*throttled/i.test(reason?.message || String(reason || ""));
+      const isStageBreaker = String(reason?.message || reason || "").includes("STAGE_CIRCUIT_BREAKER");
+      let errorMsg = String(reason?.message || reason || "STAGE_CIRCUIT_BREAKER");
       let finalAnswer = `子代理执行异常中断: ${errorMsg}`;
       if (isThrottled) {
         errorMsg = "ALL_ACCOUNTS_THROTTLED";
@@ -23083,11 +23497,14 @@ class SubagentRunner {
           targetSessionId: activeMainSessionId,
           timestamp: Date.now()
         });
+      } else if (isStageBreaker) {
+        errorMsg = "STAGE_CIRCUIT_BREAKER";
+        finalAnswer = "⚠️ 该任务因前序阶段执行失败触发阶段屏障熔断，已自动跳过执行以保护工作区。";
       }
       return {
         id: `sub-${idx + 1}`,
         role,
-        description: tasks[idx].description,
+        description,
         success: false,
         finalAnswer,
         turnsCount: 0,
@@ -23109,6 +23526,12 @@ class SubagentRunner {
     });
     const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
     const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
+    logStream?.write(`
+=== 任务目标与初始提示词 ===
+${spec.prompt}
+============================
+
+`);
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
     let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
@@ -23168,13 +23591,26 @@ class SubagentRunner {
           events: {
             onDelta: (delta) => {
               logStream?.write(delta);
-              events?.onSubagentProgress?.(subId, -1, delta);
+              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount);
             },
             onTurnStart: (turn) => {
               logStream?.write(`
 --- [Hop ${hopCount}] Turn ${turn} ---
 `);
-              events?.onSubagentProgress?.(subId, turn);
+              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount);
+            },
+            onToolStart: (action) => {
+              const actName = action?.tool || action?.action || "tool";
+              const target = action?.path || action?.filePath || action?.command || "";
+              logStream?.write(`
+[Tool Start] ${actName} ${target}
+`);
+              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount);
+            },
+            onToolEnd: (toolRes) => {
+              logStream?.write(`
+[Tool End] ${toolRes?.toolName || toolRes?.actionName} (success: ${toolRes?.success})
+`);
             }
           }
         });
@@ -23195,10 +23631,10 @@ class SubagentRunner {
         }
         if (res.handedOff && res.handoffDocPath) {
           const docPath = res.handoffDocPath;
-          const resolvedPath = path5.isAbsolute(docPath) ? docPath : path5.join(this.workspaceRoot, docPath);
+          const resolvedPath = path6.isAbsolute(docPath) ? docPath : path6.join(this.workspaceRoot, docPath);
           let docContent = "";
-          if (fs5.existsSync(resolvedPath)) {
-            docContent = fs5.readFileSync(resolvedPath, "utf8");
+          if (fs6.existsSync(resolvedPath)) {
+            docContent = fs6.readFileSync(resolvedPath, "utf8");
           } else {
             docContent = `（交接文档路径：${docPath}，前序总结：${res.finalAnswer || "无"}）`;
           }
@@ -23219,6 +23655,12 @@ class SubagentRunner {
             this.lineageTracker.linkSubagent(this.mainSessionId, nextSessionId);
           }
           currentSessionId = nextSessionId;
+          logStream?.write(`
+========================================
+` + `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} <<<
+` + `========================================
+
+`);
           this.loggerTree?.logTimelineEvent({
             type: "SUBAGENT_CONTINUED",
             subagentId: subId,
@@ -23245,6 +23687,10 @@ class SubagentRunner {
         finalAnswer = "子代理已完成，未提供详细文字总结。";
       }
       const targetSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
+      const subHandoffCount = Math.max(0, hopCount - 1);
+      logStream?.write(`
+=== [Subagent ${subId} Finished: ${success ? "SUCCESS" : "FAILED"}] ` + `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次) ===
+`);
       const report = {
         id: subId,
         role,
@@ -23253,7 +23699,9 @@ class SubagentRunner {
         finalAnswer,
         turnsCount: totalTurns,
         durationMs,
-        targetSessionId
+        targetSessionId,
+        hopCount,
+        handoffCount: subHandoffCount
       };
       events?.onSubagentEnd?.(report);
       this.loggerTree?.logTimelineEvent({
@@ -23264,6 +23712,8 @@ class SubagentRunner {
         turnsCount: report.turnsCount,
         durationMs,
         targetSessionId,
+        hopCount,
+        handoffCount: subHandoffCount,
         timestamp: Date.now()
       });
       return report;
@@ -23284,6 +23734,10 @@ class SubagentRunner {
           timestamp: Date.now()
         });
       }
+      const subHandoffCount = Math.max(0, hopCount - 1);
+      logStream?.write(`
+=== [Subagent ${subId} Error: ${errorMsg}] ` + `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次) ===
+`);
       const report = {
         id: subId,
         role,
@@ -23293,29 +23747,58 @@ class SubagentRunner {
         turnsCount: totalTurns,
         durationMs,
         error: errorMsg,
-        targetSessionId
+        targetSessionId,
+        hopCount: Math.max(1, hopCount),
+        handoffCount: subHandoffCount
       };
       events?.onSubagentEnd?.(report);
       return report;
     } finally {
       if (logStream) {
-        logStream.end();
+        try {
+          if (typeof logStream.end === "function") {
+            await new Promise((resolve) => {
+              let finished = false;
+              const timer = setTimeout(() => {
+                if (!finished) {
+                  finished = true;
+                  resolve();
+                }
+              }, 100);
+              logStream.end(() => {
+                if (!finished) {
+                  finished = true;
+                  clearTimeout(timer);
+                  resolve();
+                }
+              });
+            });
+          }
+        } catch {}
       }
     }
   }
   formatReportSummary(reports) {
+    if (!reports || !Array.isArray(reports)) {
+      return `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 0 个子任务)
+`;
+    }
     const parts = [
       `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 ${reports.length} 个子任务)`,
       ``
     ];
     for (let i = 0;i < reports.length; i++) {
       const r = reports[i];
+      if (!r)
+        continue;
       const statusIcon = r.success ? "✅ 成功" : "❌ 失败";
-      const durationSec = (r.durationMs / 1000).toFixed(1);
-      parts.push(`#### [Sub-${i + 1}] [${r.role}] ${r.description}`);
-      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount} 轮)`);
+      const durationSec = ((r.durationMs ?? 0) / 1000).toFixed(1);
+      const handoffs = r.handoffCount ?? Math.max(0, (r.hopCount || 1) - 1);
+      const handoffLabel = handoffs > 0 ? ` (经 ${handoffs} 次接力)` : ` (接手 0 次)`;
+      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}] ${r.description || ""}${handoffLabel}`);
+      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次)`);
       parts.push(`- **交付结论**:`);
-      parts.push(r.finalAnswer.trim());
+      parts.push((r.finalAnswer || "").trim());
       parts.push(``);
     }
     return parts.join(`
@@ -23362,6 +23845,46 @@ class SessionLineageTracker {
   getLineage(sessionId) {
     return this.registry.get(sessionId);
   }
+  getGenerationInfo(sessionId) {
+    let generation = 1;
+    const predecessorIds = [];
+    const visited = new Set;
+    let currentId = sessionId;
+    visited.add(currentId);
+    while (currentId) {
+      const lineage = this.registry.get(currentId);
+      if (!lineage || !lineage.predecessorId)
+        break;
+      if (visited.has(lineage.predecessorId))
+        break;
+      predecessorIds.push(lineage.predecessorId);
+      visited.add(lineage.predecessorId);
+      generation++;
+      currentId = lineage.predecessorId;
+    }
+    const genMatch = sessionId.match(/_gen(\d+)$/);
+    if (genMatch) {
+      const parsedGen = parseInt(genMatch[1], 10);
+      if (!isNaN(parsedGen) && parsedGen > generation) {
+        generation = parsedGen;
+      }
+    }
+    const hopMatch = sessionId.match(/_hop(\d+)$/);
+    if (hopMatch) {
+      const parsedHop = parseInt(hopMatch[1], 10);
+      if (!isNaN(parsedHop) && parsedHop > generation) {
+        generation = parsedHop;
+      }
+    }
+    return {
+      generation,
+      handoffCount: Math.max(0, generation - 1),
+      predecessorIds
+    };
+  }
+  getHandoffCount(sessionId) {
+    return this.getGenerationInfo(sessionId).handoffCount;
+  }
   resolveActiveHead(startSessionId) {
     let currentId = startSessionId;
     const visited = new Set;
@@ -23381,8 +23904,8 @@ class SessionLineageTracker {
 }
 
 // src/session/main-plan-snapshot.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path8 from "node:path";
 function createMainPlanSnapshot(params) {
   return {
     snapshotId: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -23396,12 +23919,12 @@ function createMainPlanSnapshot(params) {
   };
 }
 function saveMainPlanSnapshot(snapshot, workspaceRoot) {
-  const handoffsDir = path6.join(workspaceRoot, ".cph", "handoffs");
-  fs6.mkdirSync(handoffsDir, { recursive: true });
+  const handoffsDir = path8.join(workspaceRoot, ".cph", "handoffs");
+  fs8.mkdirSync(handoffsDir, { recursive: true });
   const cleanId = snapshot.originalSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const jsonPath = path6.join(handoffsDir, `main-plan-${cleanId}.json`);
-  const mdPath = path6.join(handoffsDir, `main-plan-${cleanId}.md`);
-  fs6.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
+  const jsonPath = path8.join(handoffsDir, `main-plan-${cleanId}.json`);
+  const mdPath = path8.join(handoffsDir, `main-plan-${cleanId}.md`);
+  fs8.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
   const mdContent = `# 主控规划快照: ${snapshot.snapshotId}
 
 - **前序会话**: ${snapshot.originalSessionId}
@@ -23423,12 +23946,24 @@ ${sub.prompt || ""}
 `).join(`
 `)}
 `;
-  fs6.writeFileSync(mdPath, mdContent, "utf8");
+  fs8.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
-function formatSuccessorTurn1Prompt(snapshot, reportsSummary) {
+function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader) {
+  let mountHeader = customLedgerMountHeader;
+  if (!mountHeader && snapshot.workspaceRoot) {
+    try {
+      init_execution_ledger();
+      const ledger = new ExecutionLedger(snapshot.workspaceRoot);
+      mountHeader = ledger.formatMountHeader();
+    } catch {}
+  }
+  const mountSection = mountHeader ? `
+### 2. 物理执行账本挂载 (Pass-by-Reference)
+${mountHeader}
+` : "";
   return `【主控接力与成果审阅】
-前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。以下为前序规划蓝图与各子代理的交付成果：
+前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:
@@ -23436,12 +23971,13 @@ ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
 ${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-
-### 2. 子任务攻坚结题成果
+${mountSection}
+### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
 ---
 请你作为后继主控智能体，以当前全新满额的推理配额，综合审阅上述交付物，执行交叉验证与必要测试。
+若需回溯具体的执行细节，可按需调阅已挂载的物理账本；
 若全部达成目标且验证充分，请直接输出 FINAL_ANSWER 完成结题；
 若评估后需要第二阶段专项攻坚，可继续派发 invoke_subagent。`;
 }
@@ -23465,8 +24001,8 @@ class Orchestrator {
   enableInSessionCompaction = false;
   graphTokenProvider;
   enableCloudAttachment = true;
-  cloudAttachmentThresholdChars = 0;
-  cloudAttachmentThresholdLines = 0;
+  cloudAttachmentThresholdChars = 12000;
+  cloudAttachmentThresholdLines = 200;
   lineageTracker;
   generation = 1;
   maxGenerations;
@@ -23477,7 +24013,7 @@ class Orchestrator {
   sessionId;
   lastHandoffDocPath;
   constructor(options = {}) {
-    this.workspaceRoot = path7.resolve(options.workspaceRoot || process.cwd());
+    this.workspaceRoot = path9.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
     this.maxGenerations = options.maxGenerations ?? 10;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
@@ -23496,13 +24032,25 @@ class Orchestrator {
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
-    this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
-    this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
+    this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars !== undefined ? options.cloudAttachmentThresholdChars : 12000;
+    this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines !== undefined ? options.cloudAttachmentThresholdLines : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker;
     this.isHandshakePending = options.isHandshakePending !== undefined ? options.isHandshakePending : !this.customAgentId;
   }
+  getCloudAttachmentThresholds() {
+    return {
+      chars: this.cloudAttachmentThresholdChars,
+      lines: this.cloudAttachmentThresholdLines
+    };
+  }
   getLineageTracker() {
     return this.lineageTracker;
+  }
+  getGeneration() {
+    return this.generation;
+  }
+  getHandoffCount() {
+    return Math.max(0, this.generation - 1);
   }
   linkSuccessor(oldId, newId) {
     this.lineageTracker.register({
@@ -23649,6 +24197,8 @@ class Orchestrator {
     }
     const history = [];
     let refusalRetries = 0;
+    let emptyResponseRetries = 0;
+    const maxEmptyResponseRetries = 2;
     let turn = 1;
     let currentAnnotations = [];
     while (turn <= this.maxTurns) {
@@ -23771,6 +24321,29 @@ class Orchestrator {
       }
       refusalRetries = 0;
       const parsed = ResilientParser.parse(turnResponseText);
+      if (parsed.type === "empty_response") {
+        if (emptyResponseRetries < maxEmptyResponseRetries) {
+          emptyResponseRetries++;
+          continue;
+        }
+        if (this.pool) {
+          try {
+            const currentEmail = client?.token?.email || "";
+            if (currentEmail)
+              this.pool.markThrottled(currentEmail);
+            const nextToken = await this.pool.getNextAvailableToken();
+            events?.onAccountSwitched?.(currentEmail, nextToken.email);
+            client = new ChatHubClient(nextToken, {
+              modelTone: this.modelTone,
+              customAgentId: this.customAgentId
+            });
+            emptyResponseRetries = 0;
+            continue;
+          } catch {}
+        }
+        throw new Error("EMPTY_RESPONSE_LIMIT_EXCEEDED: 上游模型持续返回空载荷");
+      }
+      emptyResponseRetries = 0;
       if (parsed.type === "final_answer") {
         if (this.isHandshakePending) {
           history.push({
@@ -23807,10 +24380,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         const targetSessionId = options.sessionId || this.sessionId;
         let docPath;
         if (this.workspaceRoot) {
-          const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
-          fs7.mkdirSync(handoffsDir, { recursive: true });
-          docPath = path7.join(handoffsDir, `handoff-${targetSessionId}.md`);
-          fs7.writeFileSync(docPath, parsed.handoffDoc, "utf8");
+          const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
+          fs9.mkdirSync(handoffsDir, { recursive: true });
+          docPath = path9.join(handoffsDir, `handoff-${targetSessionId}.md`);
+          fs9.writeFileSync(docPath, parsed.handoffDoc, "utf8");
           this.lastHandoffDocPath = docPath;
         }
         history.push({
@@ -23857,11 +24430,13 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             pool: this.pool,
             chatClientFactory: this.chatClientFactory,
             modelTone: this.modelTone,
+            loggerTree: TerminalLogger.getInstance().initSessionTree(this.sessionId, this.workspaceRoot),
             lineageTracker: this.lineageTracker
           });
           const reports = await runner.executeBatch(subagents, signal, {
             onSubagentStart: events?.onSubagentStart,
-            onSubagentEnd: events?.onSubagentEnd
+            onSubagentEnd: events?.onSubagentEnd,
+            onSubagentProgress: events?.onSubagentProgress
           });
           const summaryOutput = runner.formatReportSummary(reports);
           toolResult = {
@@ -23948,13 +24523,15 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         if (parsed.action.tool === "invoke_subagent") {} else if (this.isHandshakePending) {
           this.isHandshakePending = false;
           if (uploadedAttachment) {
-            currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount });
+            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
+            currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
           } else {
             currentPrompt = PromptBuilder.buildTurn2TaskPrompt(this.pendingTask, this.pendingSkills, toolResult.output, parsed.action.tool || toolResult.actionName);
           }
         } else {
           if (uploadedAttachment) {
-            currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount });
+            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
+            currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
           } else {
             currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output);
           }
@@ -24029,9 +24606,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     const cleanTask = task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path7.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
-        if (fs7.existsSync(docPath)) {
-          const existingDoc = fs7.readFileSync(docPath, "utf8").trim();
+        const docPath = path9.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        if (fs9.existsSync(docPath)) {
+          const existingDoc = fs9.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
             this.lastHandoffDocPath = docPath;
             return existingDoc;
@@ -24235,9 +24812,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     let reviewDraftContent = "";
     if (this.workspaceRoot) {
       try {
-        const reviewDraftPath = path7.join(this.workspaceRoot, ".cph", "review_draft.md");
-        if (fs7.existsSync(reviewDraftPath)) {
-          reviewDraftContent = fs7.readFileSync(reviewDraftPath, "utf8").trim();
+        const reviewDraftPath = path9.join(this.workspaceRoot, ".cph", "review_draft.md");
+        if (fs9.existsSync(reviewDraftPath)) {
+          reviewDraftContent = fs9.readFileSync(reviewDraftPath, "utf8").trim();
         }
       } catch {}
     }
@@ -24276,10 +24853,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
 `);
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
-        fs7.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path7.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
-        fs7.writeFileSync(docPath, doc, "utf8");
+        const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
+        fs9.mkdirSync(handoffsDir, { recursive: true });
+        const docPath = path9.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        fs9.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {}
     }
@@ -24306,7 +24883,7 @@ ${status}` : "clean (无未提交变更)"}`;
   }
   collectDirTreePreview() {
     try {
-      const entries = fs7.readdirSync(this.workspaceRoot, { withFileTypes: true });
+      const entries = fs9.readdirSync(this.workspaceRoot, { withFileTypes: true });
       const filtered = entries.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "dist").slice(0, 15).map((e) => e.isDirectory() ? `${e.name}/` : e.name);
       return filtered.join(`
 `);
@@ -24370,12 +24947,12 @@ ${status}` : "clean (无未提交变更)"}`;
       this.pool.markThrottled(victimEmail);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
-    const handoffsDir = path7.join(this.workspaceRoot, ".cph", "handoffs");
-    const targetHandoffAbsolutePath = path7.join(handoffsDir, `handoff-${sessionId}.md`);
+    const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
+    const targetHandoffAbsolutePath = path9.join(handoffsDir, `handoff-${sessionId}.md`);
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
-      fs7.mkdirSync(handoffsDir, { recursive: true });
+      fs9.mkdirSync(handoffsDir, { recursive: true });
       const localHandoffDoc = this.generateHandoffSnapshot(task, history, sessionId);
-      fs7.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
+      fs9.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(localHandoffDoc, targetHandoffAbsolutePath);
@@ -24406,7 +24983,7 @@ ${status}` : "clean (无未提交变更)"}`;
         nextToken = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
       }
     } catch (poolErr) {
-      fs7.mkdirSync(handoffsDir, { recursive: true });
+      fs9.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (All Accounts Throttled)`,
         `> ⚠️ 账号池所有可用账号均已耗尽频控 (${poolErr.message || String(poolErr)})，本地保障黑匣子生成与落盘。`,
@@ -24414,7 +24991,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs7.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs9.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -24497,7 +25074,7 @@ ${status}` : "clean (无未提交变更)"}`;
         abortError.name = "AbortError";
         throw abortError;
       }
-      fs7.mkdirSync(handoffsDir, { recursive: true });
+      fs9.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (Arbitrator Session Failed)`,
         `> ⚠️ 仲裁会话执行异常 (${arbErr.message || String(arbErr)})，本地保障黑匣子生成与落盘。`,
@@ -24505,7 +25082,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs7.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs9.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -24524,19 +25101,19 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    fs7.mkdirSync(handoffsDir, { recursive: true });
+    fs9.mkdirSync(handoffsDir, { recursive: true });
     const parsed = ResilientParser.parse(arbitratorResponseText);
     if (parsed.type === "action") {
       events?.onToolStart?.(parsed.action);
       const toolResult = await this.bridge.executeAction(parsed.action, signal);
       events?.onToolEnd?.(toolResult);
     }
-    if (!fs7.existsSync(targetHandoffAbsolutePath)) {
+    if (!fs9.existsSync(targetHandoffAbsolutePath)) {
       const contentToPersist = parsed.type === "handoff" ? parsed.handoffDoc : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
-      fs7.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
+      fs9.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
     this.lastHandoffDocPath = targetHandoffAbsolutePath;
-    const finalDocContent = fs7.existsSync(targetHandoffAbsolutePath) ? fs7.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
+    const finalDocContent = fs9.existsSync(targetHandoffAbsolutePath) ? fs9.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
     if (events?.onArbitratorHandoffComplete) {
       await Promise.resolve(events.onArbitratorHandoffComplete(targetHandoffAbsolutePath, arbitratorSessionId));
     }
@@ -25111,6 +25688,12 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
   }
   formatStatusBar(info) {
     const sessionIdStr = this.c.cyan(info.sessionId || "未命名");
+    const gen = info.generation ?? (info.handoffCount !== undefined ? info.handoffCount + 1 : undefined);
+    const handoffCount = info.handoffCount ?? (gen !== undefined ? Math.max(0, gen - 1) : undefined);
+    let genBadge = "";
+    if (gen !== undefined && handoffCount !== undefined) {
+      genBadge = handoffCount > 0 ? this.c.yellow(` [第 ${gen} 代 (接手 ${handoffCount} 次)]`) : this.c.gray(` [第 1 代 (接手 0 次)]`);
+    }
     const agentBadge = this.c.green(info.agentName || "通用握手模式");
     const turnCount = info.turnCount ?? 0;
     const maxTurns = info.maxTurns ?? 25;
@@ -25132,7 +25715,7 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
     const prefix = this.c.gray("┌─ [ ");
     const suffix = this.c.gray(" ]");
     const div = this.c.gray(" | ");
-    return prefix + this.c.dim("会话: ") + sessionIdStr + div + this.c.dim("智能体: ") + agentBadge + div + this.c.dim("轮次: ") + turnStr + div + this.c.dim("上下文: ") + contextStr + div + this.c.dim("账号: ") + accountStr + suffix;
+    return prefix + this.c.dim("会话: ") + sessionIdStr + genBadge + div + this.c.dim("智能体: ") + agentBadge + div + this.c.dim("轮次: ") + turnStr + div + this.c.dim("上下文: ") + contextStr + div + this.c.dim("账号: ") + accountStr + suffix;
   }
   renderStatusBar(info) {
     const formatted = this.formatStatusBar(info);
@@ -25146,9 +25729,12 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
     for (let i = 0;i < states.length; i++) {
       const s = states[i];
       const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const hop = s.hopCount ?? (s.handoffCount !== undefined ? s.handoffCount + 1 : 1);
+      const subHandoffs = s.handoffCount ?? Math.max(0, hop - 1);
+      const hopBadge = subHandoffs > 0 ? this.c.yellow(`[Hop ${hop} (接手 ${subHandoffs} 次)]`) : this.c.gray(`[Hop 1 (接手 0 次)]`);
       const statusBadge = s.status === "completed" ? this.c.green("✅ 已完成") : s.status === "failed" ? this.c.red("❌ 失败") : this.c.cyan("\uD83D\uDD04 运行中");
       const durationSec = (s.durationMs / 1000).toFixed(1);
-      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${s.description.slice(0, 30)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
+      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${hopBadge} ${s.description.slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
       if (s.lastAction) {
         lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
       }
@@ -25180,9 +25766,11 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
   }
   formatSuccessorAwakeningBanner(sessionId, generation) {
     const border = "─".repeat(60);
+    const handoffCount = Math.max(0, generation - 1);
+    const title = `\uD83D\uDE80 [第 ${generation} 代主控会话已唤醒 (接手 ${handoffCount} 次)] ${sessionId}`;
     return [
       this.c.green(`┌${border}┐`),
-      this.c.green(`│ \uD83D\uDE80 [第 ${generation} 代主控会话已唤醒] ${sessionId.padEnd(33)} │`),
+      this.c.green(`│ ${title.padEnd(58)} │`),
       this.c.green(`│ 注入前序架构快照与子任务结题成果，重置满额 30 轮推理预算   │`),
       this.c.green(`│ 进入系统交叉验证与交付审阅阶段...                        │`),
       this.c.green(`└${border}┘`)
@@ -25198,21 +25786,21 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
 }
 
 // src/session/session-manager.ts
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import path10 from "node:path";
 
 class SessionManager {
   workspaceRoot;
   sessionsDir;
   indexFile;
   constructor(workspaceRoot) {
-    this.workspaceRoot = path8.resolve(workspaceRoot || process.cwd());
-    this.sessionsDir = path8.join(this.workspaceRoot, ".cph", "sessions");
-    this.indexFile = path8.join(this.sessionsDir, "index.json");
+    this.workspaceRoot = path10.resolve(workspaceRoot || process.cwd());
+    this.sessionsDir = path10.join(this.workspaceRoot, ".cph", "sessions");
+    this.indexFile = path10.join(this.sessionsDir, "index.json");
   }
   ensureSessionsDir() {
-    if (!fs8.existsSync(this.sessionsDir)) {
-      fs8.mkdirSync(this.sessionsDir, { recursive: true });
+    if (!fs10.existsSync(this.sessionsDir)) {
+      fs10.mkdirSync(this.sessionsDir, { recursive: true });
     }
   }
   isValidSessionId(id) {
@@ -25232,11 +25820,11 @@ class SessionManager {
   }
   readIndex() {
     this.ensureSessionsDir();
-    if (!fs8.existsSync(this.indexFile)) {
+    if (!fs10.existsSync(this.indexFile)) {
       return this.rebuildIndex();
     }
     try {
-      const raw = fs8.readFileSync(this.indexFile, "utf-8");
+      const raw = fs10.readFileSync(this.indexFile, "utf-8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -25249,23 +25837,23 @@ class SessionManager {
   writeIndex(items) {
     this.ensureSessionsDir();
     const sorted = [...items].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    fs8.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
+    fs10.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
   }
   rebuildIndex() {
     this.ensureSessionsDir();
     const items = [];
     let files = [];
     try {
-      files = fs8.readdirSync(this.sessionsDir);
+      files = fs10.readdirSync(this.sessionsDir);
     } catch {
       return [];
     }
     for (const file of files) {
       if (!file.endsWith(".json") || file === "index.json")
         continue;
-      const fullPath = path8.join(this.sessionsDir, file);
+      const fullPath = path10.join(this.sessionsDir, file);
       try {
-        const raw = fs8.readFileSync(fullPath, "utf-8");
+        const raw = fs10.readFileSync(fullPath, "utf-8");
         const session = JSON.parse(raw);
         if (session && session.id && session.title) {
           items.push({
@@ -25295,7 +25883,7 @@ class SessionManager {
     const session = {
       id,
       title: options.title || "新会话",
-      workspaceRoot: options.workspaceRoot ? path8.resolve(options.workspaceRoot) : this.workspaceRoot,
+      workspaceRoot: options.workspaceRoot ? path10.resolve(options.workspaceRoot) : this.workspaceRoot,
       createdAt: now,
       updatedAt: now,
       turnCount: 0,
@@ -25318,8 +25906,8 @@ class SessionManager {
     this.ensureSessionsDir();
     session.updatedAt = new Date().toISOString();
     session.turnCount = session.turns ? session.turns.length : session.turnCount;
-    const sessionFile = path8.join(this.sessionsDir, `${session.id}.json`);
-    fs8.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
+    const sessionFile = path10.join(this.sessionsDir, `${session.id}.json`);
+    fs10.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
     const index = this.readIndex();
     const existingIdx = index.findIndex((item) => item.id === session.id);
     const indexEntry = {
@@ -25334,7 +25922,9 @@ class SessionManager {
       modelTone: session.modelTone,
       handoffSnapshot: session.handoffSnapshot,
       handoffDocPath: session.handoffDocPath,
-      disasterBlackbox: session.disasterBlackbox
+      disasterBlackbox: session.disasterBlackbox,
+      generation: session.generation,
+      handoffCount: session.handoffCount
     };
     if (existingIdx >= 0) {
       index[existingIdx] = indexEntry;
@@ -25346,11 +25936,11 @@ class SessionManager {
   loadSession(id) {
     if (!this.isValidSessionId(id))
       return null;
-    const sessionFile = path8.join(this.sessionsDir, `${id}.json`);
-    if (!fs8.existsSync(sessionFile))
+    const sessionFile = path10.join(this.sessionsDir, `${id}.json`);
+    if (!fs10.existsSync(sessionFile))
       return null;
     try {
-      const raw = fs8.readFileSync(sessionFile, "utf-8");
+      const raw = fs10.readFileSync(sessionFile, "utf-8");
       return JSON.parse(raw);
     } catch {
       return null;
@@ -25375,11 +25965,11 @@ class SessionManager {
     if (!this.isValidSessionId(id))
       return false;
     this.ensureSessionsDir();
-    const sessionFile = path8.join(this.sessionsDir, `${id}.json`);
+    const sessionFile = path10.join(this.sessionsDir, `${id}.json`);
     let fileExisted = false;
-    if (fs8.existsSync(sessionFile)) {
+    if (fs10.existsSync(sessionFile)) {
       try {
-        fs8.unlinkSync(sessionFile);
+        fs10.unlinkSync(sessionFile);
         fileExisted = true;
       } catch {}
     }
@@ -25393,151 +25983,8 @@ class SessionManager {
   }
 }
 
-// src/ui/terminal-logger.ts
-import fs9 from "node:fs";
-import path9 from "node:path";
-function stripAnsi2(str) {
-  if (!str)
-    return "";
-  return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-}
-
-class TerminalLogger {
-  static instance;
-  logFilePath;
-  stream;
-  originalStdoutWrite;
-  originalStderrWrite;
-  isHooked = false;
-  static getInstance() {
-    if (!TerminalLogger.instance) {
-      TerminalLogger.instance = new TerminalLogger;
-    }
-    return TerminalLogger.instance;
-  }
-  initSessionTree(sessionId, workspaceRoot) {
-    const root = workspaceRoot || process.cwd();
-    const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const sessionDir = path9.join(root, ".cph", "logs", cleanSessionId);
-    const subagentsDir = path9.join(sessionDir, "subagents");
-    fs9.mkdirSync(subagentsDir, { recursive: true });
-    const mainLogPath = path9.join(sessionDir, "main.log");
-    if (!fs9.existsSync(mainLogPath)) {
-      fs9.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
-`, "utf8");
-    }
-    const timelineLogPath = path9.join(sessionDir, "timeline.jsonl");
-    return {
-      sessionDir,
-      mainLogPath,
-      timelineLogPath,
-      createSubagentLogStream: (subagentId, role) => {
-        const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const subLogPath = path9.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
-        const stream = fs9.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
-        stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
-`);
-        return stream;
-      },
-      logTimelineEvent: (event) => {
-        const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
-`;
-        try {
-          fs9.appendFileSync(timelineLogPath, line, "utf8");
-        } catch {}
-      }
-    };
-  }
-  resolveDefaultLogPath(workspaceRoot) {
-    const root = workspaceRoot || process.cwd();
-    const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const logDir = path9.join(root, ".cph", "logs");
-    try {
-      fs9.mkdirSync(logDir, { recursive: true });
-    } catch {}
-    return path9.join(logDir, `cph-terminal-${dateStr}.log`);
-  }
-  start(options = {}) {
-    if (this.isHooked && this.logFilePath) {
-      return this.logFilePath;
-    }
-    const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
-    const resolvedPath = path9.resolve(targetPath);
-    try {
-      const parentDir = path9.dirname(resolvedPath);
-      fs9.mkdirSync(parentDir, { recursive: true });
-      this.stream = fs9.createWriteStream(resolvedPath, {
-        flags: "a",
-        encoding: "utf8"
-      });
-    } catch (err) {
-      process.stderr.write(`[TerminalLogger Error] 无法创建日志文件: ${err.message}
-`);
-      return resolvedPath;
-    }
-    this.logFilePath = resolvedPath;
-    this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    this.originalStderrWrite = process.stderr.write.bind(process.stderr);
-    process.stdout.write = (chunk, encodingOrCb, cb) => {
-      const ret = this.originalStdoutWrite(chunk, encodingOrCb, cb);
-      this.writeToLog(chunk);
-      return ret;
-    };
-    process.stderr.write = (chunk, encodingOrCb, cb) => {
-      const ret = this.originalStderrWrite(chunk, encodingOrCb, cb);
-      this.writeToLog(chunk);
-      return ret;
-    };
-    this.isHooked = true;
-    this.stream.write(`
-=== [CPH-PI Terminal Log Started at ${new Date().toISOString()}] ===
-`);
-    return resolvedPath;
-  }
-  stop() {
-    if (!this.isHooked)
-      return;
-    if (this.originalStdoutWrite) {
-      process.stdout.write = this.originalStdoutWrite;
-      this.originalStdoutWrite = undefined;
-    }
-    if (this.originalStderrWrite) {
-      process.stderr.write = this.originalStderrWrite;
-      this.originalStderrWrite = undefined;
-    }
-    if (this.stream) {
-      try {
-        this.stream.write(`=== [CPH-PI Terminal Log Closed at ${new Date().toISOString()}] ===
-
-`);
-        this.stream.end();
-      } catch {}
-      this.stream = undefined;
-    }
-    this.isHooked = false;
-    this.logFilePath = undefined;
-  }
-  isEnabled() {
-    return this.isHooked;
-  }
-  getLogFilePath() {
-    return this.logFilePath;
-  }
-  writeToLog(chunk) {
-    if (!this.stream || !this.isHooked)
-      return;
-    try {
-      const text = typeof chunk === "string" ? chunk : chunk?.toString("utf8") || "";
-      const cleaned = stripAnsi2(text);
-      if (cleaned) {
-        this.stream.write(cleaned);
-      }
-    } catch {}
-  }
-}
-
 // src/cli.ts
+init_execution_ledger();
 class CphPiCli {
   workspaceRoot;
   modelTone;
@@ -25552,6 +25999,7 @@ class CphPiCli {
   interruptController;
   orchestrator;
   chatClient;
+  ledger;
   arbitratorChatClient;
   chatClientFactory;
   bridge;
@@ -25569,7 +26017,8 @@ class CphPiCli {
   debug = false;
   debugLogPath;
   constructor(options = {}) {
-    this.workspaceRoot = path10.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.workspaceRoot = path11.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.ledger = options.ledger || new ExecutionLedger(this.workspaceRoot);
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId ? ChatHubClient.normalizeAgentId(options.customAgentId) : undefined;
     const envAgentId = ChatHubClient.normalizeAgentId(process.env.CPH_COPILOT_AGENT_ID);
@@ -25600,6 +26049,7 @@ class CphPiCli {
     this.isInteractive = options.isInteractive ?? (this.rl !== undefined ? true : false);
     this.bridge = options.bridge || new ToolBridge({
       cwd: this.workspaceRoot,
+      ledger: this.ledger,
       onQuestion: async (qArgs) => {
         const answer = await this.handleInteractiveQuestion(qArgs);
         return ToolBridge.formatUserResponse(answer);
@@ -25639,7 +26089,9 @@ ${source_default.yellow(msg)}
       customAgentId: this.customAgentId,
       coderAgentId: this.coderAgentId,
       researcherAgentId: this.researcherAgentId,
-      timeoutMs
+      timeoutMs,
+      cloudAttachmentThresholdChars: options.cloudAttachmentThresholdChars,
+      cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines
     });
     this.orchestrator.timeoutMs = timeoutMs;
     this.debug = options.debug ?? config.debug ?? false;
@@ -25779,24 +26231,24 @@ ${source_default.yellow(msg)}
     return this.pendingHandoffSnapshot;
   }
   loadWorkspaceConfig() {
-    const configPath = path10.join(this.workspaceRoot, ".cph", "config.json");
+    const configPath = path11.join(this.workspaceRoot, ".cph", "config.json");
     try {
-      if (fs10.existsSync(configPath)) {
-        const content = fs10.readFileSync(configPath, "utf-8");
+      if (fs11.existsSync(configPath)) {
+        const content = fs11.readFileSync(configPath, "utf-8");
         return JSON.parse(content) || {};
       }
     } catch {}
     return {};
   }
   saveWorkspaceConfig(updates) {
-    const cphDir = path10.join(this.workspaceRoot, ".cph");
-    const configPath = path10.join(cphDir, "config.json");
+    const cphDir = path11.join(this.workspaceRoot, ".cph");
+    const configPath = path11.join(cphDir, "config.json");
     try {
-      fs10.mkdirSync(cphDir, { recursive: true });
+      fs11.mkdirSync(cphDir, { recursive: true });
       let current = {};
-      if (fs10.existsSync(configPath)) {
+      if (fs11.existsSync(configPath)) {
         try {
-          current = JSON.parse(fs10.readFileSync(configPath, "utf-8")) || {};
+          current = JSON.parse(fs11.readFileSync(configPath, "utf-8")) || {};
         } catch {
           current = {};
         }
@@ -25808,7 +26260,7 @@ ${source_default.yellow(msg)}
           current[k] = v;
         }
       }
-      fs10.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
+      fs11.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
     } catch {}
   }
   initSession() {
@@ -25868,6 +26320,8 @@ ${source_default.yellow(msg)}
     const statuses = this.pool.getPoolStatus();
     const currentAcc = session.currentAccount || statuses.find((s) => !s.isThrottled)?.email || statuses[0]?.email;
     const agentBadge = this.customAgentId ? this.customAgentId.length > 15 ? this.customAgentId.slice(0, 12) + "..." : this.customAgentId : "通用握手模式";
+    const gen = this.orchestrator ? this.orchestrator.getGeneration?.() : session.generation || 1;
+    const handoffs = this.orchestrator ? this.orchestrator.getHandoffCount?.() : session.handoffCount || 0;
     const info = {
       sessionId: session.id,
       turnCount: session.turnCount,
@@ -25875,7 +26329,9 @@ ${source_default.yellow(msg)}
       estimatedTokens: estimatedChars > 0 ? Math.round(estimatedChars / 3.5) : undefined,
       compactionRatio: this.lastCompactionRatio,
       currentAccount: currentAcc,
-      agentName: agentBadge
+      agentName: agentBadge,
+      generation: gen,
+      handoffCount: handoffs
     };
     this.renderer.renderStatusBar(info);
   }
@@ -25955,6 +26411,9 @@ ${source_default.yellow(msg)}
     TerminalLogger.getInstance().stop();
   }
   async handleInputLine(line) {
+    if (this.interruptController.isBusy()) {
+      return;
+    }
     const trimmed = line.trim();
     if (trimmed.startsWith('"""')) {
       if (this.isMultilineMode) {
@@ -26599,6 +27058,8 @@ ${task}`;
       this.pendingHandoffSnapshot = undefined;
     }
     let hopCount = 0;
+    const activeSubagents = new Map;
+    const subagentStartTimes = new Map;
     try {
       while (true) {
         if (abortController.signal.aborted) {
@@ -26615,6 +27076,63 @@ ${task}`;
             onTurnStart: (turn) => this.renderer.renderTurnHeader(turn),
             onToolStart: (action) => this.renderer.renderToolBadge(action),
             onToolEnd: (result) => this.renderer.renderToolResult(result),
+            onSubagentStart: (id, role, spec, initialHop) => {
+              subagentStartTimes.set(id, Date.now());
+              const hop = initialHop || 1;
+              activeSubagents.set(id, {
+                id,
+                role: role === "coder" ? "coder" : "researcher",
+                description: spec?.description || spec?.prompt?.slice(0, 40) || id,
+                status: "running",
+                currentTurn: 1,
+                durationMs: 0,
+                lastAction: "正在启动会话与加载技能...",
+                hopCount: hop,
+                handoffCount: Math.max(0, hop - 1)
+              });
+              this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+            },
+            onSubagentProgress: (id, turn, _delta, action, hopCount) => {
+              const state = activeSubagents.get(id);
+              if (!state)
+                return;
+              const startTime = subagentStartTimes.get(id) || Date.now();
+              state.durationMs = Date.now() - startTime;
+              let changed = false;
+              if (hopCount && hopCount !== state.hopCount) {
+                state.hopCount = hopCount;
+                state.handoffCount = Math.max(0, hopCount - 1);
+                changed = true;
+              }
+              if (turn > 0 && turn !== state.currentTurn) {
+                state.currentTurn = turn;
+                state.lastAction = `第 ${turn} 轮推理思考中...`;
+                changed = true;
+              }
+              if (action) {
+                const actName = action.tool || action.action || "tool";
+                const target = action.path || action.filePath || action.command || "";
+                state.lastAction = `${actName} ${target}`.trim();
+                changed = true;
+              }
+              if (changed) {
+                this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+              }
+            },
+            onSubagentEnd: (report) => {
+              const state = activeSubagents.get(report.id);
+              if (state) {
+                state.status = report.success ? "completed" : "failed";
+                state.durationMs = report.durationMs || Date.now() - (subagentStartTimes.get(report.id) || Date.now());
+                state.currentTurn = report.turnsCount || state.currentTurn;
+                if (report.hopCount)
+                  state.hopCount = report.hopCount;
+                if (report.handoffCount !== undefined)
+                  state.handoffCount = report.handoffCount;
+                state.lastAction = report.success ? "成果交付并完成自验证" : `异常中断: ${report.error || "执行未完成"}`;
+              }
+              this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+            },
             onRefusalIntercepted: (refusal, attempt) => this.renderer.renderRefusalWarning(refusal, attempt),
             onCompacted: (cleared, ratio) => {
               this.lastCompactionRatio = ratio;
@@ -26628,7 +27146,11 @@ ${task}`;
             onArbitratorHandoffComplete: (_docPath, _arbId) => {},
             onAttachmentUploaded: (attachment, toolName) => this.renderer.renderAttachmentUploadedNotice(attachment.fileName, toolName),
             onMainSessionVirtualized: (snapshot, path) => this.renderer.renderMainVirtualizationBanner(snapshot?.originalSessionId || currentSession.id, path),
-            onSuccessorAwakened: (newSessionId, generation) => this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation)
+            onSuccessorAwakened: (newSessionId, generation) => {
+              currentSession.generation = generation;
+              currentSession.handoffCount = Math.max(0, generation - 1);
+              this.renderer.renderSuccessorAwakeningBanner(newSessionId, generation);
+            }
           }
         });
         const startTurnNum = currentSession.turns.length;
@@ -26660,6 +27182,10 @@ ${task}`;
           });
         }
         currentSession.turnCount = currentSession.turns.length;
+        if (this.orchestrator) {
+          currentSession.generation = this.orchestrator.getGeneration?.() || currentSession.generation || 1;
+          currentSession.handoffCount = this.orchestrator.getHandoffCount?.() || currentSession.handoffCount || 0;
+        }
         if (result.completed) {
           currentSession.status = "completed";
           this.sessionManager.saveSession(currentSession);
@@ -27004,10 +27530,10 @@ function parseCliArgs(args) {
         result.workspaceRoot = baseDir;
         positional.shift();
       } else {
-        const resolved = path10.isAbsolute(first) ? first : path10.resolve(baseDir, first);
+        const resolved = path11.isAbsolute(first) ? first : path11.resolve(baseDir, first);
         let isDir = false;
         try {
-          isDir = fs10.existsSync(resolved) && fs10.statSync(resolved).isDirectory();
+          isDir = fs11.existsSync(resolved) && fs11.statSync(resolved).isDirectory();
         } catch {
           isDir = false;
         }
@@ -27118,7 +27644,9 @@ async function runCli(args = process.argv.slice(2), customOptions = {}, isDirect
     researcherAgentId: parsed.researcherAgentId || customOptions.researcherAgentId,
     allowedAccounts: parsed.allowedAccounts || customOptions.allowedAccounts,
     debug: parsed.debug ?? customOptions.debug,
-    debugLogPath: parsed.debugLogPath || customOptions.debugLogPath
+    debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
+    cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
+    cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines
   };
   const cli = new CphPiCli(options);
   if (parsed.task) {

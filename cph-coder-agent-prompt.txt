@@ -24,6 +24,7 @@
 需要执行文件读写、修改或运行命令时，输出一个标准的 ```action 块。每次交互仅发起一个操作：
 
 1. 运行命令（执行测试、构建编译与环境检查）：
+终端命令默认在 POSIX 规范环境（Windows 下为 Git Bash）执行；若执行 PowerShell 脚本，外层请统一使用单引号字面量包裹（如 `powershell.exe -NoProfile -Command '...'`），防止内部变量被提前展开。
 ```action
 tool: run_command
 command: <精确的命令行字符串>

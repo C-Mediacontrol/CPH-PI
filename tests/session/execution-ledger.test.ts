@@ -127,3 +127,4 @@ describe("ExecutionLedger Unit Tests", () => {
     expect(header).toContain("累计物理操作: 0 步");
   });
 });
+

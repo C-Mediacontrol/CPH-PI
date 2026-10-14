@@ -9,6 +9,7 @@ export type ParsedTurn =
   | { type: "action"; thought: string; action: CopilotAction }
   | { type: "handoff"; thought: string; handoffDoc: string }
   | { type: "final_answer"; thought: string; answer: FinalAnswer }
+  | { type: "empty_response"; thought: string }
   | { type: "invalid_chatter"; thought: string; warning: string };
 
 export class ResilientParser {
@@ -19,6 +20,13 @@ export class ResilientParser {
    */
   public static parse(text: string): ParsedTurn {
     const trimmed = (text || "").trim();
+
+    if (!trimmed || trimmed.length === 0) {
+      return {
+        type: "empty_response",
+        thought: "",
+      };
+    }
 
     // 0. Check for Handoff fenced block
     const handoffMatch = trimmed.match(/```handoff\s*([\s\S]*?)```/i);

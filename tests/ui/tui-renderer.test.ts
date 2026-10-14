@@ -371,6 +371,28 @@ describe("TuiRenderer Unit & Visual Tests", () => {
       expect(bar).toContain("智能体:");
       expect(bar).toContain("通用握手模式");
     });
+
+    it("should render generation badge and handoff count in status bar", () => {
+      const infoInitial: SessionStatusInfo = {
+        sessionId: "ses_gen1",
+        turnCount: 5,
+        maxTurns: 30,
+        generation: 1,
+        handoffCount: 0,
+      };
+      const bar1 = renderer.renderStatusBar(infoInitial);
+      expect(bar1).toContain("第 1 代 (接手 0 次)");
+
+      const infoHandedOff: SessionStatusInfo = {
+        sessionId: "ses_gen3",
+        turnCount: 2,
+        maxTurns: 30,
+        generation: 3,
+        handoffCount: 2,
+      };
+      const bar2 = renderer.renderStatusBar(infoHandedOff);
+      expect(bar2).toContain("第 3 代 (接手 2 次)");
+    });
   });
 
   describe("8. Three-stage Disaster Recovery Banners", () => {

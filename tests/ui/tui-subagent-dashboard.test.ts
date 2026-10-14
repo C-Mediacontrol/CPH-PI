@@ -13,6 +13,8 @@ describe("TuiRenderer - Subagent Dashboard", () => {
         currentTurn: 2,
         durationMs: 5000,
         lastAction: "read_file: src/auth.ts",
+        hopCount: 1,
+        handoffCount: 0,
       },
       {
         id: "sub-2",
@@ -21,15 +23,19 @@ describe("TuiRenderer - Subagent Dashboard", () => {
         status: "completed",
         currentTurn: 3,
         durationMs: 8200,
+        hopCount: 2,
+        handoffCount: 1,
       },
     ];
 
     const card = renderer.formatSubagentMatrix(states);
     expect(card).toContain("[Sub-1]");
     expect(card).toContain("researcher");
+    expect(card).toContain("[Hop 1 (接手 0 次)]");
     expect(card).toContain("探查接口");
     expect(card).toContain("[Sub-2]");
     expect(card).toContain("coder");
+    expect(card).toContain("[Hop 2 (接手 1 次)]");
     expect(card).toContain("已完成");
   });
 });

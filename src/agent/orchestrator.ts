@@ -22,6 +22,7 @@ import { RefusalGuard } from "./refusal-guard.ts";
 import type { Skill } from "../skills/skill-loader.ts";
 import { SkillRegistry } from "../skills/skill-registry.ts";
 import { SubagentRunner } from "./subagent-runner.ts";
+import { TerminalLogger } from "../ui/terminal-logger.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import {
   createMainPlanSnapshot,
@@ -158,8 +159,8 @@ export class Orchestrator {
   private enableInSessionCompaction: boolean = false;
   private graphTokenProvider?: () => Promise<string>;
   private enableCloudAttachment: boolean = true;
-  private cloudAttachmentThresholdChars: number = 0;
-  private cloudAttachmentThresholdLines: number = 0;
+  private cloudAttachmentThresholdChars: number = 12000;
+  private cloudAttachmentThresholdLines: number = 200;
   private lineageTracker: SessionLineageTracker;
   public generation: number = 1;
   private maxGenerations: number;
@@ -192,8 +193,14 @@ export class Orchestrator {
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
-    this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars ?? 0;
-    this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines ?? 0;
+    this.cloudAttachmentThresholdChars =
+      options.cloudAttachmentThresholdChars !== undefined
+        ? options.cloudAttachmentThresholdChars
+        : 12000;
+    this.cloudAttachmentThresholdLines =
+      options.cloudAttachmentThresholdLines !== undefined
+        ? options.cloudAttachmentThresholdLines
+        : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.isHandshakePending =
       options.isHandshakePending !== undefined
@@ -201,8 +208,23 @@ export class Orchestrator {
         : !this.customAgentId;
   }
 
+  public getCloudAttachmentThresholds(): { chars: number; lines: number } {
+    return {
+      chars: this.cloudAttachmentThresholdChars,
+      lines: this.cloudAttachmentThresholdLines,
+    };
+  }
+
   public getLineageTracker(): SessionLineageTracker {
     return this.lineageTracker;
+  }
+
+  public getGeneration(): number {
+    return this.generation;
+  }
+
+  public getHandoffCount(): number {
+    return Math.max(0, this.generation - 1);
   }
 
   public linkSuccessor(oldId: string, newId: string): void {
@@ -395,6 +417,8 @@ export class Orchestrator {
 
     const history: TurnRecord[] = [];
     let refusalRetries = 0;
+    let emptyResponseRetries = 0;
+    const maxEmptyResponseRetries = 2;
     let turn = 1;
     let currentAnnotations: AttachmentAnnotation[] = [];
 
@@ -547,6 +571,33 @@ export class Orchestrator {
       // 3. Parse output using ResilientParser
       const parsed = ResilientParser.parse(turnResponseText);
 
+      if (parsed.type === "empty_response") {
+        if (emptyResponseRetries < maxEmptyResponseRetries) {
+          emptyResponseRetries++;
+          // 重试当前 prompt，不递增正式 turn
+          continue;
+        }
+        // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环
+        if (this.pool) {
+          try {
+            const currentEmail = (client as any)?.token?.email || "";
+            if (currentEmail) this.pool.markThrottled(currentEmail);
+            const nextToken = await this.pool.getNextAvailableToken();
+            events?.onAccountSwitched?.(currentEmail, nextToken.email);
+            client = new ChatHubClient(nextToken, {
+              modelTone: this.modelTone,
+              customAgentId: this.customAgentId,
+            });
+            emptyResponseRetries = 0;
+            continue;
+          } catch {}
+        }
+        // 若无可换账号，抛出可恢复错误触发仲裁灾备
+        throw new Error("EMPTY_RESPONSE_LIMIT_EXCEEDED: 上游模型持续返回空载荷");
+      }
+      // 非空响应时重置计数器
+      emptyResponseRetries = 0;
+
       // Case 3a: FINAL_ANSWER achieved
       if (parsed.type === "final_answer") {
         if (this.isHandshakePending) {
@@ -649,6 +700,7 @@ export class Orchestrator {
               pool: this.pool,
               chatClientFactory: this.chatClientFactory,
               modelTone: this.modelTone,
+              loggerTree: TerminalLogger.getInstance().initSessionTree(this.sessionId, this.workspaceRoot),
               lineageTracker: this.lineageTracker,
             });
 
@@ -779,12 +831,14 @@ export class Orchestrator {
         } else if (this.isHandshakePending) {
           this.isHandshakePending = false;
           if (uploadedAttachment) {
+            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(
               this.pendingTask,
               this.pendingSkills,
               parsed.action.tool || toolResult.actionName,
               uploadedAttachment.fileName,
-              { lineCount, charCount }
+              { lineCount, charCount },
+              excerpt
             );
           } else {
             currentPrompt = PromptBuilder.buildTurn2TaskPrompt(
@@ -796,10 +850,12 @@ export class Orchestrator {
           }
         } else {
           if (uploadedAttachment) {
+            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(
               parsed.action.tool || toolResult.actionName,
               uploadedAttachment.fileName,
-              { lineCount, charCount }
+              { lineCount, charCount },
+              excerpt
             );
           } else {
             currentPrompt = PromptBuilder.buildToolResultPrompt(
