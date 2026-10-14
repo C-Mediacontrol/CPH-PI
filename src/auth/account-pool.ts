@@ -35,6 +35,7 @@ export class AccountPool {
   private ineligibleAgents: Map<string, Set<string>> = new Map();
   private allowedAccounts?: Set<string>;
   private originalAllowedCase: Map<string, string> = new Map();
+  private inFlightLeases: Set<string> = new Set();
   private currentIndex = 0;
   private maxAccounts: number;
   private defaultCooldownMs: number;
@@ -318,36 +319,51 @@ export class AccountPool {
       }
     }
 
-    // Scan pool in round-robin order
-    for (let i = 0; i < total; i++) {
-      const idx = (this.currentIndex + i) % total;
-      const acc = accounts[idx];
-      const key = acc.email.toLowerCase();
-      const status = this.statuses.get(key)!;
+    // Scan pool: Pass 1 prioritizes unleased accounts to avoid concurrency collisions;
+    // Pass 2 falls back to any unthrottled account if all eligible accounts are currently leased.
+    for (const preferUnleased of [true, false]) {
+      const startIndex = this.currentIndex;
+      for (let i = 0; i < total; i++) {
+        const idx = (startIndex + i) % total;
+        const acc = accounts[idx];
+        const key = acc.email.toLowerCase();
+        const status = this.statuses.get(key)!;
 
-      // Skip ineligible accounts for this agent
-      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
-        continue;
-      }
+        // Skip ineligible accounts for this agent
+        if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+          continue;
+        }
 
-      // Check if cooldown expired
-      if (status.isThrottled && now >= status.cooldownUntil) {
-        status.isThrottled = false;
-        status.cooldownUntil = 0;
-      }
+        // Check if cooldown expired
+        if (status.isThrottled && now >= status.cooldownUntil) {
+          status.isThrottled = false;
+          status.cooldownUntil = 0;
+        }
 
-      if (!status.isThrottled) {
+        if (status.isThrottled) {
+          continue;
+        }
+
+        if (preferUnleased && this.inFlightLeases.has(key)) {
+          continue;
+        }
+
+        // Claim in-flight lease and advance index immediately before awaiting async fetch
+        this.inFlightLeases.add(key);
+        this.currentIndex = (idx + 1) % total;
+
         try {
           const session = await this.manager.getAccessToken(acc.email);
-          this.currentIndex = (idx + 1) % total;
-          status.lastUsedAt = now;
+          status.lastUsedAt = Date.now();
           status.totalRequests++;
           return session;
         } catch (err) {
           // If token acquisition fails, mark throttled and continue to next account
           status.isThrottled = true;
-          status.cooldownUntil = now + 60 * 1000;
+          status.cooldownUntil = Date.now() + 60 * 1000;
           status.throttledCount = (status.throttledCount || 0) + 1;
+        } finally {
+          this.inFlightLeases.delete(key);
         }
       }
     }

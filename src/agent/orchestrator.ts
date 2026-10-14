@@ -1394,21 +1394,34 @@ export class Orchestrator {
     return this.isRecoverableTransportError(err);
   }
 
-  private isRateLimitResponseText(text: string): boolean {
+  public isRateLimitResponseText(text: string): boolean {
     if (!text) return false;
-    if (text.includes("```action") || text.includes("FINAL_ANSWER")) {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 300) {
       return false;
     }
-    const lower = text.toLowerCase();
-    return (
-      lower.includes("429") ||
-      lower.includes("rate limit") ||
-      lower.includes("too many requests") ||
-      lower.includes("配额已达上限") ||
-      lower.includes("请求过于频繁") ||
-      lower.includes("throttled")
-    );
+    if (trimmed.includes("```action") || trimmed.includes("FINAL_ANSWER")) {
+      return false;
+    }
+
+    // Line-initial, status code, or explicit 429 error signaling
+    const isExplicit429 =
+      /(?:^|\n|\bstatus\s*code\s*:?\s*|\berror\s*:?\s*)429(?:\s+too\s+many\s+requests|\b)/i.test(
+        trimmed
+      );
+
+    // Platform rate limit signaling (standalone or line-initial error phrases)
+    const isRateLimitPhrase =
+      /(?:^|\n|\berror\s*:?\s*)too\s+many\s+requests\b/i.test(trimmed) ||
+      /\brate[_\s-]?limit[_\s-]?exceeded\b/i.test(trimmed) ||
+      /\b(?:account|request|client|user)\s+(?:has\s+been|was|is)\s+throttled\b/i.test(trimmed) ||
+      /(?:^|\n|\berror\s*:?\s*)throttled\b/i.test(trimmed) ||
+      trimmed.includes("配额已达上限") ||
+      trimmed.includes("请求过于频繁");
+
+    return isExplicit429 || isRateLimitPhrase;
   }
+
 
   /**
    * Executes the Orchestrator A -> B -> C Disaster Recovery Arbitration Pipeline.

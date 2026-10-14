@@ -164,7 +164,7 @@ export class SessionManager {
   /**
    * 自愈重建 index.json：扫描目录下的所有有效会话 JSON
    */
-  private rebuildIndex(): SessionIndexItem[] {
+  public rebuildIndex(): SessionIndexItem[] {
     this.ensureSessionsDir();
     const items: SessionIndexItem[] = [];
 
@@ -195,6 +195,8 @@ export class SessionManager {
             handoffSnapshot: session.handoffSnapshot,
             handoffDocPath: session.handoffDocPath,
             disasterBlackbox: session.disasterBlackbox,
+            generation: session.generation ?? 1,
+            handoffCount: session.handoffCount ?? 0,
           });
         }
       } catch {

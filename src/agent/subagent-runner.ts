@@ -85,7 +85,12 @@ export class SubagentRunner {
     const activeAllowedAccounts = poolStatus.filter(
       (acc) => acc.isAllowed !== false && !acc.isThrottled
     );
-    const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+    const effectiveCapacity =
+      activeAllowedAccounts.length > 0
+        ? activeAllowedAccounts.length
+        : poolStatus.length > 0 && poolStatus.every((a) => a.isThrottled)
+        ? 1
+        : Math.max(1, poolStatus.length);
     const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
 
     this.loggerTree?.logTimelineEvent({
