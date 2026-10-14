@@ -818,6 +818,7 @@ export class Orchestrator {
             preserveRecentTurns: 2,
           });
           if (compaction.clearedCharsCount > 0) {
+            history.splice(0, history.length, ...compaction.compactedTurns);
             events?.onCompacted?.(
               compaction.clearedCharsCount,
               compaction.compressionRatio
@@ -1098,33 +1099,7 @@ export class Orchestrator {
         }
       }
 
-      const allFailedText = failedRecords
-        .map((f) => `${f.toolOutput || ""} ${f.thought || ""}`)
-        .join(" ");
 
-      const envIssues: string[] = [];
-      if (
-        /\.net\s+sdk|dotnet/i.test(allFailedText) &&
-        /not\s+found|missing|no \.net|0x80070005|failed/i.test(allFailedText)
-      ) {
-        envIssues.push("环境卡点: 缺少 .NET SDK 8 环境或安装中断，导致相关组件构建受阻");
-      }
-      if (/winget/i.test(allFailedText) && /failed|error|denied|提权|0x80070005/i.test(allFailedText)) {
-        envIssues.push("包管理卡点: winget 自动化安装受提权或系统策略限制中断");
-      }
-      if (/access is denied|0x80070005/i.test(allFailedText)) {
-        envIssues.push("权限卡点: 操作系统权限拒绝 (Access is denied)");
-      }
-      if (/\[System\.IO\.Path\\\]|TypeName|TypeNotFound/i.test(allFailedText)) {
-        envIssues.push("脚本语法卡点: PowerShell 转义或类型名称格式错误");
-      }
-
-      if (envIssues.length > 0) {
-        parts.push(`- **识别的环境与系统卡点特征**:`);
-        for (const issue of envIssues) {
-          parts.push(`  - ⚠️ ${issue}`);
-        }
-      }
 
       const diagnosticThoughts = history
         .filter((h) => h.thought && /(提权|缺失|无法|失败|原因|由于|检测到|卡点)/.test(h.thought))
@@ -1182,14 +1157,7 @@ export class Orchestrator {
         `1. **第一优先级 (立即执行/优先处理)**: 针对 Turn ${lastFailed.turn} 的关键卡点（\`${shortCmd}\`），优先解决依赖或报错。`
       );
 
-      const allFailedText = failedRecords
-        .map((f) => `${f.toolOutput || ""} ${f.thought || ""}`)
-        .join(" ");
-      if (/\.net|dotnet|winget/i.test(allFailedText)) {
-        nextSteps.push(
-          `   - **环境修复指引**: 检测到 .NET SDK / winget 安装或提权受阻，建议优先采用免安装 zip 包、已有运行时路径或由外部环境提供支持，切勿盲目重复调用 winget。`
-        );
-      }
+
       nextSteps.push(
         `2. **接力执行剩余需求**: 依赖或卡点解除后，接续完成未完成的原始需求：${cleanTask}`
       );
@@ -1306,6 +1274,17 @@ export class Orchestrator {
     }
 
     return doc;
+  }
+
+  /**
+   * Alias for generateHandoffSnapshot, generating standard markdown handoff documentation.
+   */
+  public generateHandoffMarkdown(
+    task: string,
+    history: TurnRecord[],
+    sessionId?: string
+  ): string {
+    return this.generateHandoffSnapshot(task, history, sessionId);
   }
 
   /**

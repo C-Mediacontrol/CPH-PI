@@ -480,10 +480,15 @@ export class ToolBridge {
       const modifiedFiles =
         canonicalTool === "edit" || canonicalTool === "write" ? [target] : undefined;
       let statusBadge: string | undefined = undefined;
-      if (canonicalTool === "bash") {
-        const match = output.match(/(\d+\s*pass[^\n\r]*|\d+\s*fail[^\n\r]*|PASS[^\n\r]*|FAIL[^\n\r]*)/i);
+      if (
+        canonicalTool === "bash" &&
+        /(?:test|spec|jest|vitest|pytest|bun\s+test|npm\s+test|cargo\s+test|go\s+test)\b/i.test(target)
+      ) {
+        const match =
+          output.match(/\b(PASS|FAIL)\b[^\n\r]*/) ||
+          output.match(/\b(\d+\s*pass(?:ing|ed)?|\d+\s*fail(?:ing|ed|ures)?)\b[^\n\r]*/i);
         if (match) {
-          statusBadge = match[1].slice(0, 30);
+          statusBadge = match[0].trim().slice(0, 30);
         }
       }
       this.ledger.recordStep({
