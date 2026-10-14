@@ -290,6 +290,14 @@ export class Orchestrator {
     return this.isHandshakePending;
   }
 
+  public completeHandshake(): void {
+    this.isHandshakePending = false;
+  }
+
+  public setHandshakePending(pending: boolean): void {
+    this.isHandshakePending = pending;
+  }
+
   public getCustomAgentId(): string | undefined {
     return this.customAgentId;
   }
@@ -756,7 +764,7 @@ export class Orchestrator {
           }
 
           currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
-          this.isHandshakePending = false;
+          this.completeHandshake();
           refusalRetries = 0;
           if (this.generation <= this.maxGenerations) {
             turn = 0; // Reset turn counter for fresh 30 turns budget!
@@ -830,7 +838,7 @@ export class Orchestrator {
         if (parsed.action.tool === "invoke_subagent") {
           // Generational relay: currentPrompt was already set to formatSuccessorTurn1Prompt(...)
         } else if (this.isHandshakePending) {
-          this.isHandshakePending = false;
+          this.completeHandshake();
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(

@@ -1,5 +1,5 @@
 import { Chalk } from "chalk";
-import * as Diff from "diff";
+import { DiffHighlighter } from "./diff-highlighter.ts";
 import type { CopilotAction, ToolBridgeResult } from "../protocol/tool-bridge.ts";
 
 export interface TuiRendererOptions {
@@ -39,10 +39,12 @@ export type ActiveSubagentState = SubagentLiveState;
 export class TuiRenderer {
   private writer: (text: string) => void;
   private c: Chalk;
+  private diffHighlighter: DiffHighlighter;
 
   constructor(options: TuiRendererOptions = {}) {
     this.writer = options.writer || ((text: string) => process.stdout.write(text));
     this.c = new Chalk({ level: options.colorLevel ?? 3 });
+    this.diffHighlighter = new DiffHighlighter({ chalk: this.c });
   }
 
   public setWriter(writer: (text: string) => void): void {
@@ -148,150 +150,14 @@ export class TuiRenderer {
   }
 
   // =========================================================================
-  // 3. Pi Official Intra-Line Diff Renderer
+  // 3. Pi Official Intra-Line Diff Renderer (Delegated to DiffHighlighter)
   // =========================================================================
 
   /**
-   * Parses diff line to extract prefix ('+', '-', ' ', '@@', etc.), line number, and content.
-   */
-  private parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
-    const match = line.match(/^([+-\s])(\s*\d*)\s*(.*)$/);
-    if (!match) return null;
-    return { prefix: match[1], lineNum: match[2], content: match[3] };
-  }
-
-  /**
-   * Computes word-level diff and highlights changed parts with inverse styling.
-   * Strips leading whitespace from inverse to avoid highlighting indentations.
-   */
-  private renderIntraLineDiff(
-    oldContent: string,
-    newContent: string
-  ): { removedLine: string; addedLine: string } {
-    const wordDiff = Diff.diffWords(oldContent, newContent);
-
-    let removedLine = "";
-    let addedLine = "";
-    let isFirstRemoved = true;
-    let isFirstAdded = true;
-
-    for (const part of wordDiff) {
-      if (part.removed) {
-        let value = part.value;
-        if (isFirstRemoved) {
-          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-          value = value.slice(leadingWs.length);
-          removedLine += leadingWs;
-          isFirstRemoved = false;
-        }
-        if (value) {
-          removedLine += this.c.inverse(value);
-        }
-      } else if (part.added) {
-        let value = part.value;
-        if (isFirstAdded) {
-          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-          value = value.slice(leadingWs.length);
-          addedLine += leadingWs;
-          isFirstAdded = false;
-        }
-        if (value) {
-          addedLine += this.c.inverse(value);
-        }
-      } else {
-        removedLine += part.value;
-        addedLine += part.value;
-      }
-    }
-
-    return { removedLine, addedLine };
-  }
-
-  /**
    * Renders a diff string with colored lines and intra-line change highlighting.
-   * - Removed lines: red with inverse on changed tokens
-   * - Added lines: green with inverse on changed tokens
-   * - Context lines: dim/gray
-   * - Patch headers: bold cyan
    */
   public renderDiff(diffText: string): string {
-    const lines = diffText.split("\n");
-    const result: string[] = [];
-
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Handle patch headers (--- a/..., +++ b/..., @@ ... @@)
-      if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-        result.push(this.c.bold.cyan(line));
-        i++;
-        continue;
-      }
-      if (line.startsWith("@@")) {
-        result.push(this.c.cyan(line));
-        i++;
-        continue;
-      }
-
-      const parsed = this.parseDiffLine(line);
-      if (!parsed) {
-        result.push(this.c.dim(line));
-        i++;
-        continue;
-      }
-
-      if (parsed.prefix === "-") {
-        const removedLines: { lineNum: string; content: string }[] = [];
-        while (i < lines.length) {
-          const p = this.parseDiffLine(lines[i]);
-          if (!p || p.prefix !== "-") break;
-          removedLines.push({ lineNum: p.lineNum, content: p.content });
-          i++;
-        }
-
-        const addedLines: { lineNum: string; content: string }[] = [];
-        while (i < lines.length) {
-          const p = this.parseDiffLine(lines[i]);
-          if (!p || p.prefix !== "+") break;
-          addedLines.push({ lineNum: p.lineNum, content: p.content });
-          i++;
-        }
-
-        // Intra-line diffing when exactly 1 removed and 1 added line are adjacent
-        if (removedLines.length === 1 && addedLines.length === 1) {
-          const removed = removedLines[0];
-          const added = addedLines[0];
-          const { removedLine, addedLine } = this.renderIntraLineDiff(
-            removed.content.replace(/\t/g, "   "),
-            added.content.replace(/\t/g, "   ")
-          );
-          const lineNumRem = removed.lineNum ? `${removed.lineNum} ` : "";
-          const lineNumAdd = added.lineNum ? `${added.lineNum} ` : "";
-          result.push(this.c.red(`-${lineNumRem}${removedLine}`));
-          result.push(this.c.green(`+${lineNumAdd}${addedLine}`));
-        } else {
-          for (const rem of removedLines) {
-            const lineNum = rem.lineNum ? `${rem.lineNum} ` : "";
-            result.push(this.c.red(`-${lineNum}${rem.content.replace(/\t/g, "   ")}`));
-          }
-          for (const add of addedLines) {
-            const lineNum = add.lineNum ? `${add.lineNum} ` : "";
-            result.push(this.c.green(`+${lineNum}${add.content.replace(/\t/g, "   ")}`));
-          }
-        }
-      } else if (parsed.prefix === "+") {
-        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
-        result.push(this.c.green(`+${lineNum}${parsed.content.replace(/\t/g, "   ")}`));
-        i++;
-      } else {
-        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
-        result.push(this.c.dim(` ${lineNum}${parsed.content.replace(/\t/g, "   ")}`));
-        i++;
-      }
-    }
-
-    return result.join("\n");
+    return this.diffHighlighter.renderDiff(diffText);
   }
 
   // =========================================================================
