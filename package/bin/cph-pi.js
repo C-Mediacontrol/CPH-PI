@@ -10376,8 +10376,8 @@ var require_libcjs = __commonJS(function(exports) {
 
 // src/cli.ts
 import readline from "node:readline";
-import path11 from "node:path";
-import fs11 from "node:fs";
+import path12 from "node:path";
+import fs12 from "node:fs";
 
 // pi/node_modules/chalk/source/utilities.js
 function stringReplaceAll(string, substring, postfix) {
@@ -11586,6 +11586,7 @@ class AccountPool {
   ineligibleAgents = new Map;
   allowedAccounts;
   originalAllowedCase = new Map;
+  inFlightLeases = new Set;
   currentIndex = 0;
   maxAccounts;
   defaultCooldownMs;
@@ -11795,29 +11796,39 @@ class AccountPool {
         throw new Error(`No eligible accounts found in pool for agent '${normAgentId}'`);
       }
     }
-    for (let i = 0;i < total; i++) {
-      const idx = (this.currentIndex + i) % total;
-      const acc = accounts[idx];
-      const key = acc.email.toLowerCase();
-      const status = this.statuses.get(key);
-      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
-        continue;
-      }
-      if (status.isThrottled && now >= status.cooldownUntil) {
-        status.isThrottled = false;
-        status.cooldownUntil = 0;
-      }
-      if (!status.isThrottled) {
+    for (const preferUnleased of [true, false]) {
+      const startIndex = this.currentIndex;
+      for (let i = 0;i < total; i++) {
+        const idx = (startIndex + i) % total;
+        const acc = accounts[idx];
+        const key = acc.email.toLowerCase();
+        const status = this.statuses.get(key);
+        if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+          continue;
+        }
+        if (status.isThrottled && now >= status.cooldownUntil) {
+          status.isThrottled = false;
+          status.cooldownUntil = 0;
+        }
+        if (status.isThrottled) {
+          continue;
+        }
+        if (preferUnleased && this.inFlightLeases.has(key)) {
+          continue;
+        }
+        this.inFlightLeases.add(key);
+        this.currentIndex = (idx + 1) % total;
         try {
           const session = await this.manager.getAccessToken(acc.email);
-          this.currentIndex = (idx + 1) % total;
-          status.lastUsedAt = now;
+          status.lastUsedAt = Date.now();
           status.totalRequests++;
           return session;
         } catch (err) {
           status.isThrottled = true;
-          status.cooldownUntil = now + 60 * 1000;
+          status.cooldownUntil = Date.now() + 60 * 1000;
           status.throttledCount = (status.throttledCount || 0) + 1;
+        } finally {
+          this.inFlightLeases.delete(key);
         }
       }
     }
@@ -21446,10 +21457,10 @@ class ToolBridge {
     try {
       const modifiedFiles = canonicalTool === "edit" || canonicalTool === "write" ? [target] : undefined;
       let statusBadge = undefined;
-      if (canonicalTool === "bash") {
-        const match = output.match(/(\d+\s*pass[^\n\r]*|\d+\s*fail[^\n\r]*|PASS[^\n\r]*|FAIL[^\n\r]*)/i);
+      if (canonicalTool === "bash" && /(?:test|spec|jest|vitest|pytest|bun\s+test|npm\s+test|cargo\s+test|go\s+test)\b/i.test(target)) {
+        const match = output.match(/\b(PASS|FAIL)\b[^\n\r]*/) || output.match(/\b(\d+\s*pass(?:ing|ed)?|\d+\s*fail(?:ing|ed|ures)?)\b[^\n\r]*/i);
         if (match) {
-          statusBadge = match[1].slice(0, 30);
+          statusBadge = match[0].trim().slice(0, 30);
         }
       }
       this.ledger.recordStep({
@@ -23260,7 +23271,7 @@ class SubagentRunner {
   async executeBatch(tasks, signal, events) {
     const poolStatus = this.pool?.getPoolStatus?.() || [];
     const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled);
-    const effectiveCapacity = Math.max(1, activeAllowedAccounts.length || poolStatus.length || 1);
+    const effectiveCapacity = activeAllowedAccounts.length > 0 ? activeAllowedAccounts.length : poolStatus.length > 0 && poolStatus.every((a) => a.isThrottled) ? 1 : Math.max(1, poolStatus.length);
     const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
     this.loggerTree?.logTimelineEvent({
       type: "SUBAGENT_QUEUE_SCHEDULED",
@@ -24135,6 +24146,12 @@ class Orchestrator {
   getIsHandshakePending() {
     return this.isHandshakePending;
   }
+  completeHandshake() {
+    this.isHandshakePending = false;
+  }
+  setHandshakePending(pending) {
+    this.isHandshakePending = pending;
+  }
   getCustomAgentId() {
     return this.customAgentId;
   }
@@ -24508,7 +24525,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             } catch {}
           }
           currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
-          this.isHandshakePending = false;
+          this.completeHandshake();
           refusalRetries = 0;
           if (this.generation <= this.maxGenerations) {
             turn = 0;
@@ -24550,11 +24567,12 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             preserveRecentTurns: 2
           });
           if (compaction.clearedCharsCount > 0) {
+            history.splice(0, history.length, ...compaction.compactedTurns);
             events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
           }
         }
         if (parsed.action.tool === "invoke_subagent") {} else if (this.isHandshakePending) {
-          this.isHandshakePending = false;
+          this.completeHandshake();
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
@@ -24761,26 +24779,6 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           parts.push(`    > ${errLine}`);
         }
       }
-      const allFailedText = failedRecords.map((f) => `${f.toolOutput || ""} ${f.thought || ""}`).join(" ");
-      const envIssues = [];
-      if (/\.net\s+sdk|dotnet/i.test(allFailedText) && /not\s+found|missing|no \.net|0x80070005|failed/i.test(allFailedText)) {
-        envIssues.push("环境卡点: 缺少 .NET SDK 8 环境或安装中断，导致相关组件构建受阻");
-      }
-      if (/winget/i.test(allFailedText) && /failed|error|denied|提权|0x80070005/i.test(allFailedText)) {
-        envIssues.push("包管理卡点: winget 自动化安装受提权或系统策略限制中断");
-      }
-      if (/access is denied|0x80070005/i.test(allFailedText)) {
-        envIssues.push("权限卡点: 操作系统权限拒绝 (Access is denied)");
-      }
-      if (/\[System\.IO\.Path\\\]|TypeName|TypeNotFound/i.test(allFailedText)) {
-        envIssues.push("脚本语法卡点: PowerShell 转义或类型名称格式错误");
-      }
-      if (envIssues.length > 0) {
-        parts.push(`- **识别的环境与系统卡点特征**:`);
-        for (const issue of envIssues) {
-          parts.push(`  - ⚠️ ${issue}`);
-        }
-      }
       const diagnosticThoughts = history.filter((h) => h.thought && /(提权|缺失|无法|失败|原因|由于|检测到|卡点)/.test(h.thought)).map((h) => h.thought.trim());
       if (diagnosticThoughts.length > 0) {
         parts.push(`- **模型最新诊断原因分析**:`);
@@ -24826,10 +24824,6 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
       const lastCmd = lastFailed.action?.command || lastFailed.action?.path || lastFailed.toolName || "未知动作";
       const shortCmd = lastCmd.length > 60 ? `${lastCmd.slice(0, 57)}...` : lastCmd;
       nextSteps.push(`1. **第一优先级 (立即执行/优先处理)**: 针对 Turn ${lastFailed.turn} 的关键卡点（\`${shortCmd}\`），优先解决依赖或报错。`);
-      const allFailedText = failedRecords.map((f) => `${f.toolOutput || ""} ${f.thought || ""}`).join(" ");
-      if (/\.net|dotnet|winget/i.test(allFailedText)) {
-        nextSteps.push(`   - **环境修复指引**: 检测到 .NET SDK / winget 安装或提权受阻，建议优先采用免安装 zip 包、已有运行时路径或由外部环境提供支持，切勿盲目重复调用 winget。`);
-      }
       nextSteps.push(`2. **接力执行剩余需求**: 依赖或卡点解除后，接续完成未完成的原始需求：${cleanTask}`);
     } else {
       const lastRecord = history[history.length - 1];
@@ -24900,6 +24894,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     }
     return doc;
   }
+  generateHandoffMarkdown(task, history, sessionId) {
+    return this.generateHandoffSnapshot(task, history, sessionId);
+  }
   collectGitFacts() {
     try {
       const branch = execSync2("git branch --show-current", {
@@ -24947,11 +24944,16 @@ ${status}` : "clean (无未提交变更)"}`;
   isRateLimitResponseText(text) {
     if (!text)
       return false;
-    if (text.includes("```action") || text.includes("FINAL_ANSWER")) {
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 300) {
       return false;
     }
-    const lower = text.toLowerCase();
-    return lower.includes("429") || lower.includes("rate limit") || lower.includes("too many requests") || lower.includes("配额已达上限") || lower.includes("请求过于频繁") || lower.includes("throttled");
+    if (trimmed.includes("```action") || trimmed.includes("FINAL_ANSWER")) {
+      return false;
+    }
+    const isExplicit429 = /(?:^|\n|\bstatus\s*code\s*:?\s*|\berror\s*:?\s*)429(?:\s+too\s+many\s+requests|\b)/i.test(trimmed);
+    const isRateLimitPhrase = /(?:^|\n|\berror\s*:?\s*)too\s+many\s+requests\b/i.test(trimmed) || /\brate[_\s-]?limit[_\s-]?exceeded\b/i.test(trimmed) || /\b(?:account|request|client|user)\s+(?:has\s+been|was|is)\s+throttled\b/i.test(trimmed) || /(?:^|\n|\berror\s*:?\s*)throttled\b/i.test(trimmed) || trimmed.includes("配额已达上限") || trimmed.includes("请求过于频繁");
+    return isExplicit429 || isRateLimitPhrase;
   }
   async executeDisasterRecoveryArbitration(params) {
     const { task, history, client, lastError, signal, events, sessionId } = params;
@@ -25268,15 +25270,142 @@ class InterruptController {
   }
 }
 
-// src/ui/tui-renderer.ts
+// src/ui/diff-highlighter.ts
 var Diff2 = __toESM(require_libcjs(), 1);
 
+class DiffHighlighter {
+  c;
+  constructor(options = {}) {
+    this.c = options.chalk || new Chalk({ level: options.colorLevel ?? 3 });
+  }
+  parseDiffLine(line) {
+    const match = line.match(/^([+-\s])(?:(\s*\d+)\s+)?(.*)$/);
+    if (!match)
+      return null;
+    return { prefix: match[1], lineNum: match[2]?.trim() || "", content: match[3] };
+  }
+  renderIntraLineDiff(oldContent, newContent) {
+    const wordDiff = Diff2.diffWords(oldContent, newContent);
+    let removedLine = "";
+    let addedLine = "";
+    let isFirstRemoved = true;
+    let isFirstAdded = true;
+    for (const part of wordDiff) {
+      if (part.removed) {
+        let value = part.value;
+        if (isFirstRemoved) {
+          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
+          value = value.slice(leadingWs.length);
+          removedLine += leadingWs;
+          isFirstRemoved = false;
+        }
+        if (value) {
+          removedLine += this.c.inverse(value);
+        }
+      } else if (part.added) {
+        let value = part.value;
+        if (isFirstAdded) {
+          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
+          value = value.slice(leadingWs.length);
+          addedLine += leadingWs;
+          isFirstAdded = false;
+        }
+        if (value) {
+          addedLine += this.c.inverse(value);
+        }
+      } else {
+        removedLine += part.value;
+        addedLine += part.value;
+      }
+    }
+    return { removedLine, addedLine };
+  }
+  renderDiff(diffText) {
+    const rawLines = diffText.split(`
+`);
+    const lines = rawLines.map((l) => l.replace(/\t/g, "   "));
+    const result = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+        result.push(this.c.bold.cyan(line));
+        i++;
+        continue;
+      }
+      if (line.startsWith("@@")) {
+        result.push(this.c.cyan(line));
+        i++;
+        continue;
+      }
+      const parsed = this.parseDiffLine(line);
+      if (!parsed) {
+        result.push(this.c.dim(line));
+        i++;
+        continue;
+      }
+      if (parsed.prefix === "-") {
+        const removedLines = [];
+        while (i < lines.length) {
+          const p = this.parseDiffLine(lines[i]);
+          if (!p || p.prefix !== "-")
+            break;
+          removedLines.push({ lineNum: p.lineNum, content: p.content });
+          i++;
+        }
+        const addedLines = [];
+        while (i < lines.length) {
+          const p = this.parseDiffLine(lines[i]);
+          if (!p || p.prefix !== "+")
+            break;
+          addedLines.push({ lineNum: p.lineNum, content: p.content });
+          i++;
+        }
+        if (removedLines.length === 1 && addedLines.length === 1) {
+          const removed = removedLines[0];
+          const added = addedLines[0];
+          const { removedLine, addedLine } = this.renderIntraLineDiff(removed.content, added.content);
+          const lineNumRem = removed.lineNum ? `${removed.lineNum} ` : "";
+          const lineNumAdd = added.lineNum ? `${added.lineNum} ` : "";
+          result.push(this.c.red(`-${lineNumRem}${removedLine}`));
+          result.push(this.c.green(`+${lineNumAdd}${addedLine}`));
+        } else {
+          for (const rem of removedLines) {
+            const lineNum = rem.lineNum ? `${rem.lineNum} ` : "";
+            result.push(this.c.red(`-${lineNum}${rem.content}`));
+          }
+          for (const add of addedLines) {
+            const lineNum = add.lineNum ? `${add.lineNum} ` : "";
+            result.push(this.c.green(`+${lineNum}${add.content}`));
+          }
+        }
+      } else if (parsed.prefix === "+") {
+        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
+        result.push(this.c.green(`+${lineNum}${parsed.content}`));
+        i++;
+      } else {
+        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
+        result.push(this.c.dim(` ${lineNum}${parsed.content}`));
+        i++;
+      }
+    }
+    return result.join(`
+`);
+  }
+  static render(diffText, options) {
+    return new DiffHighlighter(options).renderDiff(diffText);
+  }
+}
+
+// src/ui/tui-renderer.ts
 class TuiRenderer {
   writer;
   c;
+  diffHighlighter;
   constructor(options = {}) {
     this.writer = options.writer || ((text) => process.stdout.write(text));
     this.c = new Chalk({ level: options.colorLevel ?? 3 });
+    this.diffHighlighter = new DiffHighlighter({ chalk: this.c });
   }
   setWriter(writer) {
     this.writer = writer;
@@ -25344,118 +25473,8 @@ class TuiRenderer {
 ${this.formatToolBadge(action)}
 `);
   }
-  parseDiffLine(line) {
-    const match = line.match(/^([+-\s])(\s*\d*)\s*(.*)$/);
-    if (!match)
-      return null;
-    return { prefix: match[1], lineNum: match[2], content: match[3] };
-  }
-  renderIntraLineDiff(oldContent, newContent) {
-    const wordDiff = Diff2.diffWords(oldContent, newContent);
-    let removedLine = "";
-    let addedLine = "";
-    let isFirstRemoved = true;
-    let isFirstAdded = true;
-    for (const part of wordDiff) {
-      if (part.removed) {
-        let value = part.value;
-        if (isFirstRemoved) {
-          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-          value = value.slice(leadingWs.length);
-          removedLine += leadingWs;
-          isFirstRemoved = false;
-        }
-        if (value) {
-          removedLine += this.c.inverse(value);
-        }
-      } else if (part.added) {
-        let value = part.value;
-        if (isFirstAdded) {
-          const leadingWs = value.match(/^(\s*)/)?.[1] || "";
-          value = value.slice(leadingWs.length);
-          addedLine += leadingWs;
-          isFirstAdded = false;
-        }
-        if (value) {
-          addedLine += this.c.inverse(value);
-        }
-      } else {
-        removedLine += part.value;
-        addedLine += part.value;
-      }
-    }
-    return { removedLine, addedLine };
-  }
   renderDiff(diffText) {
-    const lines = diffText.split(`
-`);
-    const result = [];
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-      if (line.startsWith("--- ") || line.startsWith("+++ ")) {
-        result.push(this.c.bold.cyan(line));
-        i++;
-        continue;
-      }
-      if (line.startsWith("@@")) {
-        result.push(this.c.cyan(line));
-        i++;
-        continue;
-      }
-      const parsed = this.parseDiffLine(line);
-      if (!parsed) {
-        result.push(this.c.dim(line));
-        i++;
-        continue;
-      }
-      if (parsed.prefix === "-") {
-        const removedLines = [];
-        while (i < lines.length) {
-          const p = this.parseDiffLine(lines[i]);
-          if (!p || p.prefix !== "-")
-            break;
-          removedLines.push({ lineNum: p.lineNum, content: p.content });
-          i++;
-        }
-        const addedLines = [];
-        while (i < lines.length) {
-          const p = this.parseDiffLine(lines[i]);
-          if (!p || p.prefix !== "+")
-            break;
-          addedLines.push({ lineNum: p.lineNum, content: p.content });
-          i++;
-        }
-        if (removedLines.length === 1 && addedLines.length === 1) {
-          const removed = removedLines[0];
-          const added = addedLines[0];
-          const { removedLine, addedLine } = this.renderIntraLineDiff(removed.content.replace(/\t/g, "   "), added.content.replace(/\t/g, "   "));
-          const lineNumRem = removed.lineNum ? `${removed.lineNum} ` : "";
-          const lineNumAdd = added.lineNum ? `${added.lineNum} ` : "";
-          result.push(this.c.red(`-${lineNumRem}${removedLine}`));
-          result.push(this.c.green(`+${lineNumAdd}${addedLine}`));
-        } else {
-          for (const rem of removedLines) {
-            const lineNum = rem.lineNum ? `${rem.lineNum} ` : "";
-            result.push(this.c.red(`-${lineNum}${rem.content.replace(/\t/g, "   ")}`));
-          }
-          for (const add of addedLines) {
-            const lineNum = add.lineNum ? `${add.lineNum} ` : "";
-            result.push(this.c.green(`+${lineNum}${add.content.replace(/\t/g, "   ")}`));
-          }
-        }
-      } else if (parsed.prefix === "+") {
-        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
-        result.push(this.c.green(`+${lineNum}${parsed.content.replace(/\t/g, "   ")}`));
-        i++;
-      } else {
-        const lineNum = parsed.lineNum ? `${parsed.lineNum} ` : "";
-        result.push(this.c.dim(` ${lineNum}${parsed.content.replace(/\t/g, "   ")}`));
-        i++;
-      }
-    }
-    return result.join(`
-`);
+    return this.diffHighlighter.renderDiff(diffText);
   }
   formatToolResult(result) {
     const isSuccess = result.success;
@@ -25925,7 +25944,9 @@ class SessionManager {
             modelTone: session.modelTone,
             handoffSnapshot: session.handoffSnapshot,
             handoffDocPath: session.handoffDocPath,
-            disasterBlackbox: session.disasterBlackbox
+            disasterBlackbox: session.disasterBlackbox,
+            generation: session.generation ?? 1,
+            handoffCount: session.handoffCount ?? 0
           });
         }
       } catch {}
@@ -26040,6 +26061,659 @@ class SessionManager {
   }
 }
 
+// src/cli/args.ts
+import path11 from "node:path";
+import fs11 from "node:fs";
+function parseCliArgs(args) {
+  const result = {
+    help: false,
+    version: false
+  };
+  const positional = [];
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    if (arg === "-h" || arg === "--help") {
+      result.help = true;
+      i++;
+    } else if (arg === "-v" || arg === "--version") {
+      result.version = true;
+      i++;
+    } else if (arg === "-c" || arg === "--continue") {
+      result.continueLast = true;
+      i++;
+    } else if (arg === "-r" || arg === "--resume") {
+      result.resumeSessionId = args[++i];
+      i++;
+    } else if (arg.startsWith("--resume=")) {
+      result.resumeSessionId = arg.slice("--resume=".length);
+      i++;
+    } else if (arg.startsWith("-r=")) {
+      result.resumeSessionId = arg.slice("-r=".length);
+      i++;
+    } else if (arg === "-w" || arg === "--workspace") {
+      result.workspaceRoot = args[++i];
+      i++;
+    } else if (arg.startsWith("--workspace=")) {
+      result.workspaceRoot = arg.slice("--workspace=".length);
+      i++;
+    } else if (arg === "-a" || arg === "--agent") {
+      result.customAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      result.hasExplicitAgent = true;
+      i++;
+    } else if (arg.startsWith("--agent=")) {
+      result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("--agent=".length));
+      result.hasExplicitAgent = true;
+      i++;
+    } else if (arg.startsWith("-a=")) {
+      result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("-a=".length));
+      result.hasExplicitAgent = true;
+      i++;
+    } else if (arg === "--coder-agent" || arg === "--coder-agent-id") {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--coder-agent=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent=".length));
+      i++;
+    } else if (arg.startsWith("--coder-agent-id=")) {
+      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent-id=".length));
+      i++;
+    } else if (arg === "--researcher-agent" || arg === "--researcher-agent-id") {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(args[++i]);
+      i++;
+    } else if (arg.startsWith("--researcher-agent=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent=".length));
+      i++;
+    } else if (arg.startsWith("--researcher-agent-id=")) {
+      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent-id=".length));
+      i++;
+    } else if (arg === "--accounts" || arg === "-acc") {
+      const val = args[++i];
+      if (val) {
+        result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      }
+      i++;
+    } else if (arg.startsWith("--accounts=")) {
+      const val = arg.slice("--accounts=".length);
+      result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      i++;
+    } else if (arg.startsWith("-acc=")) {
+      const val = arg.slice("-acc=".length);
+      result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      i++;
+    } else if (arg === "-m" || arg === "--model" || arg === "--tone" || arg === "--model-tone") {
+      result.modelTone = args[++i];
+      result.hasExplicitModel = true;
+      i++;
+    } else if (arg.startsWith("--model=")) {
+      result.modelTone = arg.slice("--model=".length);
+      result.hasExplicitModel = true;
+      i++;
+    } else if (arg.startsWith("-m=")) {
+      result.modelTone = arg.slice("-m=".length);
+      result.hasExplicitModel = true;
+      i++;
+    } else if (arg.startsWith("--tone=")) {
+      result.modelTone = arg.slice("--tone=".length);
+      result.hasExplicitModel = true;
+      i++;
+    } else if (arg.startsWith("--model-tone=")) {
+      result.modelTone = arg.slice("--model-tone=".length);
+      result.hasExplicitModel = true;
+      i++;
+    } else if (arg === "--max-turns") {
+      const val = parseInt(args[++i], 10);
+      if (!isNaN(val))
+        result.maxTurns = val;
+      i++;
+    } else if (arg.startsWith("--max-turns=")) {
+      const val = parseInt(arg.slice("--max-turns=".length), 10);
+      if (!isNaN(val))
+        result.maxTurns = val;
+      i++;
+    } else if (arg === "--max-hops" || arg === "--hops") {
+      const val = parseInt(args[++i], 10);
+      if (!isNaN(val))
+        result.maxAutonomousHandoffHops = val;
+      i++;
+    } else if (arg.startsWith("--max-hops=")) {
+      const val = parseInt(arg.slice("--max-hops=".length), 10);
+      if (!isNaN(val))
+        result.maxAutonomousHandoffHops = val;
+      i++;
+    } else if (arg.startsWith("--hops=")) {
+      const val = parseInt(arg.slice("--hops=".length), 10);
+      if (!isNaN(val))
+        result.maxAutonomousHandoffHops = val;
+      i++;
+    } else if (arg === "-d" || arg === "--debug") {
+      result.debug = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        const nextArg = args[i + 1];
+        if (nextArg.endsWith(".log") || nextArg.endsWith(".txt") || nextArg.includes("/") || nextArg.includes("\\") || nextArg.includes(".")) {
+          result.debugLogPath = args[++i];
+        }
+      }
+      i++;
+    } else if (arg.startsWith("--debug=")) {
+      result.debug = true;
+      result.debugLogPath = arg.slice("--debug=".length);
+      i++;
+    } else if (arg === "--log" || arg === "--log-file") {
+      result.debug = true;
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        result.debugLogPath = args[++i];
+      }
+      i++;
+    } else if (arg.startsWith("--log=")) {
+      result.debug = true;
+      result.debugLogPath = arg.slice("--log=".length);
+      i++;
+    } else if (arg.startsWith("--log-file=")) {
+      result.debug = true;
+      result.debugLogPath = arg.slice("--log-file=".length);
+      i++;
+    } else if (arg === "--timeout") {
+      const val = parseInt(args[++i], 10);
+      if (!isNaN(val) && val > 0)
+        result.timeoutSec = val;
+      i++;
+    } else if (arg.startsWith("--timeout=")) {
+      const val = parseInt(arg.slice("--timeout=".length), 10);
+      if (!isNaN(val) && val > 0)
+        result.timeoutSec = val;
+      i++;
+    } else if (arg === "-t") {
+      const nextArg = args[i + 1];
+      const num = nextArg !== undefined ? parseInt(nextArg, 10) : NaN;
+      if (!isNaN(num) && String(num) === nextArg?.trim() && num > 0) {
+        result.timeoutSec = num;
+        i += 2;
+      } else {
+        result.task = args[++i];
+        i++;
+      }
+    } else if (arg.startsWith("-t=")) {
+      const raw = arg.slice("-t=".length);
+      const num = parseInt(raw, 10);
+      if (!isNaN(num) && String(num) === raw.trim() && num > 0) {
+        result.timeoutSec = num;
+      } else {
+        result.task = raw;
+      }
+      i++;
+    } else if (arg === "--task") {
+      result.task = args[++i];
+      i++;
+    } else if (arg.startsWith("--task=")) {
+      result.task = arg.slice("--task=".length);
+      i++;
+    } else if (!arg.startsWith("-")) {
+      positional.push(arg);
+      i++;
+    } else {
+      i++;
+    }
+  }
+  if (!result.hasExplicitModel) {
+    result.modelTone = "Gpt_61_Sol_Reasoning";
+  }
+  if (!result.customAgentId) {
+    result.customAgentId = DEFAULT_MAIN_AGENT_ID;
+  }
+  if (!result.coderAgentId) {
+    result.coderAgentId = DEFAULT_CODER_AGENT_ID;
+  }
+  if (!result.researcherAgentId) {
+    result.researcherAgentId = DEFAULT_RESEARCHER_AGENT_ID;
+  }
+  const baseDir = process.env.CPH_PI_ORIGINAL_CWD || process.cwd();
+  if (!result.workspaceRoot) {
+    if (positional.length > 0) {
+      const first = positional[0];
+      if (first === "." || first === "./" || first === ".\\") {
+        result.workspaceRoot = baseDir;
+        positional.shift();
+      } else {
+        const resolved = path11.isAbsolute(first) ? first : path11.resolve(baseDir, first);
+        let isDir = false;
+        try {
+          isDir = fs11.existsSync(resolved) && fs11.statSync(resolved).isDirectory();
+        } catch {
+          isDir = false;
+        }
+        if (isDir) {
+          result.workspaceRoot = resolved;
+          positional.shift();
+        }
+      }
+    }
+  }
+  if (!result.workspaceRoot) {
+    result.workspaceRoot = baseDir;
+  }
+  if (!result.task && positional.length > 0) {
+    result.task = positional.join(" ");
+  }
+  return result;
+}
+function getHelpText() {
+  return [
+    source_default.bold.cyan("CPH-PI: Copilot-Pi Hybrid Autonomous Coding Agent"),
+    "",
+    source_default.bold("用法 (Usage):"),
+    `  cph-pi [选项] [任务描述...]`,
+    `  bun run src/cli.ts [选项] [任务描述...]`,
+    "",
+    source_default.bold("选项 (Options):"),
+    `  ${source_default.green("-h, --help")}              显示帮助信息并退出`,
+    `  ${source_default.green("-v, --version")}           显示版本号并退出`,
+    `  ${source_default.green("-c, --continue")}          接续最近活跃的会话`,
+    `  ${source_default.green("-r, --resume <id>")}       恢复指定 ID 的历史会话`,
+    `  ${source_default.green("-w, --workspace <path>")}   指定工作区根目录 (默认: 当前目录)`,
+    `  ${source_default.green("-a, --agent <id|url>")}     指定专属自建主协调智能体 ID 或 M365 分享链接 (默认: 主协调智能体)`,
+    `  ${source_default.green("--coder-agent-id <id|url>")} 指定代码实现子智能体 ID (默认: 代码实现智能体)`,
+    `  ${source_default.green("--researcher-agent-id <id|url>")} 指定深度调研子智能体 ID (默认: 深度调研智能体)`,
+    `  ${source_default.green("-m, --model <tone>")}       指定模型风格 (默认: Gpt_61_Sol_Reasoning)`,
+    `  ${source_default.green("-acc, --accounts <list>")}   设置允许启用的账号白名单 (逗号分隔，其余默认跳过)`,
+    `  ${source_default.green("-d, --debug [path]")}       启用 Debug 模式并实时落盘终端输出到本地日志 (默认: .cph/logs/)`,
+    `  ${source_default.green("--log <path>")}             指定终端输出落盘日志文件路径 (自动启用 Debug 模式)`,
+    `  ${source_default.green("-t, --timeout <seconds>")}  单轮请求超时时间 (默认: 600 秒)`,
+    `  ${source_default.green("--max-turns <n>")}          单任务最大推理循环轮数 (默认: 30)`,
+    `  ${source_default.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 10)`,
+    `  ${source_default.green("--task <prompt>")}          非交互式直接执行任务并退出`,
+    "",
+    source_default.bold("交互模式命令 (Interactive Commands):"),
+    `  ${source_default.yellow("/help")}        显示终端帮助与交互快捷键`,
+    `  ${source_default.yellow("/status")}      查看当前会话诊断卡与账号池状态`,
+    `  ${source_default.yellow("/accounts")}    查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+    `  ${source_default.yellow("/agent [id|clear]")} 查看、绑定或解除工作区专属智能体`,
+    `  ${source_default.yellow("/model [tone]")}    查看或动态切换模型风格`,
+    `  ${source_default.yellow("/debug [on|off|path]")} 查看、开启或关闭终端输出实时落盘`,
+    `  ${source_default.yellow("/new [title]")} 开启新会话 (重置两轮握手基准探测)`,
+    `  ${source_default.yellow("/sessions")}    查看当前工作区所有历史会话列表`,
+    `  ${source_default.yellow("/resume <id>")} 恢复指定 ID 的历史会话 (自动续跑脱困快照)`,
+    `  ${source_default.yellow("/continue [任务]")} 自动续跑当前或最近接力会话 (别名 /relay)`,
+    `  ${source_default.yellow("/relay [任务]")}    快捷接力推进当前或最近会话成果快照`,
+    `  ${source_default.yellow("/skills")}      查看所有检测到的原生技能与激活状态`,
+    `  ${source_default.yellow("/skills find")} 搜索指定关键词的技能 (如 /skills find tdd)`,
+    `  ${source_default.yellow("/skill <name>")} 切换指定技能的激活状态`,
+    `  ${source_default.yellow("/reset")}       归档当前会话并开启新会话`,
+    `  ${source_default.yellow("/exit")}        退出终端 (或 /quit)`,
+    "",
+    source_default.bold("键盘与中断控制 (Keyboard Controls):"),
+    `  ${source_default.magenta('"""')} 多行输入      在首行输入 """ 开启多行输入，再次输入 """ 提交`,
+    `  ${source_default.magenta("\\")} 行尾续行       行末尾输入 \\ 在下一行继续输入`,
+    `  ${source_default.magenta("Ctrl+C")} 中断流/命令 任务运行中按 Ctrl+C 中止当前流与工具执行，保留会话`,
+    `  ${source_default.magenta("Ctrl+C (连按两次)")} 空闲中 1.5 秒内连按两次安全退出终端`
+  ].join(`
+`);
+}
+function printHelp() {
+  const text = getHelpText();
+  process.stdout.write(text + `
+`);
+  return text;
+}
+function renderHelpBanner() {
+  return getHelpText();
+}
+var parseArgs = parseCliArgs;
+
+// src/cli/commands.ts
+var BUILTIN_SLASH_COMMANDS = {
+  "/help": (_cli) => {
+    const help = [
+      source_default.bold.cyan(`
+可用命令列表:`),
+      `  ${source_default.bold.yellow("/help")}        - 显示本帮助信息与按键说明`,
+      `  ${source_default.bold.yellow("/status")}      - 查看当前会话诊断卡与账号池状态`,
+      `  ${source_default.bold.yellow("/accounts")}    - 查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+      `  ${source_default.bold.yellow("/agent [id|clear]")} - 查看、绑定或解除专属智能体`,
+      `  ${source_default.bold.yellow("/model [tone]")}      - 查看或动态切换当前模型风格`,
+      `  ${source_default.bold.yellow("/debug [on|off|path]")} - 查看、开启或关闭终端输出实时落盘`,
+      `  ${source_default.bold.yellow("/new [title]")} - 开启新会话 (重置两轮握手基准探测)`,
+      `  ${source_default.bold.yellow("/sessions")}    - 查看当前工作区所有历史会话列表`,
+      `  ${source_default.bold.yellow("/resume <id>")} - 恢复指定 ID 的历史会话 (自动续跑脱困快照)`,
+      `  ${source_default.bold.yellow("/continue [任务]")} - 自动续跑当前或最近接力会话 (别名 /relay)`,
+      `  ${source_default.bold.yellow("/relay [任务]")}    - 快捷接力推进当前或最近会话成果快照`,
+      `  ${source_default.bold.yellow("/skills")}      - 列出所有已发现的原生技能与激活状态`,
+      `  ${source_default.bold.yellow("/skills find")} - 搜索指定关键词的技能 (如 /skills find tdd)`,
+      `  ${source_default.bold.yellow("/skill <name>")} - 切换指定技能的激活/停用状态`,
+      `  ${source_default.bold.yellow("/<skill> <任务>")}- 快捷以专属技能模式执行任务 (如 /brainstorming 设计需求)`,
+      `  ${source_default.bold.yellow("/audit")}       - 查看执行总账 (Execution Ledger) 审计状态与快照摘要`,
+      `  ${source_default.bold.yellow("/clear")}       - 清空当前终端屏幕显示`,
+      `  ${source_default.bold.yellow("/reset")}       - 归档当前会话并开启新会话`,
+      `  ${source_default.bold.yellow("/exit")}        - 安全退出终端 (或输入 /quit)`,
+      "",
+      source_default.bold.cyan("输入技巧与按键控制:"),
+      `  ${source_default.green('"""')} 多行块   - 首行输入 """ 进入多行模式，再次输入 """ 提交`,
+      `  ${source_default.green("\\")} 行尾续行    - 行末输入 \\ 可在下一行继续输入`,
+      `  ${source_default.green("Ctrl+C")}        - 运行中：中止当前网络流与子进程，保留上下文`,
+      `                   空闲中：1.5 秒内连按两次退出终端`,
+      ""
+    ].join(`
+`);
+    process.stdout.write(help);
+  },
+  "/clear": () => {
+    process.stdout.write("\x1Bc");
+    process.stdout.write(source_default.green(`
+✔ 终端显示已清空。
+
+`));
+  },
+  "/audit": (cli) => {
+    const ledger = cli.ledger;
+    const entries = ledger && typeof ledger.getEntries === "function" ? ledger.getEntries() : [];
+    const currentSession = cli.getCurrentSession();
+    const info = [
+      source_default.bold.cyan(`
+[CPH-PI 安全审计与执行总账 (Execution Ledger)]`),
+      source_default.gray("──────────────────────────────────────────────────"),
+      `  工作区目录:      ${source_default.white(cli.getWorkspaceRoot())}`,
+      `  当前活跃会话:    ${currentSession ? source_default.green(currentSession.id) : source_default.gray("无")}`,
+      `  总账事件记录目:  ${source_default.green(String(entries.length))} 条`,
+      `  当前会话已走轮数:${source_default.yellow(String(currentSession?.turnCount || 0))} 轮`,
+      source_default.gray("──────────────────────────────────────────────────"),
+      source_default.dim("  执行总账物理预写日志 (WAL) 由系统自动实时落盘于 .cph/state/。"),
+      ""
+    ].join(`
+`);
+    process.stdout.write(info);
+  },
+  "/reset": (cli) => {
+    const newSession = cli.resetSessionAndOrchestrator("新会话");
+    process.stdout.write(source_default.green(`
+✔ 会话历史与上下文已重置。新会话已开启: ${newSession.id}
+
+`));
+  },
+  "/new": (cli, args) => {
+    const title = args.trim() || undefined;
+    const currentSession = cli.getCurrentSession();
+    if (currentSession) {
+      currentSession.status = "completed";
+      cli.getSessionManager().saveSession(currentSession);
+    }
+    const session = cli.getSessionManager().createSession({
+      title: title || "新会话",
+      workspaceRoot: cli.getWorkspaceRoot(),
+      maxTurns: cli.getMaxTurns(),
+      modelTone: cli.getModelTone()
+    });
+    cli.setCurrentSession(session);
+    cli.getOrchestrator().resetHandshake();
+    cli.setLastCompactionRatio(undefined);
+    process.stdout.write(source_default.green(`
+✔ 新会话已开启: ${session.id}${title ? ` ("${title}")` : ""}
+  状态机已重置为 Turn 1 纯净基准探测握手。
+
+`));
+  },
+  "/sessions": (cli) => {
+    process.stdout.write(cli.formatSessionsList() + `
+`);
+  },
+  "/resume": async (cli, args, rawCommand) => {
+    const parts = rawCommand.trim().split(/\s+/);
+    const targetId = parts[1];
+    if (!targetId) {
+      process.stdout.write(source_default.yellow(`
+请输入要恢复的会话 ID，例如: /resume ses_123
+
+`));
+      return;
+    }
+    const loaded = cli.getSessionManager().loadSession(targetId);
+    if (!loaded) {
+      process.stdout.write(source_default.red(`
+未找到会话 ID: "${targetId}"。输入 /sessions 查看可用历史会话。
+
+`));
+      return;
+    }
+    const currentSession = cli.getCurrentSession();
+    if (currentSession && currentSession.id !== loaded.id) {
+      cli.getSessionManager().saveSession(currentSession);
+    }
+    cli.setCurrentSession(loaded);
+    if (loaded.turns && loaded.turns.length > 0 || loaded.handoffSnapshot) {
+      cli.getOrchestrator().completeHandshake();
+    } else {
+      cli.getOrchestrator().resetHandshake();
+    }
+    process.stdout.write(source_default.green(`
+✔ 已恢复会话: ${loaded.id} ("${loaded.title}") [已进行 ${loaded.turnCount} 轮]
+
+`));
+    const pending = cli.getPendingHandoffSnapshot();
+    if (loaded.handoffSnapshot || loaded.status === "handed_off" || pending) {
+      cli.setPendingHandoffSnapshot(loaded.handoffSnapshot || pending);
+      const customPrompt = parts.slice(2).join(" ").trim();
+      const resumeInstruction = customPrompt || "请根据前序会话成果快照继续推进剩余需求";
+      await cli.executeTask(resumeInstruction);
+    }
+  },
+  "/continue": async (cli, args) => {
+    await handleContinueOrRelay(cli, args);
+  },
+  "/relay": async (cli, args) => {
+    await handleContinueOrRelay(cli, args);
+  },
+  "/status": (cli) => {
+    process.stdout.write(cli.getDiagnosticCard() + `
+`);
+  },
+  "/accounts": (cli, args) => {
+    cli.handleAccountsCommand(args);
+  },
+  "/agent": (cli, args) => {
+    cli.handleAgentCommand(args);
+  },
+  "/model": (cli, args) => {
+    cli.handleModelCommand(args);
+  },
+  "/skills": (cli, args) => {
+    const trimmed = args.trim();
+    if (trimmed.startsWith("find")) {
+      const kw = trimmed.slice("find".length).trim();
+      if (!kw) {
+        process.stdout.write(source_default.yellow(`
+请输入要搜索的技能关键词，例如: /skills find tdd
+
+`));
+        return;
+      }
+      const matched = cli.getSkillRegistry().searchSkills(kw);
+      if (matched.length === 0) {
+        process.stdout.write(source_default.yellow(`
+未找到匹配关键词 "${kw}" 的技能。
+
+`));
+        return;
+      }
+      const activeNames = new Set(cli.getSkillRegistry().getActiveSkills().map((s) => s.name.toLowerCase()));
+      const lines = [
+        source_default.bold.cyan(`
+[搜索结果: 匹配 "${kw}" 的技能 (共 ${matched.length} 个)]`),
+        ...matched.map((s) => {
+          const isActive = activeNames.has(s.name.toLowerCase());
+          const mark = isActive ? source_default.green("[✓]") : source_default.gray("[ ]");
+          const name = isActive ? source_default.bold.green(s.name) : source_default.bold.white(s.name);
+          const desc = s.description ? source_default.gray(` - ${s.description}`) : "";
+          return `  ${mark} ${name}${desc}`;
+        }),
+        ""
+      ];
+      process.stdout.write(lines.join(`
+`));
+      return;
+    }
+    const allSkills = cli.getSkillRegistry().getAvailableSkills();
+    if (allSkills.length === 0) {
+      process.stdout.write(source_default.yellow(`
+未在工作区或全局发现可用技能。
+
+`));
+      return;
+    }
+    const activeNames = new Set(cli.getSkillRegistry().getActiveSkills().map((s) => s.name.toLowerCase()));
+    const lines = [
+      source_default.bold.cyan(`
+[CPH-PI 可用原生技能列表 (共 ${allSkills.length} 个)]`),
+      ...allSkills.map((s) => {
+        const isActive = activeNames.has(s.name.toLowerCase());
+        const mark = isActive ? source_default.green("[✓]") : source_default.gray("[ ]");
+        const name = isActive ? source_default.bold.green(s.name) : source_default.bold.white(s.name);
+        const desc = s.description ? source_default.gray(` - ${s.description}`) : "";
+        return `  ${mark} ${name}${desc}`;
+      }),
+      "",
+      source_default.dim("提示: 输入 /skill <name> 切换激活状态 | /skills find <kw> 搜索 | /<skill-name> <任务> 直接激活并运行"),
+      ""
+    ];
+    process.stdout.write(lines.join(`
+`));
+  },
+  "/skill": (cli, args) => {
+    const name = args.trim();
+    if (!name) {
+      process.stdout.write(source_default.yellow(`
+请输入技能名称，例如: /skill brainstorming
+
+`));
+      return;
+    }
+    const res = cli.getSkillRegistry().toggleSkill(name);
+    if (!res.skill) {
+      process.stdout.write(source_default.red(`
+未找到技能: "${name}"。输入 /skills 查看可用列表。
+
+`));
+    } else if (res.active) {
+      process.stdout.write(source_default.green(`
+✔ 已激活技能: ${res.skill.name}${res.skill.description ? ` (${res.skill.description})` : ""}
+
+`));
+    } else {
+      process.stdout.write(source_default.yellow(`
+○ 已停用技能: ${res.skill.name}
+
+`));
+    }
+  },
+  "/debug": (cli, args, rawCommand) => {
+    const parts = rawCommand.trim().split(/\s+/);
+    const arg = parts[1]?.toLowerCase();
+    const customPath = parts[1] && !["on", "off", "true", "false", "status"].includes(arg) ? parts.slice(1).join(" ") : undefined;
+    if (!arg || arg === "status") {
+      const isEnabled = cli.isDebugModeEnabled();
+      const statusStr = isEnabled ? source_default.green("已开启") : source_default.yellow("已关闭");
+      const logPath = TerminalLogger.getInstance().getLogFilePath() || cli.getDebugLogPath() || "(默认路径)";
+      process.stdout.write(source_default.cyan(`
+[Debug 终端落盘状态]
+  状态: ${statusStr}
+  日志路径: ${source_default.white(logPath)}
+
+`));
+      return;
+    }
+    if (arg === "off" || arg === "false") {
+      cli.setDebugMode(false);
+      cli.saveWorkspaceConfig({ debug: false });
+      process.stdout.write(source_default.yellow(`
+○ Debug 模式已关闭，停止终端输出落盘。
+
+`));
+      return;
+    }
+    if (arg === "on" || arg === "true" || customPath) {
+      const targetPath = customPath || (parts[2] ? parts.slice(2).join(" ") : undefined);
+      cli.setDebugMode(true, targetPath);
+      const actualLog = TerminalLogger.getInstance().getLogFilePath();
+      cli.saveWorkspaceConfig({ debug: true, debugLogPath: targetPath });
+      process.stdout.write(source_default.green(`
+✔ Debug 模式已开启，终端实时输出落盘至: ${source_default.bold(actualLog)}
+
+`));
+      return;
+    }
+  },
+  "/exit": (cli) => {
+    process.stdout.write(source_default.gray(`
+退出 CPH-PI 终端。再见！
+`));
+    cli.close();
+    process.exit(0);
+  },
+  "/quit": (cli) => {
+    process.stdout.write(source_default.gray(`
+退出 CPH-PI 终端。再见！
+`));
+    cli.close();
+    process.exit(0);
+  }
+};
+async function handleContinueOrRelay(cli, customInstruction) {
+  const resumeInstruction = customInstruction.trim() || "请根据前序会话成果快照继续推进剩余需求";
+  let targetSession = null;
+  const current = cli.getCurrentSession();
+  const pending = cli.getPendingHandoffSnapshot();
+  if (current && (current.handoffSnapshot || current.status === "handed_off" || pending)) {
+    targetSession = current;
+  } else {
+    const sessions = cli.getSessionManager().listSessions();
+    const candidate = sessions.find((s) => s.handoffSnapshot || s.status === "handed_off") || sessions.find((s) => s.status === "active") || sessions[0];
+    if (candidate) {
+      targetSession = cli.getSessionManager().loadSession(candidate.id);
+    }
+  }
+  if (!targetSession) {
+    process.stdout.write(source_default.yellow(`
+未发现可接力的历史会话或成果快照。输入 /sessions 查看可用会话。
+
+`));
+    return;
+  }
+  if (current && current.id !== targetSession.id) {
+    cli.getSessionManager().saveSession(current);
+  }
+  cli.setCurrentSession(targetSession);
+  cli.setPendingHandoffSnapshot(targetSession.handoffSnapshot || pending);
+  if (targetSession.turns && targetSession.turns.length > 0 || targetSession.handoffSnapshot) {
+    cli.getOrchestrator().completeHandshake();
+  } else {
+    cli.getOrchestrator().resetHandshake();
+  }
+  process.stdout.write(source_default.green(`
+✔ 正在接力推进会话: ${targetSession.id} ("${targetSession.title}")
+
+`));
+  await cli.executeTask(resumeInstruction);
+}
+function isBuiltinSlashCommand(input) {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/"))
+    return false;
+  const verb = trimmed.split(/\s+/)[0].toLowerCase();
+  return Object.prototype.hasOwnProperty.call(BUILTIN_SLASH_COMMANDS, verb);
+}
+async function dispatchSlashCommand(cli, rawCommand) {
+  const trimmed = rawCommand.trim();
+  if (!trimmed.startsWith("/"))
+    return false;
+  const parts = trimmed.split(/\s+/);
+  const verb = parts[0].toLowerCase();
+  const args = trimmed.slice(parts[0].length).trim();
+  const handler = BUILTIN_SLASH_COMMANDS[verb];
+  if (handler) {
+    await handler(cli, args, trimmed);
+    return true;
+  }
+  return false;
+}
+
 // src/cli.ts
 class CphPiCli {
   workspaceRoot;
@@ -26073,7 +26747,7 @@ class CphPiCli {
   debug = false;
   debugLogPath;
   constructor(options = {}) {
-    this.workspaceRoot = path11.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.workspaceRoot = path12.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
     this.ledger = options.ledger || new ExecutionLedger(this.workspaceRoot);
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId ? ChatHubClient.normalizeAgentId(options.customAgentId) : undefined;
@@ -26206,6 +26880,63 @@ ${source_default.yellow(msg)}
   setCurrentSession(session) {
     this.currentSession = session;
   }
+  getWorkspaceRoot() {
+    return this.workspaceRoot;
+  }
+  getModelTone() {
+    return this.modelTone;
+  }
+  setModelTone(tone) {
+    this.modelTone = tone;
+  }
+  getMaxTurns() {
+    return this.maxTurns;
+  }
+  getPool() {
+    return this.pool;
+  }
+  getPendingHandoffSnapshot() {
+    return this.pendingHandoffSnapshot;
+  }
+  setPendingHandoffSnapshot(snapshot) {
+    this.pendingHandoffSnapshot = snapshot;
+  }
+  getLastCompactionRatio() {
+    return this.lastCompactionRatio;
+  }
+  setLastCompactionRatio(ratio) {
+    this.lastCompactionRatio = ratio;
+  }
+  resetSessionAndOrchestrator(title = "新会话") {
+    if (this.currentSession) {
+      this.currentSession.status = "completed";
+      this.sessionManager.saveSession(this.currentSession);
+    }
+    this.currentSession = this.sessionManager.createSession({
+      title,
+      workspaceRoot: this.workspaceRoot,
+      maxTurns: this.maxTurns,
+      modelTone: this.modelTone
+    });
+    this.orchestrator = new Orchestrator({
+      workspaceRoot: this.workspaceRoot,
+      modelTone: this.modelTone,
+      maxTurns: this.maxTurns,
+      pool: this.pool,
+      chatClient: this.chatClient,
+      arbitratorChatClient: this.arbitratorChatClient,
+      chatClientFactory: this.chatClientFactory,
+      bridge: this.bridge,
+      activeSkills: this.skillRegistry.getActiveSkills(),
+      customAgentId: this.customAgentId,
+      coderAgentId: this.coderAgentId,
+      researcherAgentId: this.researcherAgentId,
+      timeoutMs: this.timeoutSec * 1000
+    });
+    this.orchestrator.timeoutMs = this.timeoutSec * 1000;
+    this.lastCompactionRatio = undefined;
+    return this.currentSession;
+  }
   getBridge() {
     return this.bridge;
   }
@@ -26287,24 +27018,24 @@ ${source_default.yellow(msg)}
     return this.pendingHandoffSnapshot;
   }
   loadWorkspaceConfig() {
-    const configPath = path11.join(this.workspaceRoot, ".cph", "config.json");
+    const configPath = path12.join(this.workspaceRoot, ".cph", "config.json");
     try {
-      if (fs11.existsSync(configPath)) {
-        const content = fs11.readFileSync(configPath, "utf-8");
+      if (fs12.existsSync(configPath)) {
+        const content = fs12.readFileSync(configPath, "utf-8");
         return JSON.parse(content) || {};
       }
     } catch {}
     return {};
   }
   saveWorkspaceConfig(updates) {
-    const cphDir = path11.join(this.workspaceRoot, ".cph");
-    const configPath = path11.join(cphDir, "config.json");
+    const cphDir = path12.join(this.workspaceRoot, ".cph");
+    const configPath = path12.join(cphDir, "config.json");
     try {
-      fs11.mkdirSync(cphDir, { recursive: true });
+      fs12.mkdirSync(cphDir, { recursive: true });
       let current = {};
-      if (fs11.existsSync(configPath)) {
+      if (fs12.existsSync(configPath)) {
         try {
-          current = JSON.parse(fs11.readFileSync(configPath, "utf-8")) || {};
+          current = JSON.parse(fs12.readFileSync(configPath, "utf-8")) || {};
         } catch {
           current = {};
         }
@@ -26316,7 +27047,7 @@ ${source_default.yellow(msg)}
           current[k] = v;
         }
       }
-      fs11.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
+      fs12.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
     } catch {}
   }
   initSession() {
@@ -26335,7 +27066,7 @@ ${source_default.yellow(msg)}
       if (latest) {
         this.currentSession = latest;
         if (latest.turns && latest.turns.length > 0) {
-          this.orchestrator.isHandshakePending = false;
+          this.orchestrator.completeHandshake();
         }
         return latest;
       }
@@ -26345,7 +27076,7 @@ ${source_default.yellow(msg)}
       if (loaded) {
         this.currentSession = loaded;
         if (loaded.turns && loaded.turns.length > 0) {
-          this.orchestrator.isHandshakePending = false;
+          this.orchestrator.completeHandshake();
         }
         return loaded;
       } else {
@@ -26520,8 +27251,7 @@ ${source_default.yellow(msg)}
       return;
     }
     if (trimmed.startsWith("/")) {
-      const lower = trimmed.toLowerCase();
-      if (lower === "/help" || lower === "/status" || lower === "/reset" || lower === "/exit" || lower === "/quit" || lower === "/sessions" || lower === "/new" || lower.startsWith("/new ") || lower === "/resume" || lower.startsWith("/resume ") || lower === "/continue" || lower.startsWith("/continue ") || lower === "/relay" || lower.startsWith("/relay ") || lower === "/skills" || lower.startsWith("/skills ") || lower.startsWith("/skill ") || lower === "/agent" || lower.startsWith("/agent ") || lower === "/accounts" || lower.startsWith("/accounts ") || lower === "/debug" || lower.startsWith("/debug ") || lower === "/model" || lower.startsWith("/model ")) {
+      if (isBuiltinSlashCommand(trimmed)) {
         await this.handleCommand(trimmed);
         this.promptUser();
         return;
@@ -26550,339 +27280,13 @@ ${source_default.yellow(msg)}
     this.promptUser();
   }
   async handleCommand(command) {
-    const cmd = command.toLowerCase().trim();
-    if (cmd === "/help") {
-      const help = [
-        source_default.bold.cyan(`
-可用命令列表:`),
-        `  ${source_default.bold.yellow("/help")}        - 显示本帮助信息与按键说明`,
-        `  ${source_default.bold.yellow("/status")}      - 查看当前会话诊断卡与账号池状态`,
-        `  ${source_default.bold.yellow("/accounts")}    - 查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
-        `  ${source_default.bold.yellow("/agent [id|clear]")} - 查看、绑定或解除专属智能体`,
-        `  ${source_default.bold.yellow("/model [tone]")}      - 查看或动态切换当前模型风格`,
-        `  ${source_default.bold.yellow("/debug [on|off|path]")} - 查看、开启或关闭终端输出实时落盘`,
-        `  ${source_default.bold.yellow("/new [title]")} - 开启新会话 (重置两轮握手基准探测)`,
-        `  ${source_default.bold.yellow("/sessions")}    - 查看当前工作区所有历史会话列表`,
-        `  ${source_default.bold.yellow("/resume <id>")} - 恢复指定 ID 的历史会话 (自动续跑脱困快照)`,
-        `  ${source_default.bold.yellow("/continue [任务]")} - 自动续跑当前或最近接力会话 (别名 /relay)`,
-        `  ${source_default.bold.yellow("/relay [任务]")}    - 快捷接力推进当前或最近会话成果快照`,
-        `  ${source_default.bold.yellow("/skills")}      - 列出所有已发现的原生技能与激活状态`,
-        `  ${source_default.bold.yellow("/skills find")} - 搜索指定关键词的技能 (如 /skills find tdd)`,
-        `  ${source_default.bold.yellow("/skill <name>")} - 切换指定技能的激活/停用状态`,
-        `  ${source_default.bold.yellow("/<skill> <任务>")}- 快捷以专属技能模式执行任务 (如 /brainstorming 设计需求)`,
-        `  ${source_default.bold.yellow("/reset")}       - 归档当前会话并开启新会话`,
-        `  ${source_default.bold.yellow("/exit")}        - 安全退出终端 (或输入 /quit)`,
-        "",
-        source_default.bold.cyan("输入技巧与按键控制:"),
-        `  ${source_default.green('"""')} 多行块   - 首行输入 """ 进入多行模式，再次输入 """ 提交`,
-        `  ${source_default.green("\\")} 行尾续行    - 行末输入 \\ 可在下一行继续输入`,
-        `  ${source_default.green("Ctrl+C")}        - 运行中：中止当前网络流与子进程，保留上下文`,
-        `                   空闲中：1.5 秒内连按两次退出终端`,
-        ""
-      ].join(`
-`);
-      process.stdout.write(help);
-      return;
-    }
-    if (cmd === "/reset") {
-      if (this.currentSession) {
-        this.currentSession.status = "completed";
-        this.sessionManager.saveSession(this.currentSession);
-      }
-      this.currentSession = this.sessionManager.createSession({
-        title: "新会话",
-        workspaceRoot: this.workspaceRoot,
-        maxTurns: this.maxTurns,
-        modelTone: this.modelTone
-      });
-      this.orchestrator = new Orchestrator({
-        workspaceRoot: this.workspaceRoot,
-        modelTone: this.modelTone,
-        maxTurns: this.maxTurns,
-        pool: this.pool,
-        chatClient: this.chatClient,
-        arbitratorChatClient: this.arbitratorChatClient,
-        chatClientFactory: this.chatClientFactory,
-        bridge: this.bridge,
-        activeSkills: this.skillRegistry.getActiveSkills(),
-        customAgentId: this.customAgentId,
-        timeoutMs: this.timeoutSec * 1000
-      });
-      this.orchestrator.timeoutMs = this.timeoutSec * 1000;
-      this.lastCompactionRatio = undefined;
-      process.stdout.write(source_default.green(`
-✔ 会话历史与上下文已重置。新会话已开启: ${this.currentSession.id}
-
-`));
-      return;
-    }
-    if (cmd === "/new" || cmd.startsWith("/new ")) {
-      let title = undefined;
-      if (cmd.startsWith("/new ")) {
-        title = command.slice("/new ".length).trim();
-      }
-      if (this.currentSession) {
-        this.currentSession.status = "completed";
-        this.sessionManager.saveSession(this.currentSession);
-      }
-      this.currentSession = this.sessionManager.createSession({
-        title: title || "新会话",
-        workspaceRoot: this.workspaceRoot,
-        maxTurns: this.maxTurns,
-        modelTone: this.modelTone
-      });
-      this.orchestrator.resetHandshake();
-      this.lastCompactionRatio = undefined;
-      process.stdout.write(source_default.green(`
-✔ 新会话已开启: ${this.currentSession.id}${title ? ` ("${title}")` : ""}
-  状态机已重置为 Turn 1 纯净基准探测握手。
-
-`));
-      return;
-    }
-    if (cmd === "/sessions") {
-      process.stdout.write(this.formatSessionsList() + `
-`);
-      return;
-    }
-    if (cmd === "/resume" || cmd.startsWith("/resume ")) {
-      const parts = command.trim().split(/\s+/);
-      const targetId = parts[1];
-      if (!targetId) {
-        process.stdout.write(source_default.yellow(`
-请输入要恢复的会话 ID，例如: /resume ses_123
-
-`));
-        return;
-      }
-      const loaded = this.sessionManager.loadSession(targetId);
-      if (!loaded) {
-        process.stdout.write(source_default.red(`
-未找到会话 ID: "${targetId}"。输入 /sessions 查看可用历史会话。
-
-`));
-        return;
-      }
-      if (this.currentSession && this.currentSession.id !== loaded.id) {
-        this.sessionManager.saveSession(this.currentSession);
-      }
-      this.currentSession = loaded;
-      if (loaded.turns && loaded.turns.length > 0 || loaded.handoffSnapshot) {
-        this.orchestrator.isHandshakePending = false;
-      } else {
-        this.orchestrator.resetHandshake();
-      }
-      process.stdout.write(source_default.green(`
-✔ 已恢复会话: ${loaded.id} ("${loaded.title}") [已进行 ${loaded.turnCount} 轮]
-
-`));
-      if (loaded.handoffSnapshot || loaded.status === "handed_off" || this.pendingHandoffSnapshot) {
-        this.pendingHandoffSnapshot = loaded.handoffSnapshot || this.pendingHandoffSnapshot;
-        const customPrompt = parts.slice(2).join(" ").trim();
-        const resumeInstruction = customPrompt || "请根据前序会话成果快照继续推进剩余需求";
-        await this.executeTask(resumeInstruction);
-      }
-      return;
-    }
-    if (cmd === "/continue" || cmd.startsWith("/continue ") || cmd === "/relay" || cmd.startsWith("/relay ")) {
-      let customInstruction = "";
-      if (cmd.startsWith("/continue ")) {
-        customInstruction = command.trim().slice("/continue ".length).trim();
-      } else if (cmd.startsWith("/relay ")) {
-        customInstruction = command.trim().slice("/relay ".length).trim();
-      }
-      const resumeInstruction = customInstruction || "请根据前序会话成果快照继续推进剩余需求";
-      let targetSession = null;
-      if (this.currentSession && (this.currentSession.handoffSnapshot || this.currentSession.status === "handed_off" || this.pendingHandoffSnapshot)) {
-        targetSession = this.currentSession;
-      } else {
-        const sessions = this.sessionManager.listSessions();
-        const candidate = sessions.find((s) => s.handoffSnapshot || s.status === "handed_off") || sessions.find((s) => s.status === "active") || sessions[0];
-        if (candidate) {
-          targetSession = this.sessionManager.loadSession(candidate.id);
-        }
-      }
-      if (!targetSession) {
-        process.stdout.write(source_default.yellow(`
-未发现可接力的历史会话或成果快照。输入 /sessions 查看可用会话。
-
-`));
-        return;
-      }
-      if (this.currentSession && this.currentSession.id !== targetSession.id) {
-        this.sessionManager.saveSession(this.currentSession);
-      }
-      this.currentSession = targetSession;
-      this.pendingHandoffSnapshot = targetSession.handoffSnapshot || this.pendingHandoffSnapshot;
-      if (targetSession.turns && targetSession.turns.length > 0 || targetSession.handoffSnapshot) {
-        this.orchestrator.isHandshakePending = false;
-      } else {
-        this.orchestrator.resetHandshake();
-      }
-      process.stdout.write(source_default.green(`
-✔ 正在接力推进会话: ${targetSession.id} ("${targetSession.title}")
-
-`));
-      await this.executeTask(resumeInstruction);
-      return;
-    }
-    if (cmd === "/status") {
-      process.stdout.write(this.getDiagnosticCard() + `
-`);
-      return;
-    }
-    if (cmd === "/accounts" || cmd.startsWith("/accounts ")) {
-      const args = command.trim().slice("/accounts".length).trim();
-      this.handleAccountsCommand(args);
-      return;
-    }
-    if (cmd === "/agent" || cmd.startsWith("/agent ")) {
-      const args = command.trim().slice("/agent".length).trim();
-      this.handleAgentCommand(args);
-      return;
-    }
-    if (cmd === "/model" || cmd.startsWith("/model ")) {
-      const args = command.trim().slice("/model".length).trim();
-      this.handleModelCommand(args);
-      return;
-    }
-    if (cmd === "/skills") {
-      const allSkills = this.skillRegistry.getAvailableSkills();
-      if (allSkills.length === 0) {
-        process.stdout.write(source_default.yellow(`
-未在工作区或全局发现可用技能。
-
-`));
-        return;
-      }
-      const activeNames = new Set(this.skillRegistry.getActiveSkills().map((s) => s.name.toLowerCase()));
-      const lines = [
-        source_default.bold.cyan(`
-[CPH-PI 可用原生技能列表 (共 ${allSkills.length} 个)]`),
-        ...allSkills.map((s) => {
-          const isActive = activeNames.has(s.name.toLowerCase());
-          const mark = isActive ? source_default.green("[✓]") : source_default.gray("[ ]");
-          const name = isActive ? source_default.bold.green(s.name) : source_default.bold.white(s.name);
-          const desc = s.description ? source_default.gray(` - ${s.description}`) : "";
-          return `  ${mark} ${name}${desc}`;
-        }),
-        "",
-        source_default.dim("提示: 输入 /skill <name> 切换激活状态 | /skills find <kw> 搜索 | /<skill-name> <任务> 直接激活并运行"),
-        ""
-      ];
-      process.stdout.write(lines.join(`
-`));
-      return;
-    }
-    if (cmd.startsWith("/skills find")) {
-      const kw = command.slice("/skills find".length).trim();
-      if (!kw) {
-        process.stdout.write(source_default.yellow(`
-请输入要搜索的技能关键词，例如: /skills find tdd
-
-`));
-        return;
-      }
-      const matched = this.skillRegistry.searchSkills(kw);
-      if (matched.length === 0) {
-        process.stdout.write(source_default.yellow(`
-未找到匹配关键词 "${kw}" 的技能。
-
-`));
-        return;
-      }
-      const activeNames = new Set(this.skillRegistry.getActiveSkills().map((s) => s.name.toLowerCase()));
-      const lines = [
-        source_default.bold.cyan(`
-[搜索结果: 匹配 "${kw}" 的技能 (共 ${matched.length} 个)]`),
-        ...matched.map((s) => {
-          const isActive = activeNames.has(s.name.toLowerCase());
-          const mark = isActive ? source_default.green("[✓]") : source_default.gray("[ ]");
-          const name = isActive ? source_default.bold.green(s.name) : source_default.bold.white(s.name);
-          const desc = s.description ? source_default.gray(` - ${s.description}`) : "";
-          return `  ${mark} ${name}${desc}`;
-        }),
-        ""
-      ];
-      process.stdout.write(lines.join(`
-`));
-      return;
-    }
-    if (cmd.startsWith("/skill ")) {
-      const name = command.slice("/skill ".length).trim();
-      if (!name) {
-        process.stdout.write(source_default.yellow(`
-请输入技能名称，例如: /skill brainstorming
-
-`));
-        return;
-      }
-      const res = this.skillRegistry.toggleSkill(name);
-      if (!res.skill) {
-        process.stdout.write(source_default.red(`
-未找到技能: "${name}"。输入 /skills 查看可用列表。
-
-`));
-      } else if (res.active) {
-        process.stdout.write(source_default.green(`
-✔ 已激活技能: ${res.skill.name}${res.skill.description ? ` (${res.skill.description})` : ""}
-
-`));
-      } else {
-        process.stdout.write(source_default.yellow(`
-○ 已停用技能: ${res.skill.name}
-
-`));
-      }
-      return;
-    }
-    if (cmd === "/debug" || cmd.startsWith("/debug ")) {
-      const parts = command.trim().split(/\s+/);
-      const arg = parts[1]?.toLowerCase();
-      const customPath = parts[1] && !["on", "off", "true", "false", "status"].includes(arg) ? parts.slice(1).join(" ") : undefined;
-      if (!arg || arg === "status") {
-        const statusStr = this.debug ? source_default.green("已开启") : source_default.yellow("已关闭");
-        const logPath = TerminalLogger.getInstance().getLogFilePath() || this.debugLogPath || "(默认路径)";
-        process.stdout.write(source_default.cyan(`
-[Debug 终端落盘状态]
-  状态: ${statusStr}
-  日志路径: ${source_default.white(logPath)}
-
-`));
-        return;
-      }
-      if (arg === "off" || arg === "false") {
-        this.setDebugMode(false);
-        this.saveWorkspaceConfig({ debug: false });
-        process.stdout.write(source_default.yellow(`
-○ Debug 模式已关闭，停止终端输出落盘。
-
-`));
-        return;
-      }
-      if (arg === "on" || arg === "true" || customPath) {
-        const targetPath = customPath || (parts[2] ? parts.slice(2).join(" ") : undefined);
-        this.setDebugMode(true, targetPath);
-        const actualLog = TerminalLogger.getInstance().getLogFilePath();
-        this.saveWorkspaceConfig({ debug: true, debugLogPath: targetPath });
-        process.stdout.write(source_default.green(`
-✔ Debug 模式已开启，终端实时输出落盘至: ${source_default.bold(actualLog)}
-
-`));
-        return;
-      }
-    }
-    if (cmd === "/exit" || cmd === "/quit") {
-      process.stdout.write(source_default.gray(`
-退出 CPH-PI 终端。再见！
-`));
-      this.close();
-      process.exit(0);
-    }
-    process.stdout.write(source_default.red(`
+    const handled = await dispatchSlashCommand(this, command);
+    if (!handled) {
+      process.stdout.write(source_default.red(`
 未知命令: ${command}。输入 /help 查看可用命令。
 
 `));
+    }
   }
   getDiagnosticCard() {
     const statuses = this.pool.getPoolStatus();
@@ -27375,301 +27779,6 @@ ${result.handoffSnapshot}`,
   }
 }
 var CPH_PI_VERSION = "0.1.0";
-function parseCliArgs(args) {
-  const result = {
-    help: false,
-    version: false
-  };
-  const positional = [];
-  let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
-    if (arg === "-h" || arg === "--help") {
-      result.help = true;
-      i++;
-    } else if (arg === "-v" || arg === "--version") {
-      result.version = true;
-      i++;
-    } else if (arg === "-c" || arg === "--continue") {
-      result.continueLast = true;
-      i++;
-    } else if (arg === "-r" || arg === "--resume") {
-      result.resumeSessionId = args[++i];
-      i++;
-    } else if (arg.startsWith("--resume=")) {
-      result.resumeSessionId = arg.slice("--resume=".length);
-      i++;
-    } else if (arg.startsWith("-r=")) {
-      result.resumeSessionId = arg.slice("-r=".length);
-      i++;
-    } else if (arg === "-w" || arg === "--workspace") {
-      result.workspaceRoot = args[++i];
-      i++;
-    } else if (arg.startsWith("--workspace=")) {
-      result.workspaceRoot = arg.slice("--workspace=".length);
-      i++;
-    } else if (arg === "-a" || arg === "--agent") {
-      result.customAgentId = ChatHubClient.normalizeAgentId(args[++i]);
-      result.hasExplicitAgent = true;
-      i++;
-    } else if (arg.startsWith("--agent=")) {
-      result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("--agent=".length));
-      result.hasExplicitAgent = true;
-      i++;
-    } else if (arg.startsWith("-a=")) {
-      result.customAgentId = ChatHubClient.normalizeAgentId(arg.slice("-a=".length));
-      result.hasExplicitAgent = true;
-      i++;
-    } else if (arg === "--coder-agent" || arg === "--coder-agent-id") {
-      result.coderAgentId = ChatHubClient.normalizeAgentId(args[++i]);
-      i++;
-    } else if (arg.startsWith("--coder-agent=")) {
-      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent=".length));
-      i++;
-    } else if (arg.startsWith("--coder-agent-id=")) {
-      result.coderAgentId = ChatHubClient.normalizeAgentId(arg.slice("--coder-agent-id=".length));
-      i++;
-    } else if (arg === "--researcher-agent" || arg === "--researcher-agent-id") {
-      result.researcherAgentId = ChatHubClient.normalizeAgentId(args[++i]);
-      i++;
-    } else if (arg.startsWith("--researcher-agent=")) {
-      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent=".length));
-      i++;
-    } else if (arg.startsWith("--researcher-agent-id=")) {
-      result.researcherAgentId = ChatHubClient.normalizeAgentId(arg.slice("--researcher-agent-id=".length));
-      i++;
-    } else if (arg === "--accounts" || arg === "-acc") {
-      const val = args[++i];
-      if (val) {
-        result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      }
-      i++;
-    } else if (arg.startsWith("--accounts=")) {
-      const val = arg.slice("--accounts=".length);
-      result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      i++;
-    } else if (arg.startsWith("-acc=")) {
-      const val = arg.slice("-acc=".length);
-      result.allowedAccounts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-      i++;
-    } else if (arg === "-m" || arg === "--model" || arg === "--tone" || arg === "--model-tone") {
-      result.modelTone = args[++i];
-      result.hasExplicitModel = true;
-      i++;
-    } else if (arg.startsWith("--model=")) {
-      result.modelTone = arg.slice("--model=".length);
-      result.hasExplicitModel = true;
-      i++;
-    } else if (arg.startsWith("-m=")) {
-      result.modelTone = arg.slice("-m=".length);
-      result.hasExplicitModel = true;
-      i++;
-    } else if (arg.startsWith("--tone=")) {
-      result.modelTone = arg.slice("--tone=".length);
-      result.hasExplicitModel = true;
-      i++;
-    } else if (arg.startsWith("--model-tone=")) {
-      result.modelTone = arg.slice("--model-tone=".length);
-      result.hasExplicitModel = true;
-      i++;
-    } else if (arg === "--max-turns") {
-      const val = parseInt(args[++i], 10);
-      if (!isNaN(val))
-        result.maxTurns = val;
-      i++;
-    } else if (arg.startsWith("--max-turns=")) {
-      const val = parseInt(arg.slice("--max-turns=".length), 10);
-      if (!isNaN(val))
-        result.maxTurns = val;
-      i++;
-    } else if (arg === "--max-hops" || arg === "--hops") {
-      const val = parseInt(args[++i], 10);
-      if (!isNaN(val))
-        result.maxAutonomousHandoffHops = val;
-      i++;
-    } else if (arg.startsWith("--max-hops=")) {
-      const val = parseInt(arg.slice("--max-hops=".length), 10);
-      if (!isNaN(val))
-        result.maxAutonomousHandoffHops = val;
-      i++;
-    } else if (arg.startsWith("--hops=")) {
-      const val = parseInt(arg.slice("--hops=".length), 10);
-      if (!isNaN(val))
-        result.maxAutonomousHandoffHops = val;
-      i++;
-    } else if (arg === "-d" || arg === "--debug") {
-      result.debug = true;
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        const nextArg = args[i + 1];
-        if (nextArg.endsWith(".log") || nextArg.endsWith(".txt") || nextArg.includes("/") || nextArg.includes("\\") || nextArg.includes(".")) {
-          result.debugLogPath = args[++i];
-        }
-      }
-      i++;
-    } else if (arg.startsWith("--debug=")) {
-      result.debug = true;
-      result.debugLogPath = arg.slice("--debug=".length);
-      i++;
-    } else if (arg === "--log" || arg === "--log-file") {
-      result.debug = true;
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-        result.debugLogPath = args[++i];
-      }
-      i++;
-    } else if (arg.startsWith("--log=")) {
-      result.debug = true;
-      result.debugLogPath = arg.slice("--log=".length);
-      i++;
-    } else if (arg.startsWith("--log-file=")) {
-      result.debug = true;
-      result.debugLogPath = arg.slice("--log-file=".length);
-      i++;
-    } else if (arg === "--timeout") {
-      const val = parseInt(args[++i], 10);
-      if (!isNaN(val) && val > 0)
-        result.timeoutSec = val;
-      i++;
-    } else if (arg.startsWith("--timeout=")) {
-      const val = parseInt(arg.slice("--timeout=".length), 10);
-      if (!isNaN(val) && val > 0)
-        result.timeoutSec = val;
-      i++;
-    } else if (arg === "-t") {
-      const nextArg = args[i + 1];
-      const num = nextArg !== undefined ? parseInt(nextArg, 10) : NaN;
-      if (!isNaN(num) && String(num) === nextArg?.trim() && num > 0) {
-        result.timeoutSec = num;
-        i += 2;
-      } else {
-        result.task = args[++i];
-        i++;
-      }
-    } else if (arg.startsWith("-t=")) {
-      const raw = arg.slice("-t=".length);
-      const num = parseInt(raw, 10);
-      if (!isNaN(num) && String(num) === raw.trim() && num > 0) {
-        result.timeoutSec = num;
-      } else {
-        result.task = raw;
-      }
-      i++;
-    } else if (arg === "--task") {
-      result.task = args[++i];
-      i++;
-    } else if (arg.startsWith("--task=")) {
-      result.task = arg.slice("--task=".length);
-      i++;
-    } else if (!arg.startsWith("-")) {
-      positional.push(arg);
-      i++;
-    } else {
-      i++;
-    }
-  }
-  if (!result.hasExplicitModel) {
-    result.modelTone = "Gpt_61_Sol_Reasoning";
-  }
-  if (!result.customAgentId) {
-    result.customAgentId = DEFAULT_MAIN_AGENT_ID;
-  }
-  if (!result.coderAgentId) {
-    result.coderAgentId = DEFAULT_CODER_AGENT_ID;
-  }
-  if (!result.researcherAgentId) {
-    result.researcherAgentId = DEFAULT_RESEARCHER_AGENT_ID;
-  }
-  const baseDir = process.env.CPH_PI_ORIGINAL_CWD || process.cwd();
-  if (!result.workspaceRoot) {
-    if (positional.length > 0) {
-      const first = positional[0];
-      if (first === "." || first === "./" || first === ".\\") {
-        result.workspaceRoot = baseDir;
-        positional.shift();
-      } else {
-        const resolved = path11.isAbsolute(first) ? first : path11.resolve(baseDir, first);
-        let isDir = false;
-        try {
-          isDir = fs11.existsSync(resolved) && fs11.statSync(resolved).isDirectory();
-        } catch {
-          isDir = false;
-        }
-        if (isDir) {
-          result.workspaceRoot = resolved;
-          positional.shift();
-        }
-      }
-    }
-  }
-  if (!result.workspaceRoot) {
-    result.workspaceRoot = baseDir;
-  }
-  if (!result.task && positional.length > 0) {
-    result.task = positional.join(" ");
-  }
-  return result;
-}
-function getHelpText() {
-  return [
-    source_default.bold.cyan("CPH-PI: Copilot-Pi Hybrid Autonomous Coding Agent"),
-    "",
-    source_default.bold("用法 (Usage):"),
-    `  cph-pi [选项] [任务描述...]`,
-    `  bun run src/cli.ts [选项] [任务描述...]`,
-    "",
-    source_default.bold("选项 (Options):"),
-    `  ${source_default.green("-h, --help")}              显示帮助信息并退出`,
-    `  ${source_default.green("-v, --version")}           显示版本号并退出`,
-    `  ${source_default.green("-c, --continue")}          接续最近活跃的会话`,
-    `  ${source_default.green("-r, --resume <id>")}       恢复指定 ID 的历史会话`,
-    `  ${source_default.green("-w, --workspace <path>")}   指定工作区根目录 (默认: 当前目录)`,
-    `  ${source_default.green("-a, --agent <id|url>")}     指定专属自建主协调智能体 ID 或 M365 分享链接 (默认: 主协调智能体)`,
-    `  ${source_default.green("--coder-agent-id <id|url>")} 指定代码实现子智能体 ID (默认: 代码实现智能体)`,
-    `  ${source_default.green("--researcher-agent-id <id|url>")} 指定深度调研子智能体 ID (默认: 深度调研智能体)`,
-    `  ${source_default.green("-m, --model <tone>")}       指定模型风格 (默认: Gpt_61_Sol_Reasoning)`,
-    `  ${source_default.green("-acc, --accounts <list>")}   设置允许启用的账号白名单 (逗号分隔，其余默认跳过)`,
-    `  ${source_default.green("-d, --debug [path]")}       启用 Debug 模式并实时落盘终端输出到本地日志 (默认: .cph/logs/)`,
-    `  ${source_default.green("--log <path>")}             指定终端输出落盘日志文件路径 (自动启用 Debug 模式)`,
-    `  ${source_default.green("-t, --timeout <seconds>")}  单轮请求超时时间 (默认: 600 秒)`,
-    `  ${source_default.green("--max-turns <n>")}          单任务最大推理循环轮数 (默认: 30)`,
-    `  ${source_default.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 10)`,
-    `  ${source_default.green("--task <prompt>")}          非交互式直接执行任务并退出`,
-    "",
-    source_default.bold("交互模式命令 (Interactive Commands):"),
-    `  ${source_default.yellow("/help")}        显示终端帮助与交互快捷键`,
-    `  ${source_default.yellow("/status")}      查看当前会话诊断卡与账号池状态`,
-    `  ${source_default.yellow("/accounts")}    查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
-    `  ${source_default.yellow("/agent [id|clear]")} 查看、绑定或解除工作区专属智能体`,
-    `  ${source_default.yellow("/model [tone]")}    查看或动态切换模型风格`,
-    `  ${source_default.yellow("/debug [on|off|path]")} 查看、开启或关闭终端输出实时落盘`,
-    `  ${source_default.yellow("/new [title]")} 开启新会话 (重置两轮握手基准探测)`,
-    `  ${source_default.yellow("/sessions")}    查看当前工作区所有历史会话列表`,
-    `  ${source_default.yellow("/resume <id>")} 恢复指定 ID 的历史会话 (自动续跑脱困快照)`,
-    `  ${source_default.yellow("/continue [任务]")} 自动续跑当前或最近接力会话 (别名 /relay)`,
-    `  ${source_default.yellow("/relay [任务]")}    快捷接力推进当前或最近会话成果快照`,
-    `  ${source_default.yellow("/skills")}      查看所有检测到的原生技能与激活状态`,
-    `  ${source_default.yellow("/skills find")} 搜索指定关键词的技能 (如 /skills find tdd)`,
-    `  ${source_default.yellow("/skill <name>")} 切换指定技能的激活状态`,
-    `  ${source_default.yellow("/reset")}       归档当前会话并开启新会话`,
-    `  ${source_default.yellow("/exit")}        退出终端 (或 /quit)`,
-    "",
-    source_default.bold("键盘与中断控制 (Keyboard Controls):"),
-    `  ${source_default.magenta('"""')} 多行输入      在首行输入 """ 开启多行输入，再次输入 """ 提交`,
-    `  ${source_default.magenta("\\")} 行尾续行       行末尾输入 \\ 在下一行继续输入`,
-    `  ${source_default.magenta("Ctrl+C")} 中断流/命令 任务运行中按 Ctrl+C 中止当前流与工具执行，保留会话`,
-    `  ${source_default.magenta("Ctrl+C (连按两次)")} 空闲中 1.5 秒内连按两次安全退出终端`
-  ].join(`
-`);
-}
-function printHelp() {
-  const text = getHelpText();
-  process.stdout.write(text + `
-`);
-  return text;
-}
-function renderHelpBanner() {
-  return getHelpText();
-}
-var parseArgs = parseCliArgs;
 async function runCli(args = process.argv.slice(2), customOptions = {}, isDirectRun = false) {
   const parsed = parseCliArgs(args);
   if (parsed.help) {
@@ -27740,13 +27849,16 @@ if (__require.main == __require.module) {
   });
 }
 export {
+  BUILTIN_SLASH_COMMANDS,
   CPH_PI_VERSION,
   CphPiCli as CliApp,
   CphPiCli,
   DEFAULT_CODER_AGENT_ID,
   DEFAULT_MAIN_AGENT_ID,
   DEFAULT_RESEARCHER_AGENT_ID,
+  dispatchSlashCommand,
   getHelpText,
+  isBuiltinSlashCommand,
   parseArgs,
   parseCliArgs,
   printHelp,
