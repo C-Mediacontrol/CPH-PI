@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ExecutionLedger } from "./ledger/execution-ledger.ts";
 
 export interface MainPlanSnapshot {
   snapshotId: string;
@@ -100,7 +101,6 @@ export function formatSuccessorTurn1Prompt(
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
     try {
-      const { ExecutionLedger } = require("./ledger/execution-ledger.ts");
       const ledger = new ExecutionLedger(snapshot.workspaceRoot);
       mountHeader = ledger.formatMountHeader();
     } catch {

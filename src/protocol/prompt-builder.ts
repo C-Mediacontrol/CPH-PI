@@ -16,6 +16,13 @@ export interface ReGroundingOptions {
   skillsSection?: string;
 }
 
+export interface Turn2TaskPromptOptions {
+  task: string;
+  toolResult: string;
+  skillsSection?: string;
+  toolName?: string;
+}
+
 export class PromptBuilder {
   public static readonly PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
@@ -135,44 +142,43 @@ command: git status
 
   /**
    * Builds Turn 2 task prompt after Turn 1 handshake succeeds.
-   * Supports both (task, skillsSection, toolResult) and (task, toolResult, skillsSection).
+   * Supports strongly-typed options object { task, toolResult, skillsSection?, toolName? }
+   * and positional arguments (task, toolResult, skillsSection?, toolName?).
    */
   public static buildTurn2TaskPrompt(
-    task: string,
-    arg2: string,
-    arg3 = "",
+    optionsOrTask: Turn2TaskPromptOptions | string,
+    toolResult?: string,
+    skillsSection = "",
     toolName?: string
   ): string {
-    let skillsSection = "";
-    let toolResult = "";
+    let finalTask = "";
+    let finalToolResult = "";
+    let finalSkillsSection = "";
+    let finalToolName: string | undefined;
 
-    if (arg3 !== undefined && arg3 !== "") {
-      if (arg2.includes("Skill") || arg2.includes("技能") || arg2 === "") {
-        skillsSection = arg2;
-        toolResult = arg3;
-      } else if (arg3.includes("Skill") || arg3.includes("技能")) {
-        toolResult = arg2;
-        skillsSection = arg3;
-      } else {
-        skillsSection = arg2;
-        toolResult = arg3;
-      }
+    if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
+      finalTask = optionsOrTask.task;
+      finalToolResult = optionsOrTask.toolResult;
+      finalSkillsSection = optionsOrTask.skillsSection || "";
+      finalToolName = optionsOrTask.toolName;
     } else {
-      toolResult = arg2;
-      skillsSection = "";
+      finalTask = optionsOrTask;
+      finalToolResult = toolResult ?? "";
+      finalSkillsSection = skillsSection ?? "";
+      finalToolName = toolName;
     }
 
-    const toolHeader = toolName
-      ? `[TOOL_RESULT for ${toolName} - SUCCESS]:`
+    const toolHeader = finalToolName
+      ? `[TOOL_RESULT for ${finalToolName} - SUCCESS]:`
       : `[TOOL_RESULT - SUCCESS]:`;
 
     return `${toolHeader}
-${toolResult}
+${finalToolResult}
 
 【环境握手完成：本地工具与工作区已就绪】
-${skillsSection ? `【当前已激活的专业技能 (Skill)】\n${skillsSection}\n\n` : ""}
+${finalSkillsSection ? `【当前已激活的专业技能 (Skill)】\n${finalSkillsSection}\n\n` : ""}
 【用户正式需求】
-${task}
+${finalTask}
 
 【执行规则与推进要求】
 1. 深入分析工作区现状，按需使用 read_file、edit、write_file、run_command 开展工作；

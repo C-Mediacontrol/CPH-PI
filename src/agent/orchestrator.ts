@@ -841,12 +841,12 @@ export class Orchestrator {
               excerpt
             );
           } else {
-            currentPrompt = PromptBuilder.buildTurn2TaskPrompt(
-              this.pendingTask,
-              this.pendingSkills,
-              toolResult.output,
-              parsed.action.tool || toolResult.actionName
-            );
+            currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
+              task: this.pendingTask,
+              toolResult: toolResult.output,
+              skillsSection: this.pendingSkills,
+              toolName: parsed.action.tool || toolResult.actionName,
+            });
           }
         } else {
           if (uploadedAttachment) {

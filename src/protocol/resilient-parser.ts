@@ -152,6 +152,7 @@ export class ResilientParser {
                 return {
                   ...s,
                   role,
+                  stage: Number(s.stage) || 1,
                 };
               });
             }
@@ -205,7 +206,9 @@ export class ResilientParser {
       const cmdMatch = contentToScan.match(/(?:command|cmd)\s*:\s*([^\r\n]+)/i);
       const timeoutMatch = contentToScan.match(/timeout\s*:\s*(\d+)/i);
       const patternMatch = contentToScan.match(/pattern\s*:\s*([^\r\n]+)/i);
-      const contentMatch = contentToScan.match(/content\s*:\s*([\s\S]*)$/i);
+      const contentMatch = contentToScan.match(
+        /content\s*:\s*([\s\S]*?)(?=\r?\n\s*(?:path|tool|file|action)\s*:|$)/i
+      );
       const oldStrMatch = contentToScan.match(
         /(?:old_string|oldstring|old_text|oldText)\s*:\s*([\s\S]*?)(?=\n(?:new_string|newstring|new_text|newText|tool|path)\s*:|$)/i
       );
@@ -315,6 +318,7 @@ export class ResilientParser {
               description: s.description ? String(s.description).trim() : "",
               prompt: s.prompt ? String(s.prompt).trim() : "",
               maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined,
+              stage: Number(s.stage) || 1,
             };
           });
         }
@@ -332,6 +336,7 @@ export class ResilientParser {
       const descMatch = block.match(/description\s*:\s*([^\r\n]+)/i);
       const promptMatch = block.match(/prompt\s*:\s*([\s\S]*?)(?=\n\s*[a-zA-Z_]+\s*:|$)/i);
       const maxTurnsMatch = block.match(/maxTurns\s*:\s*(\d+)/i);
+      const stageMatch = block.match(/(?:^|\n)\s*stage\s*:\s*(\d+)/i);
 
       if (roleMatch || promptMatch) {
         let rawRole = (roleMatch ? roleMatch[1].trim().toLowerCase() : "researcher");
@@ -342,6 +347,7 @@ export class ResilientParser {
           description: descMatch ? descMatch[1].trim() : "",
           prompt: promptMatch ? promptMatch[1].trim() : "",
           maxTurns: maxTurnsMatch ? parseInt(maxTurnsMatch[1], 10) : undefined,
+          stage: stageMatch ? parseInt(stageMatch[1], 10) : 1,
         });
       }
     }

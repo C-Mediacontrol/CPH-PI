@@ -75,8 +75,8 @@ describe("PromptBuilder Unit Tests", () => {
     it("should build Turn 2 task prompt with tool result, active skills, and formal task", () => {
       const prompt = PromptBuilder.buildTurn2TaskPrompt(
         "实现支付接口",
-        "【当前已激活的专业技能 (Skill)】\n#### [技能 1: tdd]",
         "On branch main\nnothing to commit",
+        "【当前已激活的专业技能 (Skill)】\n#### [技能 1: tdd]",
         "run_command"
       );
 
@@ -92,7 +92,6 @@ describe("PromptBuilder Unit Tests", () => {
     it("should build Turn 2 task prompt without skills and default header when toolName omitted", () => {
       const prompt = PromptBuilder.buildTurn2TaskPrompt(
         "重构解析器",
-        "",
         "file1.ts\nfile2.ts"
       );
 

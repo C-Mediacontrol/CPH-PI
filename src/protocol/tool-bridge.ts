@@ -156,6 +156,7 @@ export interface ToolBridgeOptions {
   tools?: Tool[] | Record<string, Tool>;
   onQuestion?: (action: MappedQuestionArgs) => Promise<string> | string;
   ledger?: any;
+  context?: { role?: string; sessionId?: string };
 }
 
 /**
@@ -405,6 +406,7 @@ export class ToolBridge {
   private tools: Map<string, Tool> = new Map();
   private onQuestion?: (action: MappedQuestionArgs) => Promise<string> | string;
   private ledger?: any;
+  private defaultContext?: { role?: string; sessionId?: string };
   public readonly bashOperations?: BashOperations;
 
   constructor(options?: ToolBridgeOptions | string) {
@@ -414,6 +416,7 @@ export class ToolBridge {
       this.cwd = options?.cwd ?? process.cwd();
       this.onQuestion = options?.onQuestion;
       this.ledger = options?.ledger;
+      this.defaultContext = options?.context;
     }
 
     const customTools = typeof options === "object" ? options?.tools : undefined;
@@ -464,12 +467,13 @@ export class ToolBridge {
     this.ledger = ledger;
   }
 
-  private recordToLedger(
+  public recordToLedger(
     toolName: string,
     target: string,
     canonicalTool: string,
     success: boolean,
-    output: string
+    output: string,
+    context?: { role?: string; sessionId?: string }
   ): void {
     if (!this.ledger || typeof this.ledger.recordStep !== "function") return;
     try {
@@ -483,8 +487,8 @@ export class ToolBridge {
         }
       }
       this.ledger.recordStep({
-        role: "main",
-        sessionId: "main",
+        role: context?.role || this.defaultContext?.role || "main",
+        sessionId: context?.sessionId || this.defaultContext?.sessionId || "main",
         tool: toolName,
         target,
         status: success ? "SUCCESS" : "FAILURE",
@@ -637,7 +641,11 @@ export class ToolBridge {
    * Executes a mapped Copilot action on Pi native tools or the question callback,
    * returning structured details and formatted text.
    */
-  public async executeAction(action: CopilotAction, signal?: AbortSignal): Promise<ToolBridgeResult> {
+  public async executeAction(
+    action: CopilotAction,
+    signal?: AbortSignal,
+    context?: { role?: string; sessionId?: string }
+  ): Promise<ToolBridgeResult> {
     const rawActionName = action.tool ?? action.action ?? action.name ?? "unknown";
     let mapped: MappedAction;
 
@@ -780,7 +788,7 @@ export class ToolBridge {
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
       const success = !isError;
-      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output);
+      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output, context);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -804,7 +812,7 @@ export class ToolBridge {
       let output = err instanceof Error ? err.message : String(err);
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output);
+      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output, context);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,

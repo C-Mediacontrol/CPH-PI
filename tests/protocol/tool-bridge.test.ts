@@ -475,4 +475,56 @@ describe("ToolBridge Unit Tests", () => {
       expect(formattedEmpty).toBe("【TOOL_RESULT: bash (true) - SUCCESS】\n\n【END_TOOL_RESULT】");
     });
   });
+
+  describe("6. Ledger Provenance Context Propagation", () => {
+    it("should record custom role and sessionId when context is provided", () => {
+      const recordedSteps: any[] = [];
+      const mockLedger = {
+        recordStep: (step: any) => recordedSteps.push(step),
+      };
+
+      const customBridge = new ToolBridge({
+        cwd: tempDir,
+        ledger: mockLedger,
+      });
+
+      customBridge.recordToLedger(
+        "run_command",
+        "bun test",
+        "bash",
+        true,
+        "1 pass",
+        { role: "coder", sessionId: "subagent-101" }
+      );
+
+      expect(recordedSteps.length).toBe(1);
+      expect(recordedSteps[0].role).toBe("coder");
+      expect(recordedSteps[0].sessionId).toBe("subagent-101");
+      expect(recordedSteps[0].tool).toBe("run_command");
+    });
+
+    it("should fallback to 'main' when context is omitted", () => {
+      const recordedSteps: any[] = [];
+      const mockLedger = {
+        recordStep: (step: any) => recordedSteps.push(step),
+      };
+
+      const defaultBridge = new ToolBridge({
+        cwd: tempDir,
+        ledger: mockLedger,
+      });
+
+      defaultBridge.recordToLedger(
+        "write_file",
+        "src/app.ts",
+        "write",
+        true,
+        "written"
+      );
+
+      expect(recordedSteps.length).toBe(1);
+      expect(recordedSteps[0].role).toBe("main");
+      expect(recordedSteps[0].sessionId).toBe("main");
+    });
+  });
 });

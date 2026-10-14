@@ -32,17 +32,6 @@ var __toESM = (mod, isNodeMode, target) => {
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
-var __esm = (fn, res, err) => () => {
-  if (fn)
-    try {
-      res = fn(fn = 0);
-    } catch (e) {
-      err = [e];
-    }
-  if (err)
-    throw err[0];
-  return res;
-};
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // pi/node_modules/isexe/windows.js
@@ -8554,126 +8543,6 @@ ${val.stack}`;
   exports.__wasm = wasm;
   wasm.__wbindgen_start();
 });
-
-// src/session/ledger/execution-ledger.ts
-import fs7 from "node:fs";
-import path7 from "node:path";
-
-class ExecutionLedger {
-  workspaceRoot;
-  stateDir;
-  jsonlPath;
-  mdPath;
-  currentStepIndex = 0;
-  cachedEntries = [];
-  constructor(workspaceRoot) {
-    this.workspaceRoot = workspaceRoot;
-    this.stateDir = path7.join(this.workspaceRoot, ".cph", "state");
-    this.jsonlPath = path7.join(this.stateDir, "execution-ledger.jsonl");
-    this.mdPath = path7.join(this.stateDir, "execution-ledger.md");
-    this.initFromDisk();
-  }
-  getPaths() {
-    return {
-      jsonlPath: this.jsonlPath,
-      mdPath: this.mdPath
-    };
-  }
-  initFromDisk() {
-    try {
-      if (!fs7.existsSync(this.stateDir)) {
-        fs7.mkdirSync(this.stateDir, { recursive: true });
-      }
-      if (fs7.existsSync(this.jsonlPath)) {
-        const lines = fs7.readFileSync(this.jsonlPath, "utf8").split(`
-`).map((l) => l.trim()).filter(Boolean);
-        for (const line of lines) {
-          try {
-            const entry = JSON.parse(line);
-            this.cachedEntries.push(entry);
-            if (entry.stepIndex > this.currentStepIndex) {
-              this.currentStepIndex = entry.stepIndex;
-            }
-          } catch {}
-        }
-      }
-    } catch (err) {
-      console.error(`[ExecutionLedger] 初始化读取异常:`, err);
-    }
-  }
-  recordStep(input) {
-    this.currentStepIndex += 1;
-    const entry = {
-      ...input,
-      stepIndex: this.currentStepIndex,
-      timestamp: Date.now(),
-      briefSummary: (input.briefSummary || "").slice(0, 300)
-    };
-    this.cachedEntries.push(entry);
-    try {
-      if (!fs7.existsSync(this.stateDir)) {
-        fs7.mkdirSync(this.stateDir, { recursive: true });
-      }
-      fs7.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
-`, "utf8");
-      this.writeMarkdownView();
-    } catch (err) {
-      console.error(`[ExecutionLedger] 账本落盘告警:`, err);
-    }
-    return entry;
-  }
-  getLatestEntries(limit) {
-    if (limit && limit > 0) {
-      return this.cachedEntries.slice(-limit);
-    }
-    return [...this.cachedEntries];
-  }
-  formatMountHeader() {
-    const totalSteps = this.currentStepIndex;
-    const modifiedFiles = new Set;
-    let latestBadge = "NONE";
-    for (const e of this.cachedEntries) {
-      if (e.modifiedFiles && Array.isArray(e.modifiedFiles)) {
-        for (const f of e.modifiedFiles) {
-          modifiedFiles.add(f);
-        }
-      }
-      if (e.statusBadge) {
-        latestBadge = e.statusBadge;
-      }
-    }
-    const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
-    const relativeMdPath = path7.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
-    return [
-      `【系统物理执行账本已挂载】`,
-      `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
-      `- 累计物理操作: ${totalSteps} 步 | 核心变更文件: ${filesSummary}`,
-      `- 最新验证状态: ${latestBadge}`,
-      `- 查阅契约: 上述客观事实已由系统物理验证。如需回溯某一步的详细改动或命令输出，请使用 read_file / view_file 工具定向查看账本文件，通过调阅物理账本或关键指纹获取执行事实。`
-    ].join(`
-`);
-  }
-  writeMarkdownView() {
-    const header = [
-      `# CPH 物理执行账本 (Execution Ledger)`,
-      `- 更新时间: ${new Date().toISOString()}`,
-      `- 累计物理步骤: ${this.currentStepIndex} 步`,
-      ``,
-      `| 步数 | 角色 | 工具 | 目标/动作 | 状态 | 关键指标/结果 |`,
-      `|---|---|---|---|---|---|`
-    ];
-    const rows = this.cachedEntries.map((e) => {
-      const cleanTarget = (e.target || "-").replace(/\|/g, "\\|").slice(0, 50);
-      const cleanBadge = (e.statusBadge || e.briefSummary || "-").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").slice(0, 60);
-      return `| ${e.stepIndex} | ${e.role} | ${e.tool} | ${cleanTarget} | ${e.status} | ${cleanBadge} |`;
-    });
-    const content = header.concat(rows).join(`
-`) + `
-`;
-    fs7.writeFileSync(this.mdPath, content, "utf8");
-  }
-}
-var init_execution_ledger = () => {};
 
 // pi/node_modules/diff/libcjs/diff/base.js
 var require_base = __commonJS(function(exports) {
@@ -21520,6 +21389,7 @@ class ToolBridge {
   tools = new Map;
   onQuestion;
   ledger;
+  defaultContext;
   bashOperations;
   constructor(options) {
     if (typeof options === "string") {
@@ -21528,6 +21398,7 @@ class ToolBridge {
       this.cwd = options?.cwd ?? process.cwd();
       this.onQuestion = options?.onQuestion;
       this.ledger = options?.ledger;
+      this.defaultContext = options?.context;
     }
     const customTools = typeof options === "object" ? options?.tools : undefined;
     if (customTools) {
@@ -21569,7 +21440,7 @@ class ToolBridge {
   setLedger(ledger) {
     this.ledger = ledger;
   }
-  recordToLedger(toolName, target, canonicalTool, success, output) {
+  recordToLedger(toolName, target, canonicalTool, success, output, context) {
     if (!this.ledger || typeof this.ledger.recordStep !== "function")
       return;
     try {
@@ -21582,8 +21453,8 @@ class ToolBridge {
         }
       }
       this.ledger.recordStep({
-        role: "main",
-        sessionId: "main",
+        role: context?.role || this.defaultContext?.role || "main",
+        sessionId: context?.sessionId || this.defaultContext?.sessionId || "main",
         tool: toolName,
         target,
         status: success ? "SUCCESS" : "FAILURE",
@@ -21698,7 +21569,7 @@ class ToolBridge {
   persistLargeOutputIfNeeded(output, toolName) {
     return persistLargeOutputIfNeeded(output, this.cwd, toolName);
   }
-  async executeAction(action, signal) {
+  async executeAction(action, signal, context) {
     const rawActionName = action.tool ?? action.action ?? action.name ?? "unknown";
     let mapped;
     try {
@@ -21823,7 +21694,7 @@ ${rawResult.details.diff}`;
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
       const success = !isError;
-      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output);
+      this.recordToLedger(rawActionName, mapped.target, mapped.canonicalTool, success, output, context);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -21846,7 +21717,7 @@ ${rawResult.details.diff}`;
       let output = err instanceof Error ? err.message : String(err);
       output = sanitizeOutput(output);
       const persisted = this.persistLargeOutputIfNeeded(output, rawActionName);
-      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output);
+      this.recordToLedger(rawActionName, mapped?.target || "unknown", mapped?.canonicalTool || "unknown", false, output, context);
       const formatted = this.formatResult({
         toolName: rawActionName,
         target: mapped.target,
@@ -21993,35 +21864,33 @@ command: git status
 
 在本地完成初次探测并反馈 [TOOL_RESULT] 后，系统将在第二轮注入用户的正式业务需求与全量流程！`;
   }
-  static buildTurn2TaskPrompt(task, arg2, arg3 = "", toolName) {
-    let skillsSection = "";
-    let toolResult = "";
-    if (arg3 !== undefined && arg3 !== "") {
-      if (arg2.includes("Skill") || arg2.includes("技能") || arg2 === "") {
-        skillsSection = arg2;
-        toolResult = arg3;
-      } else if (arg3.includes("Skill") || arg3.includes("技能")) {
-        toolResult = arg2;
-        skillsSection = arg3;
-      } else {
-        skillsSection = arg2;
-        toolResult = arg3;
-      }
+  static buildTurn2TaskPrompt(optionsOrTask, toolResult, skillsSection = "", toolName) {
+    let finalTask = "";
+    let finalToolResult = "";
+    let finalSkillsSection = "";
+    let finalToolName;
+    if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
+      finalTask = optionsOrTask.task;
+      finalToolResult = optionsOrTask.toolResult;
+      finalSkillsSection = optionsOrTask.skillsSection || "";
+      finalToolName = optionsOrTask.toolName;
     } else {
-      toolResult = arg2;
-      skillsSection = "";
+      finalTask = optionsOrTask;
+      finalToolResult = toolResult ?? "";
+      finalSkillsSection = skillsSection ?? "";
+      finalToolName = toolName;
     }
-    const toolHeader = toolName ? `[TOOL_RESULT for ${toolName} - SUCCESS]:` : `[TOOL_RESULT - SUCCESS]:`;
+    const toolHeader = finalToolName ? `[TOOL_RESULT for ${finalToolName} - SUCCESS]:` : `[TOOL_RESULT - SUCCESS]:`;
     return `${toolHeader}
-${toolResult}
+${finalToolResult}
 
 【环境握手完成：本地工具与工作区已就绪】
-${skillsSection ? `【当前已激活的专业技能 (Skill)】
-${skillsSection}
+${finalSkillsSection ? `【当前已激活的专业技能 (Skill)】
+${finalSkillsSection}
 
 ` : ""}
 【用户正式需求】
-${task}
+${finalTask}
 
 【执行规则与推进要求】
 1. 深入分析工作区现状，按需使用 read_file、edit、write_file、run_command 开展工作；
@@ -22240,7 +22109,8 @@ class ResilientParser {
                 const role = rawRole === "coder" ? "coder" : "researcher";
                 return {
                   ...s,
-                  role
+                  role,
+                  stage: Number(s.stage) || 1
                 };
               });
             }
@@ -22283,7 +22153,7 @@ class ResilientParser {
       const cmdMatch = contentToScan.match(/(?:command|cmd)\s*:\s*([^\r\n]+)/i);
       const timeoutMatch = contentToScan.match(/timeout\s*:\s*(\d+)/i);
       const patternMatch = contentToScan.match(/pattern\s*:\s*([^\r\n]+)/i);
-      const contentMatch = contentToScan.match(/content\s*:\s*([\s\S]*)$/i);
+      const contentMatch = contentToScan.match(/content\s*:\s*([\s\S]*?)(?=\r?\n\s*(?:path|tool|file|action)\s*:|$)/i);
       const oldStrMatch = contentToScan.match(/(?:old_string|oldstring|old_text|oldText)\s*:\s*([\s\S]*?)(?=\n(?:new_string|newstring|new_text|newText|tool|path)\s*:|$)/i);
       const newStrMatch = contentToScan.match(/(?:new_string|newstring|new_text|newText)\s*:\s*([\s\S]*?)(?=\n(?:tool|path|old_string)\s*:|$)/i);
       const questionMatch = contentToScan.match(/(?:question|prompt|message)\s*:\s*([^\r\n]+)/i);
@@ -22364,7 +22234,8 @@ class ResilientParser {
               role,
               description: s.description ? String(s.description).trim() : "",
               prompt: s.prompt ? String(s.prompt).trim() : "",
-              maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined
+              maxTurns: typeof s.maxTurns === "number" ? s.maxTurns : undefined,
+              stage: Number(s.stage) || 1
             };
           });
         }
@@ -22379,6 +22250,7 @@ class ResilientParser {
       const descMatch = block.match(/description\s*:\s*([^\r\n]+)/i);
       const promptMatch = block.match(/prompt\s*:\s*([\s\S]*?)(?=\n\s*[a-zA-Z_]+\s*:|$)/i);
       const maxTurnsMatch = block.match(/maxTurns\s*:\s*(\d+)/i);
+      const stageMatch = block.match(/(?:^|\n)\s*stage\s*:\s*(\d+)/i);
       if (roleMatch || promptMatch) {
         let rawRole = roleMatch ? roleMatch[1].trim().toLowerCase() : "researcher";
         if (rawRole === "searcher")
@@ -22388,7 +22260,8 @@ class ResilientParser {
           role,
           description: descMatch ? descMatch[1].trim() : "",
           prompt: promptMatch ? promptMatch[1].trim() : "",
-          maxTurns: maxTurnsMatch ? parseInt(maxTurnsMatch[1], 10) : undefined
+          maxTurns: maxTurnsMatch ? parseInt(maxTurnsMatch[1], 10) : undefined,
+          stage: stageMatch ? parseInt(stageMatch[1], 10) : 1
         });
       }
     }
@@ -23186,6 +23059,12 @@ class TerminalLogger {
   originalStdoutWrite;
   originalStderrWrite;
   isHooked = false;
+  lastMatrixSummary;
+  static isTuiMatrixRedrawFrame(text) {
+    if (!text)
+      return false;
+    return text.includes("多会话子代理协同看板") || text.includes("Sub-Agent Matrix");
+  }
   static getInstance() {
     if (!TerminalLogger.instance) {
       TerminalLogger.instance = new TerminalLogger;
@@ -23254,6 +23133,7 @@ class TerminalLogger {
       return resolvedPath;
     }
     this.logFilePath = resolvedPath;
+    this.lastMatrixSummary = undefined;
     this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
     this.originalStderrWrite = process.stderr.write.bind(process.stderr);
     process.stdout.write = (chunk, encodingOrCb, cb) => {
@@ -23294,6 +23174,7 @@ class TerminalLogger {
     }
     this.isHooked = false;
     this.logFilePath = undefined;
+    this.lastMatrixSummary = undefined;
   }
   isEnabled() {
     return this.isHooked;
@@ -23307,10 +23188,42 @@ class TerminalLogger {
     try {
       const text = typeof chunk === "string" ? chunk : chunk?.toString("utf8") || "";
       const cleaned = stripAnsi2(text);
-      if (cleaned) {
-        this.stream.write(cleaned);
+      if (!cleaned)
+        return;
+      if (TerminalLogger.isTuiMatrixRedrawFrame(cleaned)) {
+        this.writeCompressedMatrixFrame(cleaned);
+        return;
       }
+      this.stream.write(cleaned);
     } catch {}
+  }
+  writeCompressedMatrixFrame(cleaned) {
+    if (!this.stream)
+      return;
+    const lines = cleaned.split(/\r?\n/);
+    const subagentEvents = [];
+    for (let i = 0;i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("│ [Sub-") || line.startsWith("│ [sub-")) {
+        let entry = line.replace(/^│\s*/, "");
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1].trim();
+          if (nextLine.startsWith("│") && (nextLine.includes("最新动作") || nextLine.includes("└─"))) {
+            const actionText = nextLine.replace(/^│\s*(?:└─\s*)?/, "");
+            entry += ` | ${actionText}`;
+            i++;
+          }
+        }
+        subagentEvents.push(entry);
+      }
+    }
+    const summary = subagentEvents.length > 0 ? `[Subagent Matrix Sync] ${subagentEvents.join(" ; ")}` : `[Subagent Matrix Sync] 协同看板状态刷新`;
+    if (this.lastMatrixSummary === summary) {
+      return;
+    }
+    this.lastMatrixSummary = summary;
+    this.stream.write(`${summary}
+`);
   }
 }
 
@@ -23906,6 +23819,127 @@ class SessionLineageTracker {
 // src/session/main-plan-snapshot.ts
 import fs8 from "node:fs";
 import path8 from "node:path";
+
+// src/session/ledger/execution-ledger.ts
+import fs7 from "node:fs";
+import path7 from "node:path";
+
+class ExecutionLedger {
+  workspaceRoot;
+  stateDir;
+  jsonlPath;
+  mdPath;
+  currentStepIndex = 0;
+  cachedEntries = [];
+  constructor(workspaceRoot) {
+    this.workspaceRoot = workspaceRoot;
+    this.stateDir = path7.join(this.workspaceRoot, ".cph", "state");
+    this.jsonlPath = path7.join(this.stateDir, "execution-ledger.jsonl");
+    this.mdPath = path7.join(this.stateDir, "execution-ledger.md");
+    this.initFromDisk();
+  }
+  getPaths() {
+    return {
+      jsonlPath: this.jsonlPath,
+      mdPath: this.mdPath
+    };
+  }
+  initFromDisk() {
+    try {
+      if (!fs7.existsSync(this.stateDir)) {
+        fs7.mkdirSync(this.stateDir, { recursive: true });
+      }
+      if (fs7.existsSync(this.jsonlPath)) {
+        const lines = fs7.readFileSync(this.jsonlPath, "utf8").split(`
+`).map((l) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            this.cachedEntries.push(entry);
+            if (entry.stepIndex > this.currentStepIndex) {
+              this.currentStepIndex = entry.stepIndex;
+            }
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.error(`[ExecutionLedger] 初始化读取异常:`, err);
+    }
+  }
+  recordStep(input) {
+    this.currentStepIndex += 1;
+    const entry = {
+      ...input,
+      stepIndex: this.currentStepIndex,
+      timestamp: Date.now(),
+      briefSummary: (input.briefSummary || "").slice(0, 300)
+    };
+    this.cachedEntries.push(entry);
+    try {
+      if (!fs7.existsSync(this.stateDir)) {
+        fs7.mkdirSync(this.stateDir, { recursive: true });
+      }
+      fs7.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
+`, "utf8");
+      this.writeMarkdownView();
+    } catch (err) {
+      console.error(`[ExecutionLedger] 账本落盘告警:`, err);
+    }
+    return entry;
+  }
+  getLatestEntries(limit) {
+    if (limit && limit > 0) {
+      return this.cachedEntries.slice(-limit);
+    }
+    return [...this.cachedEntries];
+  }
+  formatMountHeader() {
+    const totalSteps = this.currentStepIndex;
+    const modifiedFiles = new Set;
+    let latestBadge = "NONE";
+    for (const e of this.cachedEntries) {
+      if (e.modifiedFiles && Array.isArray(e.modifiedFiles)) {
+        for (const f of e.modifiedFiles) {
+          modifiedFiles.add(f);
+        }
+      }
+      if (e.statusBadge) {
+        latestBadge = e.statusBadge;
+      }
+    }
+    const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
+    const relativeMdPath = path7.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
+    return [
+      `【系统物理执行账本已挂载】`,
+      `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
+      `- 累计物理操作: ${totalSteps} 步 | 核心变更文件: ${filesSummary}`,
+      `- 最新验证状态: ${latestBadge}`,
+      `- 查阅契约: 上述客观事实已由系统物理验证。如需回溯某一步的详细改动或命令输出，请使用 read_file / view_file 工具定向查看账本文件，通过调阅物理账本或关键指纹获取执行事实。`
+    ].join(`
+`);
+  }
+  writeMarkdownView() {
+    const header = [
+      `# CPH 物理执行账本 (Execution Ledger)`,
+      `- 更新时间: ${new Date().toISOString()}`,
+      `- 累计物理步骤: ${this.currentStepIndex} 步`,
+      ``,
+      `| 步数 | 角色 | 工具 | 目标/动作 | 状态 | 关键指标/结果 |`,
+      `|---|---|---|---|---|---|`
+    ];
+    const rows = this.cachedEntries.map((e) => {
+      const cleanTarget = (e.target || "-").replace(/\|/g, "\\|").slice(0, 50);
+      const cleanBadge = (e.statusBadge || e.briefSummary || "-").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").slice(0, 60);
+      return `| ${e.stepIndex} | ${e.role} | ${e.tool} | ${cleanTarget} | ${e.status} | ${cleanBadge} |`;
+    });
+    const content = header.concat(rows).join(`
+`) + `
+`;
+    fs7.writeFileSync(this.mdPath, content, "utf8");
+  }
+}
+
+// src/session/main-plan-snapshot.ts
 function createMainPlanSnapshot(params) {
   return {
     snapshotId: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -23953,7 +23987,6 @@ function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountH
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
     try {
-      init_execution_ledger();
       const ledger = new ExecutionLedger(snapshot.workspaceRoot);
       mountHeader = ledger.formatMountHeader();
     } catch {}
@@ -24526,7 +24559,12 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
           } else {
-            currentPrompt = PromptBuilder.buildTurn2TaskPrompt(this.pendingTask, this.pendingSkills, toolResult.output, parsed.action.tool || toolResult.actionName);
+            currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
+              task: this.pendingTask,
+              toolResult: toolResult.output,
+              skillsSection: this.pendingSkills,
+              toolName: parsed.action.tool || toolResult.actionName
+            });
           }
         } else {
           if (uploadedAttachment) {
@@ -25723,7 +25761,20 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
 `);
     return formatted;
   }
-  formatSubagentMatrix(states) {
+  formatSubagentMatrixEvent(state) {
+    const rawId = state.id || "sub-unknown";
+    const displayId = rawId.replace(/^sub-/i, "Sub-");
+    const role = state.role || "unknown";
+    const status = state.status || "unknown";
+    const action = state.lastAction || "";
+    return `[Subagent Event] [${displayId}] [${role}] 状态: ${status} | 动作: ${action}
+`;
+  }
+  formatSubagentMatrix(states, compact = false) {
+    if (compact) {
+      return states.map((s) => this.formatSubagentMatrixEvent(s).trimEnd()).join(`
+`);
+    }
     const lines = [];
     lines.push(this.c.bold.cyan("┌─ [多会话子代理协同看板 (Sub-Agent Matrix)] " + "─".repeat(30)));
     for (let i = 0;i < states.length; i++) {
@@ -25733,8 +25784,8 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
       const subHandoffs = s.handoffCount ?? Math.max(0, hop - 1);
       const hopBadge = subHandoffs > 0 ? this.c.yellow(`[Hop ${hop} (接手 ${subHandoffs} 次)]`) : this.c.gray(`[Hop 1 (接手 0 次)]`);
       const statusBadge = s.status === "completed" ? this.c.green("✅ 已完成") : s.status === "failed" ? this.c.red("❌ 失败") : this.c.cyan("\uD83D\uDD04 运行中");
-      const durationSec = (s.durationMs / 1000).toFixed(1);
-      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${hopBadge} ${s.description.slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
+      const durationSec = ((s.durationMs ?? 0) / 1000).toFixed(1);
+      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${hopBadge} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
       if (s.lastAction) {
         lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
       }
@@ -25743,9 +25794,15 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
     return lines.join(`
 `);
   }
-  renderSubagentMatrix(states) {
-    this.writer(this.formatSubagentMatrix(states) + `
+  renderSubagentMatrix(states, compact = false) {
+    if (compact) {
+      for (const s of states) {
+        this.writer(this.formatSubagentMatrixEvent(s));
+      }
+    } else {
+      this.writer(this.formatSubagentMatrix(states) + `
 `);
+    }
   }
   formatMainVirtualizationBanner(sessionId, snapshotPath) {
     const border = "─".repeat(60);
@@ -25984,7 +26041,6 @@ class SessionManager {
 }
 
 // src/cli.ts
-init_execution_ledger();
 class CphPiCli {
   workspaceRoot;
   modelTone;
