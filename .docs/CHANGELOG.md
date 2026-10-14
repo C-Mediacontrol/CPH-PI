@@ -4,7 +4,79 @@
 
 ---
 
-## [Unreleased] - 2026-10-14: 安全整改流水线实施 (Safe Remediation Pipeline: CR-1 ~ CR-5)
+## [2026-10-14] 对抗性代码审查安全整改与拓扑解耦 (Adversarial Remediation & Decoupling: CR-1 ~ CR-4)
+
+### 概述
+基于对 `CPH-PI` 全量代码库的对抗性代码审查（`FINAL-AUDIT-REPORT.md`，8 组初审与复审子代理闭环穿透），全面执行方案 A 安全整改流水线。严格遵循《AGENTS.md》开发与治理宪章（Harness 纯粹中立、正向引导、黑盒抽象、持久化与视口正交分层），通过四阶段 TDD 红绿循环彻底拔除 5 大系统级矛盾，实现全工程 **572 项单元与集成测试 100% 绿灯全通**。
+
+### 变更分类明细
+
+#### 1. CR-1: 固化底层协议解析、强类型契约与账本保真度 (P0/P1 契约固化)
+- **问题根因**:
+  - `ResilientParser` 在解析 `invoke_subagent` 动作块时遗漏了 `stage` 属性提取，导致模型规划的串行多阶段任务全部降级为 Stage 1 并发抢跑；YAML `content:` 正则贪婪匹配到末尾，吞噬位于其后的 `path:` 等元数据；
+  - `PromptBuilder.buildTurn2TaskPrompt` 依赖 `includes("Skill")` 启发式嗅探推测参数位置，当工具输出或报错包含 "Skill" 时导致工具结果与技能文档发生灾难性反转；
+  - `main-plan-snapshot.ts` 动态调用 CommonJS `require` 挂载执行账本，在纯 Node.js ESM 环境下抛 `ReferenceError` 并静默丢失物理账本挂载头；
+  - `ToolBridge.recordToLedger` 内部硬编码 `role: "main", sessionId: "main"`，抹杀多子代理责任审计。
+- **改动详情**:
+  - `src/protocol/resilient-parser.ts`: JSON 与 YAML 解析分支中完整提取 `stage: Number(s.stage) || 1`；YAML `content:` 正则增加同级前瞻断言 `(?=\r?\n\s*(?:path|tool|file|action)\s*:|$)`，杜绝贪婪吞噬；
+  - `src/protocol/prompt-builder.ts`: 引入强类型配置接口 `Turn2TaskPromptOptions`，重构 `buildTurn2TaskPrompt` 彻底废除字符串包含嗅探，强类型锁定参数槽位并兼容旧签名；
+  - `src/session/main-plan-snapshot.ts`: 改用顶层静态导入 `import { ExecutionLedger }`，消除动态 `require` 运行时风险；
+  - `src/protocol/tool-bridge.ts`: `recordToLedger` 接收外部 `context?: { role?: string; sessionId?: string }` 并透传至账本。
+- **新增特征测试**:
+  - `tests/protocol/subagent-parser-stage.test.ts`
+  - `tests/protocol/prompt-builder-order.test.ts`
+  - `tests/protocol/yaml-content-lookahead.test.ts`
+  - `tests/session/snapshot-static-import.test.ts`
+
+#### 2. CR-2: 调度并发容灾加固、限流误杀拦截与无锁竞态防护 (P0/P1 调度加固)
+- **问题根因**:
+  - `Orchestrator.isRateLimitResponseText` 粗暴采用 `lower.includes("429")`，将探讨 429 错误码、限流策略或包含 "Line 429" 的普通技术长文误判为平台限流强行自杀并冻结健康账号 3 分钟；
+  - `SubagentRunner` 在容量计算中使用 `0 || poolStatus.length`，当全池账号限流时（长度为 0，JS 假值）错误回退为总池大小，反而在限流期以最大并发冲击；
+  - `AccountPool.getNextAvailableToken` 在异步 `await getAccessToken` 期间无锁竞态，多个并发 worker 瞬间挤占同一账号；
+  - `SessionManager.rebuildIndex` 自愈重建索引时遗漏了 `generation` 与 `handoffCount` 拷贝。
+- **改动详情**:
+  - `src/agent/orchestrator.ts`: 废除无边界的 `lower.includes("429")`，引入超 300 字符长文熔断守卫（判定为分析长文），并限定仅在行首/状态码错误信令与特定报错行触发；
+  - `src/agent/subagent-runner.ts`: 修复容量计算，当全部可用账号限流时平滑降级为单并发保底执行（1），杜绝假值溢出；
+  - `src/auth/account-pool.ts`: 引入 `inFlightLeases: Set<string>` 租约隔离，在异步 I/O 挂起前原子标记租约并立即推进 `this.currentIndex`，并在 `finally` 块中严格释放，彻底消除并发挤占；
+  - `src/session/session-manager.ts`: `rebuildIndex` 补齐 `generation` 与 `handoffCount` 拷贝，保全代际关系。
+- **新增特征测试**:
+  - `tests/agent/ratelimit-text-filter.test.ts`
+  - `tests/agent/subagent-capacity-zero.test.ts`
+  - `tests/auth/account-pool-concurrency-lease.test.ts`
+  - `tests/session/session-manager-rebuild-metadata.test.ts`
+
+#### 3. CR-3: 彻底清除违宪特化补丁，恢复 Harness 纯粹中立 (P1 宪章归正)
+- **问题根因**:
+  - `orchestrator.ts` 硬编码特化 .NET SDK / winget / 0x80070005 异常诊断，并在交接文档中强行注入“切勿盲目重复调用 winget”负面禁止词，严重违反《AGENTS.md》准则 1（Harness 纯粹中立）、准则 3（正向引导）与准则 6（黑盒抽象），在非 .NET 项目中引发严重模型幻觉；
+  - `ToolBridge` 通用工具桥接层无差别抓取测试状态徽章，任意含 "password"、"bypass" 等输出均被误抓为测试通过；
+  - 两轮滑动微压实逻辑存在死代码，且未在启用时回填替换 `history`。
+- **改动详情**:
+  - `src/agent/orchestrator.ts`: 彻底物理删除针对 .NET/winget 的特化异常诊断与负面词指引，保持纯粹通用的客观报错呈现与模型思考分析；在滑动压实分支中补充 `history.splice(...)` 真实回填；
+  - `src/protocol/tool-bridge.ts`: 限定测试徽章嗅探仅在命令目标显式属于测试框架（`test|spec|jest|vitest|pytest|bun test|npm test` 等）时触发，并采用精确词边界，杜绝抽象泄漏与字串误抓。
+- **新增特征测试**:
+  - `tests/agent/orchestrator-governance-cleanliness.test.ts`
+  - `tests/protocol/tool-bridge-badge-sniffing.test.ts`
+
+#### 4. CR-4: 上帝类职责拓扑解耦与代码柔道精炼 (P2 架构重构)
+- **问题根因**:
+  - `src/cli.ts` (2,122 行) 上帝单体集聚了 6 大职责，且外部暴力篡改 `orchestrator.isHandshakePending` 内部状态；
+  - `tui-renderer.ts` 视图类混合了 140 行复杂的词级 Intra-line Word Diff 比较与高亮算法。
+- **改动详情**:
+  - `src/cli/args.ts`: 抽离 `ParsedCliArgs`、`parseCliArgs`、`getHelpText`，严格完整保留 `-t`（数字超时 vs 任务描述）多态重载与 `--debug [path]` 可选值特性，并在 `src/cli.ts` 中 re-export 确保全部既有单测 100% 零修改零破坏；
+  - `src/cli/commands.ts`: 抽离 350+ 行 Slash 命令表与命令分发器，完善 `/clear` 与 `/audit` 指令；
+  - `src/ui/diff-highlighter.ts`: 封装独立 `DiffHighlighter` 类，收敛词级 Diff 算法，`tui-renderer.ts` 瘦身 140 行并委托调用；
+  - `src/agent/orchestrator.ts`: 封装显式自治方法 `completeHandshake()` 与 `setHandshakePending(pending: boolean)`，彻底消除外部暴力篡改。
+- **新增特征测试**:
+  - `tests/cli/args-polymorphism.test.ts`
+  - `tests/ui/diff-highlighter.test.ts`
+
+### 验证指标
+- **单元与集成测试**: **84 个测试文件，572 项用例全部绿色通过（2,451 个断言），100% 绿灯**。
+- **打包与编译验证**: `bun run build:package` 成功构建 `package/bin/cph-pi.js` (0.95 MB) 与 `check-accounts.js` (59.65 KB)，744 个模块零报错打包。
+
+---
+
+## [Baseline] - 2026-10-14: 安全整改流水线实施 (Safe Remediation Pipeline: CR-1 ~ CR-5)
 
 ### 概述
 基于多代理对抗性代码审查（`FINAL-AUDIT-REPORT.md`）对 `cph-terminal-2026-10-13T13-00-34.log` 运行日志暴露的 5 项确凿核心缺陷进行全面安全整改。通过 TDD 红绿循环（特征测试锁死缺陷 ➔ 源码最小化修复 ➔ 全量回归），实现 508 项单元与集成测试 100% 绿灯通行。
