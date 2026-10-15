@@ -13,6 +13,8 @@ import {
   type Tool,
 } from "../../pi/packages/coding-agent/src/core/tools/index.ts";
 
+import { FilePorter } from "../transport/file-porter.ts";
+
 /**
  * Supported Copilot action tool names and aliases.
  */
@@ -31,9 +33,11 @@ export type CopilotActionName =
   | "ask_question"
   | "question"
   | "invoke_subagent"
-  | "subagent";
+  | "subagent"
+  | "file_porter"
+  | "execute_file";
 
-export type CanonicalToolName = "read" | "edit" | "write" | "bash" | "question";
+export type CanonicalToolName = "read" | "edit" | "write" | "bash" | "question" | "file_porter";
 
 export interface SubagentTaskSpec {
   role: "researcher" | "searcher" | "coder";
@@ -83,6 +87,9 @@ export interface CopilotAction {
   question?: string;
   prompt?: string;
   options?: string[];
+  fileName?: string;
+  downloadUrl?: string;
+  autoExecute?: boolean;
   [key: string]: any;
 }
 
@@ -117,12 +124,19 @@ export interface MappedQuestionArgs {
   options?: string[];
 }
 
+export interface MappedFilePorterArgs {
+  fileName: string;
+  downloadUrl?: string;
+  autoExecute?: boolean;
+}
+
 export type MappedToolArgs =
   | MappedReadArgs
   | MappedEditArgs
   | MappedWriteArgs
   | MappedBashArgs
-  | MappedQuestionArgs;
+  | MappedQuestionArgs
+  | MappedFilePorterArgs;
 
 export interface MappedAction {
   canonicalTool: CanonicalToolName;
@@ -635,6 +649,26 @@ export class ToolBridge {
       };
     }
 
+    // 6. file_porter / execute_file / porter
+    if (toolName === "file_porter" || toolName === "execute_file" || toolName === "porter") {
+      const fileName = action.fileName ?? action.file ?? action.name ?? action.path ?? "downloaded_file";
+      const downloadUrl = action.downloadUrl ?? action.url ?? action.href;
+      const autoExecute = action.autoExecute ?? (/\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(fileName));
+
+      const args: MappedFilePorterArgs = {
+        fileName,
+        downloadUrl,
+        autoExecute,
+      };
+
+      return {
+        canonicalTool: "file_porter",
+        target: fileName,
+        args,
+        originalAction: action,
+      };
+    }
+
     throw new Error(`Unsupported Copilot action: ${rawToolName}`);
   }
 
@@ -734,6 +768,51 @@ export class ToolBridge {
           formatted,
           mappedArgs: mapped.args,
           persistedFile: persisted.persistedFile,
+        };
+      }
+    }
+
+    // File porter action handling
+    if (mapped.canonicalTool === "file_porter") {
+      const porterArgs = mapped.args as MappedFilePorterArgs;
+      try {
+        const porter = new FilePorter({ cwd: this.cwd });
+        const res = await porter.saveAndExecute({
+          fileName: porterArgs.fileName,
+          downloadUrl: porterArgs.downloadUrl,
+          content: action.content,
+          autoExecute: porterArgs.autoExecute,
+        });
+
+        const success = res.exitCode === undefined || res.exitCode === 0;
+        const output = sanitizeOutput(res.formattedOutput);
+        this.recordToLedger(rawActionName, mapped.target, "file_porter", success, output, context);
+
+        return {
+          actionName: rawActionName,
+          piToolName: "file_porter",
+          target: mapped.target,
+          success,
+          output,
+          rawOutput: res.stdout || res.stderr || "",
+          formatted: output,
+          mappedArgs: mapped.args,
+        };
+      } catch (err: any) {
+        let output = err instanceof Error ? err.message : String(err);
+        output = sanitizeOutput(output);
+        const formatted = `【TOOL_RESULT: file_porter (${mapped.target}) - FAILED】\n搬运失败: ${output}\n【END_TOOL_RESULT】`;
+        this.recordToLedger(rawActionName, mapped.target, "file_porter", false, output, context);
+
+        return {
+          actionName: rawActionName,
+          piToolName: "file_porter",
+          target: mapped.target,
+          success: false,
+          output: formatted,
+          rawOutput: output,
+          formatted,
+          mappedArgs: mapped.args,
         };
       }
     }

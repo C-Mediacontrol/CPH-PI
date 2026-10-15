@@ -36,11 +36,14 @@ tool: read_file
 path: <文件路径>
 ```
 
-3. 写入正式报告或交接文档（用于落盘正式调研报告或持久化交接文档）：
+3. 原生文件生成与代码模式 (Native File Generation & Code Mode)：
+当需要编写自动化调研探查脚本、多源数据统计脚本，或产出长篇正式分析报告/架构文档时，直接以文件形式生成并输出下载链接（如 `下载 inspect_deps.py` 或 `下载 architecture_review.md`）。外部 Harness 充当纯粹的搬运工（File Porter），秒级拉取该链接落盘至指定路径或调起解释器执行，将完整结果送回供你继续分析。
+
+4. 写入精简报告或配置（适用于短小摘要或配置文件）：
 ```action
 tool: write_file
 path: <文件路径>
-content: <完整正式报告或交接内容>
+content: <精简内容>
 ```
 
 ## 终局交付完成 (FINAL_ANSWER)

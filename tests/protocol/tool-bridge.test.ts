@@ -96,6 +96,16 @@ describe("ToolBridge Unit Tests", () => {
       expect(a3.canonicalTool).toBe("question");
     });
 
+    it("should map file_porter, execute_file, and porter to file_porter tool", () => {
+      const a1 = bridge.mapAction({ tool: "file_porter", file: "test.py" });
+      const a2 = bridge.mapAction({ tool: "execute_file", file: "test.py" });
+      const a3 = bridge.mapAction({ tool: "porter", file: "test.py" });
+
+      expect(a1.canonicalTool).toBe("file_porter");
+      expect(a2.canonicalTool).toBe("file_porter");
+      expect(a3.canonicalTool).toBe("file_porter");
+    });
+
     it("should throw for unsupported tools", () => {
       expect(() => {
         bridge.mapAction({ tool: "unknown_magic_tool" });
@@ -436,6 +446,21 @@ describe("ToolBridge Unit Tests", () => {
       expect(calledWith).toEqual({ question: "Select approach:", options: ["Option A", "Option B"] });
       expect(result.output).toBe("User picked Option A");
       expect(result.formatted).toContain("【TOOL_RESULT: ask_question (Select approach:) - SUCCESS】");
+    });
+
+    it("should execute file_porter action to download and execute Python script", async () => {
+      const script = `print("file_porter_bridge_test_ok")`;
+      const result = await bridge.executeAction({
+        tool: "file_porter",
+        file: "bridge_test.py",
+        content: script,
+        autoExecute: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.piToolName).toBe("file_porter");
+      expect(result.output).toContain("file_porter_bridge_test_ok");
+      expect(result.formatted).toContain("【TOOL_RESULT: file_porter (bridge_test.py) - SUCCESS】");
     });
   });
 

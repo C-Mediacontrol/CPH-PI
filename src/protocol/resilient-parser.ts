@@ -120,6 +120,57 @@ export class ResilientParser {
       };
     }
 
+    // 2c. Check for Native File Generation / Download cards (File Porter pattern)
+    // HTML anchor: <a ... href="url" download="filename" ...> or <a ... download="filename" href="url" ...>
+    // or Markdown: [下载 filename](blob:url) or [filename](blob:url)
+    const anchorMatch =
+      trimmed.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*download=["']([^"']+)["'][^>]*>/i) ||
+      trimmed.match(/<a\s+[^>]*download=["']([^"']+)["'][^>]*href=["']([^"']+)["'][^>]*>/i);
+
+    let detectedFileName: string | null = null;
+    let detectedUrl: string | null = null;
+
+    if (anchorMatch) {
+      const p1 = anchorMatch[1];
+      const p2 = anchorMatch[2];
+      if (p1.startsWith("blob:") || p1.startsWith("http")) {
+        detectedUrl = p1;
+        detectedFileName = p2;
+      } else if (p2.startsWith("blob:") || p2.startsWith("http")) {
+        detectedUrl = p2;
+        detectedFileName = p1;
+      }
+    } else {
+      // Check Markdown link: [下载 filename.ext](blob:url) or [filename.ext](blob:url)
+      const mdLinkMatch = trimmed.match(
+        /\[(?:下载\s*)?([a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+)\]\((blob:[^\)\s]+|https?:\/\/[^\)\s]+)\)/i
+      );
+      if (mdLinkMatch) {
+        detectedFileName = mdLinkMatch[1];
+        detectedUrl = mdLinkMatch[2];
+      }
+    }
+
+    if (detectedFileName && detectedUrl) {
+      const isExecutable = /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(detectedFileName);
+      const thought = trimmed
+        .split(/<a|\[(?:下载\s*)?[a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+\]/i)[0]
+        .replace(/^THOUGHT:\s*/i, "")
+        .trim();
+
+      return {
+        type: "action",
+        thought,
+        action: {
+          tool: "file_porter",
+          fileName: detectedFileName,
+          downloadUrl: detectedUrl,
+          autoExecute: isExecutable,
+          raw: trimmed,
+        },
+      };
+    }
+
     // 3. Fallback: Invalid Chatter
     return {
       type: "invalid_chatter",
@@ -156,9 +207,15 @@ export class ResilientParser {
                 };
               });
             }
+            const fileName = obj.fileName || obj.filename || obj.file || (tool === "file_porter" ? (obj.name || obj.path) : undefined);
+            const downloadUrl = obj.downloadUrl || obj.download_url || obj.url || obj.href;
+            const autoExecute = obj.autoExecute ?? obj.auto_execute ?? (fileName && typeof fileName === "string" ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(fileName) : undefined);
             return {
               ...obj,
               tool,
+              ...(fileName ? { fileName } : {}),
+              ...(downloadUrl ? { downloadUrl } : {}),
+              ...(autoExecute !== undefined ? { autoExecute } : {}),
               ...(subagents ? { subagents } : {}),
             };
           }
@@ -198,6 +255,9 @@ export class ResilientParser {
         };
       }
       const pathMatch = contentToScan.match(/(?:path|filePath|file)\s*:\s*([^\r\n]+)/i);
+      const fileNameMatch = contentToScan.match(/(?:fileName|filename|file|name)\s*:\s*([^\r\n]+)/i);
+      const urlMatch = contentToScan.match(/(?:downloadUrl|download_url|url|href)\s*:\s*([^\r\n]+)/i);
+      const autoExecMatch = contentToScan.match(/(?:autoExecute|auto_execute)\s*:\s*(true|false)/i);
       const startLineMatch = contentToScan.match(
         /(?:start_line|startLine|offset)\s*:\s*(\d+)/i
       );
@@ -236,9 +296,21 @@ export class ResilientParser {
         }
       }
 
+      const extractedFileName = fileNameMatch
+        ? fileNameMatch[1].trim().replace(/^['"]|['"]$/g, "")
+        : undefined;
+      const extractedUrl = urlMatch
+        ? urlMatch[1].trim().replace(/^['"]|['"]$/g, "")
+        : undefined;
+      const extractedAutoExec = autoExecMatch
+        ? autoExecMatch[1].toLowerCase() === "true"
+        : (extractedFileName ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(extractedFileName) : undefined);
+
       // If we found any relevant fields, or this is a parameterless tool, return it
       const hasFields =
         pathMatch ||
+        fileNameMatch ||
+        urlMatch ||
         startLineMatch ||
         cmdMatch ||
         contentMatch ||
@@ -252,6 +324,9 @@ export class ResilientParser {
           path: pathMatch
             ? pathMatch[1].trim().replace(/^['"]|['"]$/g, "")
             : undefined,
+          fileName: extractedFileName,
+          downloadUrl: extractedUrl,
+          autoExecute: extractedAutoExec,
           start_line: startLineMatch ? parseInt(startLineMatch[1], 10) : undefined,
           end_line: endLineMatch ? parseInt(endLineMatch[1], 10) : undefined,
           limit: limitMatch ? parseInt(limitMatch[1], 10) : undefined,
@@ -383,6 +458,10 @@ export class ResilientParser {
       case "invoke_subagent":
       case "subagent":
         return "invoke_subagent";
+      case "file_porter":
+      case "execute_file":
+      case "porter":
+        return "file_porter";
       default:
         return null;
     }
