@@ -10376,8 +10376,8 @@ var require_libcjs = __commonJS(function(exports) {
 
 // src/cli.ts
 import readline from "node:readline";
-import path12 from "node:path";
-import fs12 from "node:fs";
+import path14 from "node:path";
+import fs14 from "node:fs";
 
 // pi/node_modules/chalk/source/utilities.js
 function stringReplaceAll(string, substring, postfix) {
@@ -10935,8 +10935,8 @@ var source_default = chalk;
 
 // src/agent/orchestrator.ts
 import crypto5 from "crypto";
-import fs9 from "fs";
-import path9 from "path";
+import fs10 from "fs";
+import path10 from "path";
 import { execSync as execSync2 } from "child_process";
 
 // src/auth/token-manager.ts
@@ -11907,13 +11907,15 @@ class SubstrateUploader {
   static DEFAULT_UPLOAD_URL = "https://substrate.office.com/m365Copilot/UploadFile";
   static DEFAULT_GRAPH_URL = "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads";
   static spoBase64Cache = new Map;
-  static async resolveSpoBase64(graphAccessToken) {
+  static async resolveSpoBase64(graphAccessToken, customBaseUrl) {
     if (this.spoBase64Cache.has(graphAccessToken)) {
       return this.spoBase64Cache.get(graphAccessToken);
     }
     try {
-      const res = await fetch("https://graph.microsoft.com/v1.0/me/drive/list?$select=id,name,parentReference", {
-        headers: { Authorization: `Bearer ${graphAccessToken}` }
+      const listUrl = customBaseUrl ? `${customBaseUrl}/list?$select=id,name,parentReference` : "https://graph.microsoft.com/v1.0/me/drive/list?$select=id,name,parentReference";
+      const res = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${graphAccessToken}` },
+        signal: AbortSignal.timeout(2000)
       });
       if (res.ok) {
         const listData = await res.json();
@@ -11975,9 +11977,17 @@ class SubstrateUploader {
     };
   }
   static async uploadDocumentToOneDrive(graphAccessToken, content, fileName, customBaseUrl) {
-    const encodedName = encodeURIComponent(fileName);
-    const rootUrl = customBaseUrl || this.DEFAULT_GRAPH_URL;
-    const url = customBaseUrl ? `${customBaseUrl}/${encodedName}:/content` : `${rootUrl}:/${encodedName}:/content`;
+    let actualContent = content;
+    let actualFileName = fileName;
+    if ((content.endsWith(".md") || content.endsWith(".txt") || content.startsWith("handoff-")) && !content.includes(`
+`) && (fileName.includes(`
+`) || fileName.length > 255)) {
+      actualContent = fileName;
+      actualFileName = content;
+    }
+    const encodedName = encodeURIComponent(actualFileName);
+    const rootUrl = customBaseUrl && customBaseUrl.startsWith("http") ? customBaseUrl : this.DEFAULT_GRAPH_URL;
+    const url = customBaseUrl && customBaseUrl.startsWith("http") ? `${customBaseUrl}/${encodedName}:/content` : `${rootUrl}:/${encodedName}:/content`;
     const res = await fetch(url, {
       method: "PUT",
       headers: {
@@ -11996,7 +12006,7 @@ class SubstrateUploader {
     const finalName = data.name || fileName;
     const driveId = data.parentReference?.driveId || "";
     const ext = finalName.split(".").pop() || "txt";
-    const spoBase64 = await this.resolveSpoBase64(graphAccessToken);
+    const spoBase64 = await this.resolveSpoBase64(graphAccessToken, customBaseUrl);
     const annotationId = spoBase64 ? `SPO_${spoBase64}_${data.id}` : data.id;
     const annotation = {
       id: annotationId,
@@ -12023,8 +12033,8 @@ class SubstrateUploader {
 }
 
 // src/protocol/tool-bridge.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path4 from "node:path";
 import crypto3 from "node:crypto";
 
 // pi/packages/coding-agent/src/core/tools/bash.ts
@@ -21239,8 +21249,198 @@ function createCodingTools(cwd, options) {
   ];
 }
 
+// src/transport/file-porter.ts
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { spawn as spawn3 } from "node:child_process";
+
+class FilePorter {
+  cwd;
+  scratchDir;
+  cdpClient;
+  timeoutMs;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.scratchDir = options.scratchDir || path3.join(this.cwd, ".cph", "scratch");
+    this.cdpClient = options.cdpClient;
+    this.timeoutMs = options.timeoutMs ?? 60000;
+  }
+  detectRuntime(fileName) {
+    const ext = path3.extname(fileName).toLowerCase();
+    switch (ext) {
+      case ".py":
+        return "python";
+      case ".js":
+      case ".mjs":
+      case ".cjs":
+        return "node";
+      case ".ts":
+      case ".mts":
+        return "bun";
+      case ".ps1":
+        return "powershell";
+      case ".sh":
+      case ".bash":
+        return "bash";
+      default:
+        return;
+    }
+  }
+  resolveDestination(fileName, customPath) {
+    const dest = customPath ? path3.isAbsolute(customPath) ? customPath : path3.join(this.cwd, customPath) : path3.join(this.scratchDir, fileName);
+    const dir = path3.dirname(dest);
+    if (!fs3.existsSync(dir)) {
+      fs3.mkdirSync(dir, { recursive: true });
+    }
+    return dest;
+  }
+  async saveAndExecute(params) {
+    const fileName = path3.basename(params.fileName || "downloaded_file.txt");
+    const filePath = this.resolveDestination(fileName, params.destinationPath);
+    let content = params.content;
+    if (content === undefined && params.downloadUrl) {
+      if (params.downloadUrl.startsWith("blob:") && this.cdpClient) {
+        const evalRes = await this.cdpClient.evaluate(`(async () => { const r = await fetch("${params.downloadUrl}"); return await r.text(); })()`);
+        content = typeof evalRes === "string" ? evalRes : String(evalRes?.result?.value ?? evalRes?.value ?? "");
+      } else {
+        const res = await fetch(params.downloadUrl);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch file from ${params.downloadUrl} (${res.status})`);
+        }
+        content = await res.text();
+      }
+    }
+    if (content === undefined) {
+      content = "";
+    }
+    fs3.writeFileSync(filePath, content, "utf-8");
+    const runtime = this.detectRuntime(fileName);
+    const shouldExecute = params.autoExecute ?? runtime !== undefined;
+    if (!shouldExecute || !runtime) {
+      return {
+        fileName,
+        filePath,
+        downloaded: true,
+        executed: false,
+        formattedOutput: `【TOOL_RESULT: file_porter (${fileName}) - SUCCESS】
+文件已通过 File Porter 成功搬运并落盘至：${path3.relative(this.cwd, filePath) || filePath}
+【END_TOOL_RESULT】`
+      };
+    }
+    try {
+      const execRes = await this.runScript(filePath, runtime);
+      const isSuccess = execRes.exitCode === 0;
+      const statusText = isSuccess ? "SUCCESS" : "FAILED";
+      let output = `文件已搬运落盘至：${path3.relative(this.cwd, filePath) || filePath}
+宿主执行环境: ${runtime}
+`;
+      if (execRes.stdout) {
+        output += `
+[stdout]
+${execRes.stdout.trim()}`;
+      }
+      if (execRes.stderr) {
+        output += `
+[stderr]
+${execRes.stderr.trim()}`;
+      }
+      if (!execRes.stdout && !execRes.stderr) {
+        output += `
+(进程执行完毕，无输出)`;
+      }
+      return {
+        fileName,
+        filePath,
+        downloaded: true,
+        executed: true,
+        runtime,
+        exitCode: execRes.exitCode,
+        stdout: execRes.stdout,
+        stderr: execRes.stderr,
+        formattedOutput: `【TOOL_RESULT: file_porter (${fileName}) - ${statusText}】
+${output.trim()}
+【END_TOOL_RESULT】`
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return {
+        fileName,
+        filePath,
+        downloaded: true,
+        executed: true,
+        runtime,
+        exitCode: 1,
+        error: errMsg,
+        formattedOutput: `【TOOL_RESULT: file_porter (${fileName}) - FAILED】
+执行失败: ${errMsg}
+【END_TOOL_RESULT】`
+      };
+    }
+  }
+  runScript(filePath, runtime) {
+    return new Promise((resolve, reject) => {
+      let command = runtime;
+      let args = [filePath];
+      if (runtime === "powershell") {
+        command = "powershell.exe";
+        args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filePath];
+      } else if (runtime === "python") {
+        command = process.platform === "win32" ? "python.exe" : "python3";
+        args = [filePath];
+      } else if (runtime === "node") {
+        command = "node";
+        args = [filePath];
+      } else if (runtime === "bun") {
+        command = process.platform === "win32" ? "bun.exe" : "bun";
+        args = ["run", filePath];
+      }
+      const proc = spawn3(command, args, {
+        cwd: this.cwd,
+        env: process.env,
+        shell: false
+      });
+      let stdout = "";
+      let stderr = "";
+      let killed = false;
+      const timer = setTimeout(() => {
+        killed = true;
+        proc.kill();
+        reject(new Error(`Script execution timed out after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+      proc.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      proc.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        if (runtime === "python" && command === "python.exe") {
+          const fallback = spawn3("python", [filePath], { cwd: this.cwd });
+          let fbOut = "";
+          let fbErr = "";
+          fallback.stdout.on("data", (c) => fbOut += c.toString());
+          fallback.stderr.on("data", (c) => fbErr += c.toString());
+          fallback.on("close", (code) => {
+            resolve({ exitCode: code ?? 0, stdout: fbOut, stderr: fbErr });
+          });
+          fallback.on("error", (e) => reject(e));
+          return;
+        }
+        reject(err);
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (!killed) {
+          resolve({ exitCode: code ?? 0, stdout, stderr });
+        }
+      });
+    });
+  }
+}
+
 // src/protocol/tool-bridge.ts
-var MAX_READ_SLICE_LINES = 100;
+var MAX_READ_FILE_BYTES_CIRCUIT_BREAKER = 1024 * 1024;
 var MAX_INLINE_OUTPUT_CHARS = 3000;
 var MAX_INLINE_OUTPUT_LINES = 50;
 var PREVIEW_HEAD_LINES = 20;
@@ -21255,14 +21455,14 @@ function persistLargeOutputIfNeeded(output, workspaceRoot, toolName = "tool") {
   if (!isOverChars && !isOverLines) {
     return { displayOutput: output };
   }
-  const artifactsDir = path3.join(workspaceRoot, ".cph", "artifacts");
-  fs3.mkdirSync(artifactsDir, { recursive: true });
+  const artifactsDir = path4.join(workspaceRoot, ".cph", "artifacts");
+  fs4.mkdirSync(artifactsDir, { recursive: true });
   const timestamp = Date.now();
   const hash = crypto3.createHash("sha256").update(output).digest("hex").slice(0, 8);
   const fileName = `tool-output-${timestamp}-${hash}.log`;
-  const absolutePath = path3.join(artifactsDir, fileName);
-  fs3.writeFileSync(absolutePath, output, "utf-8");
-  const relPath = path3.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
+  const absolutePath = path4.join(artifactsDir, fileName);
+  fs4.writeFileSync(absolutePath, output, "utf-8");
+  const relPath = path4.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
   let headLines;
   let tailLines;
   let omittedLines;
@@ -21485,22 +21685,21 @@ class ToolBridge {
       const path = action.path ?? action.filePath ?? action.file ?? "";
       const rawStart = action.start_line ?? action.offset ?? action.startLine ?? 1;
       const offset = Math.max(1, Number(rawStart) || 1);
-      let requestedLines;
+      let limit = undefined;
       const rawEnd = action.end_line ?? action.endLine;
       if (rawEnd !== undefined) {
         const endLine = Number(rawEnd);
-        requestedLines = endLine >= offset ? endLine - offset + 1 : 1;
+        limit = endLine >= offset ? endLine - offset + 1 : 1;
       } else if (action.limit !== undefined || action.lines !== undefined) {
         const rawLimit = Number(action.limit ?? action.lines);
-        requestedLines = rawLimit > 0 ? rawLimit : MAX_READ_SLICE_LINES;
-      } else {
-        requestedLines = MAX_READ_SLICE_LINES;
+        if (rawLimit > 0) {
+          limit = rawLimit;
+        }
       }
-      const limit = Math.min(requestedLines, MAX_READ_SLICE_LINES);
       const args = {
         path,
         offset,
-        limit
+        ...limit !== undefined ? { limit } : {}
       };
       return {
         canonicalTool: "read",
@@ -21571,6 +21770,22 @@ class ToolBridge {
       return {
         canonicalTool: "question",
         target: question,
+        args,
+        originalAction: action
+      };
+    }
+    if (toolName === "file_porter" || toolName === "execute_file" || toolName === "porter") {
+      const fileName = action.fileName ?? action.file ?? action.name ?? action.path ?? "downloaded_file";
+      const downloadUrl = action.downloadUrl ?? action.url ?? action.href;
+      const autoExecute = action.autoExecute ?? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(fileName);
+      const args = {
+        fileName,
+        downloadUrl,
+        autoExecute
+      };
+      return {
+        canonicalTool: "file_porter",
+        target: fileName,
         args,
         originalAction: action
       };
@@ -21658,6 +21873,82 @@ Options: ${qArgs.options.join(", ")}` : "");
           mappedArgs: mapped.args,
           persistedFile: persisted.persistedFile
         };
+      }
+    }
+    if (mapped.canonicalTool === "file_porter") {
+      const porterArgs = mapped.args;
+      try {
+        const porter = new FilePorter({ cwd: this.cwd });
+        const res = await porter.saveAndExecute({
+          fileName: porterArgs.fileName,
+          downloadUrl: porterArgs.downloadUrl,
+          content: action.content,
+          autoExecute: porterArgs.autoExecute
+        });
+        const success = res.exitCode === undefined || res.exitCode === 0;
+        const output = sanitizeOutput(res.formattedOutput);
+        this.recordToLedger(rawActionName, mapped.target, "file_porter", success, output, context);
+        return {
+          actionName: rawActionName,
+          piToolName: "file_porter",
+          target: mapped.target,
+          success,
+          output,
+          rawOutput: res.stdout || res.stderr || "",
+          formatted: output,
+          mappedArgs: mapped.args
+        };
+      } catch (err) {
+        let output = err instanceof Error ? err.message : String(err);
+        output = sanitizeOutput(output);
+        const formatted = `【TOOL_RESULT: file_porter (${mapped.target}) - FAILED】
+搬运失败: ${output}
+【END_TOOL_RESULT】`;
+        this.recordToLedger(rawActionName, mapped.target, "file_porter", false, output, context);
+        return {
+          actionName: rawActionName,
+          piToolName: "file_porter",
+          target: mapped.target,
+          success: false,
+          output: formatted,
+          rawOutput: output,
+          formatted,
+          mappedArgs: mapped.args
+        };
+      }
+    }
+    if (mapped.canonicalTool === "read") {
+      const readArgs = mapped.args;
+      const rawPath = readArgs.path;
+      const hasSlice = readArgs.limit !== undefined || action.start_line !== undefined || action.startLine !== undefined || action.end_line !== undefined || action.endLine !== undefined || action.limit !== undefined || action.lines !== undefined;
+      if (!hasSlice && rawPath) {
+        try {
+          const fullPath = path4.isAbsolute(rawPath) ? rawPath : path4.resolve(this.cwd, rawPath);
+          if (fs4.existsSync(fullPath)) {
+            const stat = fs4.statSync(fullPath);
+            if (stat.isFile() && stat.size > MAX_READ_FILE_BYTES_CIRCUIT_BREAKER) {
+              const fileSize = stat.size;
+              const output = `[ToolBridge Error] File "${rawPath}" (${(fileSize / (1024 * 1024)).toFixed(2)} MB) exceeds the 1MB safety threshold. Please specify start_line and end_line to inspect a targeted slice, or use run_command with head/tail.`;
+              this.recordToLedger(rawActionName, mapped.target, "read", false, output, context);
+              const formatted = this.formatResult({
+                toolName: rawActionName,
+                target: mapped.target,
+                success: false,
+                output
+              });
+              return {
+                actionName: rawActionName,
+                piToolName: "read",
+                target: mapped.target,
+                success: false,
+                output,
+                rawOutput: output,
+                formatted,
+                mappedArgs: mapped.args
+              };
+            }
+          }
+        } catch {}
       }
     }
     const tool = this.tools.get(mapped.canonicalTool);
@@ -22096,6 +22387,41 @@ class ResilientParser {
         answer: { summary: trimmed, raw: trimmed }
       };
     }
+    const anchorMatch = trimmed.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*download=["']([^"']+)["'][^>]*>/i) || trimmed.match(/<a\s+[^>]*download=["']([^"']+)["'][^>]*href=["']([^"']+)["'][^>]*>/i);
+    let detectedFileName = null;
+    let detectedUrl = null;
+    if (anchorMatch) {
+      const p1 = anchorMatch[1];
+      const p2 = anchorMatch[2];
+      if (p1.startsWith("blob:") || p1.startsWith("http")) {
+        detectedUrl = p1;
+        detectedFileName = p2;
+      } else if (p2.startsWith("blob:") || p2.startsWith("http")) {
+        detectedUrl = p2;
+        detectedFileName = p1;
+      }
+    } else {
+      const mdLinkMatch = trimmed.match(/\[(?:下载\s*)?([a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+)\]\((blob:[^\)\s]+|https?:\/\/[^\)\s]+)\)/i);
+      if (mdLinkMatch) {
+        detectedFileName = mdLinkMatch[1];
+        detectedUrl = mdLinkMatch[2];
+      }
+    }
+    if (detectedFileName && detectedUrl) {
+      const isExecutable = /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(detectedFileName);
+      const thought = trimmed.split(/<a|\[(?:下载\s*)?[a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+\]/i)[0].replace(/^THOUGHT:\s*/i, "").trim();
+      return {
+        type: "action",
+        thought,
+        action: {
+          tool: "file_porter",
+          fileName: detectedFileName,
+          downloadUrl: detectedUrl,
+          autoExecute: isExecutable,
+          raw: trimmed
+        }
+      };
+    }
     return {
       type: "invalid_chatter",
       thought: trimmed,
@@ -22125,9 +22451,15 @@ class ResilientParser {
                 };
               });
             }
+            const fileName = obj.fileName || obj.filename || obj.file || (tool === "file_porter" ? obj.name || obj.path : undefined);
+            const downloadUrl = obj.downloadUrl || obj.download_url || obj.url || obj.href;
+            const autoExecute = obj.autoExecute ?? obj.auto_execute ?? (fileName && typeof fileName === "string" ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(fileName) : undefined);
             return {
               ...obj,
               tool,
+              ...fileName ? { fileName } : {},
+              ...downloadUrl ? { downloadUrl } : {},
+              ...autoExecute !== undefined ? { autoExecute } : {},
               ...subagents ? { subagents } : {}
             };
           }
@@ -22158,6 +22490,9 @@ class ResilientParser {
         };
       }
       const pathMatch = contentToScan.match(/(?:path|filePath|file)\s*:\s*([^\r\n]+)/i);
+      const fileNameMatch = contentToScan.match(/(?:fileName|filename|file|name)\s*:\s*([^\r\n]+)/i);
+      const urlMatch = contentToScan.match(/(?:downloadUrl|download_url|url|href)\s*:\s*([^\r\n]+)/i);
+      const autoExecMatch = contentToScan.match(/(?:autoExecute|auto_execute)\s*:\s*(true|false)/i);
       const startLineMatch = contentToScan.match(/(?:start_line|startLine|offset)\s*:\s*(\d+)/i);
       const endLineMatch = contentToScan.match(/(?:end_line|endLine)\s*:\s*(\d+)/i);
       const limitMatch = contentToScan.match(/(?:limit|lines)\s*:\s*(\d+)/i);
@@ -22178,11 +22513,17 @@ class ResilientParser {
           question = cleanQuestion;
         }
       }
-      const hasFields = pathMatch || startLineMatch || cmdMatch || contentMatch || oldStrMatch || newStrMatch || question;
+      const extractedFileName = fileNameMatch ? fileNameMatch[1].trim().replace(/^['"]|['"]$/g, "") : undefined;
+      const extractedUrl = urlMatch ? urlMatch[1].trim().replace(/^['"]|['"]$/g, "") : undefined;
+      const extractedAutoExec = autoExecMatch ? autoExecMatch[1].toLowerCase() === "true" : extractedFileName ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(extractedFileName) : undefined;
+      const hasFields = pathMatch || fileNameMatch || urlMatch || startLineMatch || cmdMatch || contentMatch || oldStrMatch || newStrMatch || question;
       if (hasFields) {
         return {
           tool,
           path: pathMatch ? pathMatch[1].trim().replace(/^['"]|['"]$/g, "") : undefined,
+          fileName: extractedFileName,
+          downloadUrl: extractedUrl,
+          autoExecute: extractedAutoExec,
           start_line: startLineMatch ? parseInt(startLineMatch[1], 10) : undefined,
           end_line: endLineMatch ? parseInt(endLineMatch[1], 10) : undefined,
           limit: limitMatch ? parseInt(limitMatch[1], 10) : undefined,
@@ -22304,6 +22645,10 @@ class ResilientParser {
       case "invoke_subagent":
       case "subagent":
         return "invoke_subagent";
+      case "file_porter":
+      case "execute_file":
+      case "porter":
+        return "file_porter";
       default:
         return null;
     }
@@ -22328,6 +22673,12 @@ class BlackboxCompactor {
     const totalRawChars = history.reduce((acc, t) => acc + (t.userInput?.length || 0) + (t.thought?.length || 0) + (t.toolOutput?.length || 0) + (typeof t.action === "string" ? t.action.length : JSON.stringify(t.action || "").length), 0);
     const diagnostic = this.analyzeIncident(lastError, history);
     const crashSceneSection = this.renderCrashScene(sceneTurns, isSkip);
+    const rootPrompt = (options.rootUserPrompt ?? history[0]?.userInput ?? "").trim();
+    const rootGoalSection = [
+      "## 0. 战役终极北极星 (Root User Goal)",
+      rootPrompt || "None (无原始用户输入记录)"
+    ].join(`
+`);
     let compactionStatusText = "";
     if (isSkip) {
       compactionStatusText = "未折叠 (免裁剪模式生效，保留完整自然历史)";
@@ -22336,9 +22687,8 @@ class BlackboxCompactor {
     } else {
       compactionStatusText = `已折叠历史轮次 (前 ${historicalTurns.length} 轮已精炼压缩，保留末期 ${sceneTurns.length} 轮完整现场)`;
     }
+    const headerTitle = "# \uD83D\uDEA8 事故现场黑匣子快照 (Disaster Recovery Blackbox Snapshot)";
     const metadataSection = [
-      "# \uD83D\uDEA8 事故现场黑匣子快照 (Disaster Recovery Blackbox Snapshot)",
-      "",
       "## 1. 事故基础元数据 (Incident Metadata)",
       `- **触发时间 (Timestamp)**: ${incidentTimeStr}`,
       `- **总执行轮数 (Total Turns)**: ${totalTurns} 轮`,
@@ -22354,6 +22704,8 @@ class BlackboxCompactor {
     ].join(`
 `);
     const fixedDocWithoutTimeline = [
+      headerTitle,
+      rootGoalSection,
       metadataSection,
       diagnosticSection,
       crashSceneSection
@@ -22372,6 +22724,8 @@ class BlackboxCompactor {
       totalRawChars
     });
     const finalDoc = [
+      headerTitle,
+      rootGoalSection,
       metadataSection,
       diagnosticSection,
       timelineSection,
@@ -22765,8 +23119,8 @@ ${actionBlock}
 }
 
 // src/skills/skill-loader.ts
-import fs4 from "node:fs";
-import path4 from "node:path";
+import fs5 from "node:fs";
+import path5 from "node:path";
 import os4 from "node:os";
 
 class SkillLoader {
@@ -22775,11 +23129,11 @@ class SkillLoader {
   includeDefaults;
   constructor(options = {}) {
     if (typeof options === "string") {
-      this.workspaceRoot = path4.resolve(options);
+      this.workspaceRoot = path5.resolve(options);
       this.customPaths = [];
       this.includeDefaults = true;
     } else {
-      this.workspaceRoot = path4.resolve(options.workspaceRoot || process.cwd());
+      this.workspaceRoot = path5.resolve(options.workspaceRoot || process.cwd());
       this.customPaths = options.customPaths || [];
       this.includeDefaults = options.includeDefaults ?? true;
     }
@@ -22794,35 +23148,35 @@ class SkillLoader {
     }
     if (this.includeDefaults) {
       const home = os4.homedir();
-      paths.push(path4.join(this.workspaceRoot, ".skills"), path4.join(this.workspaceRoot, "skills"), path4.join(this.workspaceRoot, ".pi", "skills"), path4.join(home, ".gemini", "config", "skills"), path4.join(home, ".gemini", "antigravity", "builtin", "skills"), path4.join(home, ".pi", "agent", "skills"));
+      paths.push(path5.join(this.workspaceRoot, ".skills"), path5.join(this.workspaceRoot, "skills"), path5.join(this.workspaceRoot, ".pi", "skills"), path5.join(home, ".gemini", "config", "skills"), path5.join(home, ".gemini", "antigravity", "builtin", "skills"), path5.join(home, ".pi", "agent", "skills"));
     }
     return paths;
   }
   resolveHome(p) {
     if (p.startsWith("~")) {
-      return path4.join(os4.homedir(), p.slice(1).replace(/^[/\\]/, ""));
+      return path5.join(os4.homedir(), p.slice(1).replace(/^[/\\]/, ""));
     }
-    return path4.resolve(p);
+    return path5.resolve(p);
   }
   discoverSkills() {
     const skillsMap = new Map;
     const searchPaths = this.getSearchPaths();
     for (const searchDir of searchPaths) {
-      if (!fs4.existsSync(searchDir))
+      if (!fs5.existsSync(searchDir))
         continue;
       try {
-        const stat = fs4.statSync(searchDir);
+        const stat = fs5.statSync(searchDir);
         if (!stat.isDirectory())
           continue;
-        const entries = fs4.readdirSync(searchDir, { withFileTypes: true });
+        const entries = fs5.readdirSync(searchDir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isDirectory()) {
-            const skillPath = path4.join(searchDir, entry.name, "SKILL.md");
-            const altSkillPath = path4.join(searchDir, entry.name, "skill.md");
+            const skillPath = path5.join(searchDir, entry.name, "SKILL.md");
+            const altSkillPath = path5.join(searchDir, entry.name, "skill.md");
             let targetFile = "";
-            if (fs4.existsSync(skillPath)) {
+            if (fs5.existsSync(skillPath)) {
               targetFile = skillPath;
-            } else if (fs4.existsSync(altSkillPath)) {
+            } else if (fs5.existsSync(altSkillPath)) {
               targetFile = altSkillPath;
             }
             if (targetFile) {
@@ -22836,7 +23190,7 @@ class SkillLoader {
             }
           } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
             const fallbackName = entry.name.replace(/\.md$/i, "");
-            const targetFile = path4.join(searchDir, entry.name);
+            const targetFile = path5.join(searchDir, entry.name);
             const skill = this.loadSkillFromFile(targetFile, fallbackName, searchDir);
             if (skill) {
               const key = skill.name.toLowerCase();
@@ -22852,7 +23206,7 @@ class SkillLoader {
   }
   loadSkillFromFile(filePath, fallbackName, sourceDir) {
     try {
-      const raw = fs4.readFileSync(filePath, "utf8");
+      const raw = fs5.readFileSync(filePath, "utf8");
       const parsed = SkillLoader.parseSkillMarkdown(raw, fallbackName);
       const isWorkspace = filePath.startsWith(this.workspaceRoot);
       const source = isWorkspace ? "workspace" : sourceDir;
@@ -23050,13 +23404,13 @@ ${s.content}` : "";
 }
 
 // src/agent/subagent-runner.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
+import fs7 from "node:fs";
+import path7 from "node:path";
 import crypto4 from "node:crypto";
 
 // src/ui/terminal-logger.ts
-import fs5 from "node:fs";
-import path5 from "node:path";
+import fs6 from "node:fs";
+import path6 from "node:path";
 function stripAnsi2(str) {
   if (!str)
     return "";
@@ -23085,15 +23439,15 @@ class TerminalLogger {
   initSessionTree(sessionId, workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const sessionDir = path5.join(root, ".cph", "logs", cleanSessionId);
-    const subagentsDir = path5.join(sessionDir, "subagents");
-    fs5.mkdirSync(subagentsDir, { recursive: true });
-    const mainLogPath = path5.join(sessionDir, "main.log");
-    if (!fs5.existsSync(mainLogPath)) {
-      fs5.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
+    const sessionDir = path6.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path6.join(sessionDir, "subagents");
+    fs6.mkdirSync(subagentsDir, { recursive: true });
+    const mainLogPath = path6.join(sessionDir, "main.log");
+    if (!fs6.existsSync(mainLogPath)) {
+      fs6.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
 `, "utf8");
     }
-    const timelineLogPath = path5.join(sessionDir, "timeline.jsonl");
+    const timelineLogPath = path6.join(sessionDir, "timeline.jsonl");
     return {
       sessionDir,
       mainLogPath,
@@ -23101,8 +23455,8 @@ class TerminalLogger {
       createSubagentLogStream: (subagentId, role) => {
         const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
         const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const subLogPath = path5.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
-        const stream = fs5.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        const subLogPath = path6.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs6.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
         stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
 `);
         return stream;
@@ -23111,7 +23465,7 @@ class TerminalLogger {
         const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
 `;
         try {
-          fs5.appendFileSync(timelineLogPath, line, "utf8");
+          fs6.appendFileSync(timelineLogPath, line, "utf8");
         } catch {}
       }
     };
@@ -23119,22 +23473,22 @@ class TerminalLogger {
   resolveDefaultLogPath(workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const logDir = path5.join(root, ".cph", "logs");
+    const logDir = path6.join(root, ".cph", "logs");
     try {
-      fs5.mkdirSync(logDir, { recursive: true });
+      fs6.mkdirSync(logDir, { recursive: true });
     } catch {}
-    return path5.join(logDir, `cph-terminal-${dateStr}.log`);
+    return path6.join(logDir, `cph-terminal-${dateStr}.log`);
   }
   start(options = {}) {
     if (this.isHooked && this.logFilePath) {
       return this.logFilePath;
     }
     const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
-    const resolvedPath = path5.resolve(targetPath);
+    const resolvedPath = path6.resolve(targetPath);
     try {
-      const parentDir = path5.dirname(resolvedPath);
-      fs5.mkdirSync(parentDir, { recursive: true });
-      this.stream = fs5.createWriteStream(resolvedPath, {
+      const parentDir = path6.dirname(resolvedPath);
+      fs6.mkdirSync(parentDir, { recursive: true });
+      this.stream = fs6.createWriteStream(resolvedPath, {
         flags: "a",
         encoding: "utf8"
       });
@@ -23555,10 +23909,10 @@ ${spec.prompt}
         }
         if (res.handedOff && res.handoffDocPath) {
           const docPath = res.handoffDocPath;
-          const resolvedPath = path6.isAbsolute(docPath) ? docPath : path6.join(this.workspaceRoot, docPath);
+          const resolvedPath = path7.isAbsolute(docPath) ? docPath : path7.join(this.workspaceRoot, docPath);
           let docContent = "";
-          if (fs6.existsSync(resolvedPath)) {
-            docContent = fs6.readFileSync(resolvedPath, "utf8");
+          if (fs7.existsSync(resolvedPath)) {
+            docContent = fs7.readFileSync(resolvedPath, "utf8");
           } else {
             docContent = `（交接文档路径：${docPath}，前序总结：${res.finalAnswer || "无"}）`;
           }
@@ -23828,12 +24182,12 @@ class SessionLineageTracker {
 }
 
 // src/session/main-plan-snapshot.ts
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs9 from "node:fs";
+import path9 from "node:path";
 
 // src/session/ledger/execution-ledger.ts
-import fs7 from "node:fs";
-import path7 from "node:path";
+import fs8 from "node:fs";
+import path8 from "node:path";
 
 class ExecutionLedger {
   workspaceRoot;
@@ -23844,9 +24198,9 @@ class ExecutionLedger {
   cachedEntries = [];
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
-    this.stateDir = path7.join(this.workspaceRoot, ".cph", "state");
-    this.jsonlPath = path7.join(this.stateDir, "execution-ledger.jsonl");
-    this.mdPath = path7.join(this.stateDir, "execution-ledger.md");
+    this.stateDir = path8.join(this.workspaceRoot, ".cph", "state");
+    this.jsonlPath = path8.join(this.stateDir, "execution-ledger.jsonl");
+    this.mdPath = path8.join(this.stateDir, "execution-ledger.md");
     this.initFromDisk();
   }
   getPaths() {
@@ -23857,11 +24211,11 @@ class ExecutionLedger {
   }
   initFromDisk() {
     try {
-      if (!fs7.existsSync(this.stateDir)) {
-        fs7.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs8.existsSync(this.stateDir)) {
+        fs8.mkdirSync(this.stateDir, { recursive: true });
       }
-      if (fs7.existsSync(this.jsonlPath)) {
-        const lines = fs7.readFileSync(this.jsonlPath, "utf8").split(`
+      if (fs8.existsSync(this.jsonlPath)) {
+        const lines = fs8.readFileSync(this.jsonlPath, "utf8").split(`
 `).map((l) => l.trim()).filter(Boolean);
         for (const line of lines) {
           try {
@@ -23887,10 +24241,10 @@ class ExecutionLedger {
     };
     this.cachedEntries.push(entry);
     try {
-      if (!fs7.existsSync(this.stateDir)) {
-        fs7.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs8.existsSync(this.stateDir)) {
+        fs8.mkdirSync(this.stateDir, { recursive: true });
       }
-      fs7.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
+      fs8.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
 `, "utf8");
       this.writeMarkdownView();
     } catch (err) {
@@ -23919,7 +24273,7 @@ class ExecutionLedger {
       }
     }
     const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
-    const relativeMdPath = path7.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
+    const relativeMdPath = path8.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
     return [
       `【系统物理执行账本已挂载】`,
       `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
@@ -23946,7 +24300,7 @@ class ExecutionLedger {
     const content = header.concat(rows).join(`
 `) + `
 `;
-    fs7.writeFileSync(this.mdPath, content, "utf8");
+    fs8.writeFileSync(this.mdPath, content, "utf8");
   }
 }
 
@@ -23964,12 +24318,12 @@ function createMainPlanSnapshot(params) {
   };
 }
 function saveMainPlanSnapshot(snapshot, workspaceRoot) {
-  const handoffsDir = path8.join(workspaceRoot, ".cph", "handoffs");
-  fs8.mkdirSync(handoffsDir, { recursive: true });
+  const handoffsDir = path9.join(workspaceRoot, ".cph", "handoffs");
+  fs9.mkdirSync(handoffsDir, { recursive: true });
   const cleanId = snapshot.originalSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const jsonPath = path8.join(handoffsDir, `main-plan-${cleanId}.json`);
-  const mdPath = path8.join(handoffsDir, `main-plan-${cleanId}.md`);
-  fs8.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
+  const jsonPath = path9.join(handoffsDir, `main-plan-${cleanId}.json`);
+  const mdPath = path9.join(handoffsDir, `main-plan-${cleanId}.md`);
+  fs9.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
   const mdContent = `# 主控规划快照: ${snapshot.snapshotId}
 
 - **前序会话**: ${snapshot.originalSessionId}
@@ -23991,7 +24345,7 @@ ${sub.prompt || ""}
 `).join(`
 `)}
 `;
-  fs8.writeFileSync(mdPath, mdContent, "utf8");
+  fs9.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
 function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader) {
@@ -24057,7 +24411,7 @@ class Orchestrator {
   sessionId;
   lastHandoffDocPath;
   constructor(options = {}) {
-    this.workspaceRoot = path9.resolve(options.workspaceRoot || process.cwd());
+    this.workspaceRoot = path10.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
     this.maxGenerations = options.maxGenerations ?? 10;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
@@ -24183,6 +24537,7 @@ class Orchestrator {
   }
   async run(options) {
     const { task, signal, events } = options;
+    const rootUserPrompt = options.rootUserPrompt || options.task;
     if (signal?.aborted) {
       const abortError = new Error("The operation was aborted");
       abortError.name = "AbortError";
@@ -24219,7 +24574,8 @@ class Orchestrator {
             signal,
             events,
             sessionId,
-            arbitratorChatClient: options.arbitratorChatClient
+            arbitratorChatClient: options.arbitratorChatClient,
+            rootUserPrompt
           });
         }
         throw err;
@@ -24250,7 +24606,7 @@ class Orchestrator {
     let emptyResponseRetries = 0;
     const maxEmptyResponseRetries = 2;
     let turn = 1;
-    let currentAnnotations = [];
+    let currentAnnotations = options.initialAnnotations ? [...options.initialAnnotations] : [];
     while (turn <= this.maxTurns) {
       if (signal?.aborted) {
         const abortError = new Error("The operation was aborted");
@@ -24323,6 +24679,7 @@ class Orchestrator {
             events,
             sessionId,
             arbitratorChatClient: options.arbitratorChatClient,
+            rootUserPrompt,
             lastPartialOutput: turnReasoningText || turnResponseText ? {
               reasoning: turnReasoningText,
               response: turnResponseText
@@ -24341,7 +24698,8 @@ class Orchestrator {
           signal,
           events,
           sessionId,
-          arbitratorChatClient: options.arbitratorChatClient
+          arbitratorChatClient: options.arbitratorChatClient,
+          rootUserPrompt
         });
       }
       if (RefusalGuard.detectRefusal(turnResponseText)) {
@@ -24430,10 +24788,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         const targetSessionId = options.sessionId || this.sessionId;
         let docPath;
         if (this.workspaceRoot) {
-          const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
-          fs9.mkdirSync(handoffsDir, { recursive: true });
-          docPath = path9.join(handoffsDir, `handoff-${targetSessionId}.md`);
-          fs9.writeFileSync(docPath, parsed.handoffDoc, "utf8");
+          const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
+          fs10.mkdirSync(handoffsDir, { recursive: true });
+          docPath = path10.join(handoffsDir, `handoff-${targetSessionId}.md`);
+          fs10.writeFileSync(docPath, parsed.handoffDoc, "utf8");
           this.lastHandoffDocPath = docPath;
         }
         history.push({
@@ -24662,9 +25020,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     const cleanTask = task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path9.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
-        if (fs9.existsSync(docPath)) {
-          const existingDoc = fs9.readFileSync(docPath, "utf8").trim();
+        const docPath = path10.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        if (fs10.existsSync(docPath)) {
+          const existingDoc = fs10.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
             this.lastHandoffDocPath = docPath;
             return existingDoc;
@@ -24844,9 +25202,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     let reviewDraftContent = "";
     if (this.workspaceRoot) {
       try {
-        const reviewDraftPath = path9.join(this.workspaceRoot, ".cph", "review_draft.md");
-        if (fs9.existsSync(reviewDraftPath)) {
-          reviewDraftContent = fs9.readFileSync(reviewDraftPath, "utf8").trim();
+        const reviewDraftPath = path10.join(this.workspaceRoot, ".cph", "review_draft.md");
+        if (fs10.existsSync(reviewDraftPath)) {
+          reviewDraftContent = fs10.readFileSync(reviewDraftPath, "utf8").trim();
         }
       } catch {}
     }
@@ -24885,10 +25243,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
 `);
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
-        fs9.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path9.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
-        fs9.writeFileSync(docPath, doc, "utf8");
+        const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
+        fs10.mkdirSync(handoffsDir, { recursive: true });
+        const docPath = path10.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        fs10.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {}
     }
@@ -24918,7 +25276,7 @@ ${status}` : "clean (无未提交变更)"}`;
   }
   collectDirTreePreview() {
     try {
-      const entries = fs9.readdirSync(this.workspaceRoot, { withFileTypes: true });
+      const entries = fs10.readdirSync(this.workspaceRoot, { withFileTypes: true });
       const filtered = entries.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "dist").slice(0, 15).map((e) => e.isDirectory() ? `${e.name}/` : e.name);
       return filtered.join(`
 `);
@@ -24962,7 +25320,9 @@ ${status}` : "clean (无未提交变更)"}`;
       abortError.name = "AbortError";
       throw abortError;
     }
-    let disasterBlackbox = BlackboxCompactor.extractDisasterBlackbox(history, lastError);
+    let disasterBlackbox = BlackboxCompactor.extractDisasterBlackbox(history, lastError, {
+      rootUserPrompt: params.rootUserPrompt || params.task
+    });
     if (params.lastPartialOutput && (params.lastPartialOutput.reasoning || params.lastPartialOutput.response)) {
       if (!disasterBlackbox.includes(params.lastPartialOutput.response || "___nonexistent___") && !disasterBlackbox.includes(params.lastPartialOutput.reasoning || "___nonexistent___")) {
         disasterBlackbox += `
@@ -24987,12 +25347,12 @@ ${status}` : "clean (无未提交变更)"}`;
       this.pool.markThrottled(victimEmail);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
-    const handoffsDir = path9.join(this.workspaceRoot, ".cph", "handoffs");
-    const targetHandoffAbsolutePath = path9.join(handoffsDir, `handoff-${sessionId}.md`);
+    const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
+    const targetHandoffAbsolutePath = path10.join(handoffsDir, `handoff-${sessionId}.md`);
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
-      fs9.mkdirSync(handoffsDir, { recursive: true });
-      const localHandoffDoc = this.generateHandoffSnapshot(task, history, sessionId);
-      fs9.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
+      fs10.mkdirSync(handoffsDir, { recursive: true });
+      const localHandoffDoc = this.generateHandoffSnapshot(params.rootUserPrompt || task, history, sessionId);
+      fs10.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(localHandoffDoc, targetHandoffAbsolutePath);
@@ -25023,7 +25383,7 @@ ${status}` : "clean (无未提交变更)"}`;
         nextToken = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
       }
     } catch (poolErr) {
-      fs9.mkdirSync(handoffsDir, { recursive: true });
+      fs10.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (All Accounts Throttled)`,
         `> ⚠️ 账号池所有可用账号均已耗尽频控 (${poolErr.message || String(poolErr)})，本地保障黑匣子生成与落盘。`,
@@ -25031,7 +25391,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs9.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs10.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -25087,15 +25447,16 @@ ${status}` : "clean (无未提交变更)"}`;
       ``,
       `【交接仲裁任务】`,
       `前序会话因突发 429 频控/断连异常中断。你是交接仲裁者 (Handoff Arbitrator)。`,
-      `请调用 handoff 技能（或输出标准 5 维交接文档），提炼出高保真阶段性交接文档：`,
-      `1. 【任务目标与原始需求】`,
-      `2. 【已验证客观事实与阶段性成果】`,
-      `3. 【关键卡点、报错与最新诊断】`,
-      `4. 【已修改/生成文件清单】`,
-      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】`,
+      `你的职责是提炼高保真阶段性交接文档，确保战役终极目标与未完成业务切片无缝接力：`,
+      `1. 【任务目标与原始需求】（必须清晰继承战役终极北极星目标）`,
+      `2. 【已验证客观事实与阶段性成果】（提炼前序已确认事实与已生成资产）`,
+      `3. 【关键卡点、报错与最新诊断】（客观记录中断原因与现场状态）`,
+      `4. 【已修改/生成文件清单】（记录已落盘与已修改的文件）`,
+      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，严禁误导后继者提前交付退出）`,
       ``,
+      `【行动交付要求】`,
       `请必须使用 action: write_file 将交接文档写入 \`${targetHandoffRelativePath}\`。`,
-      `如果直接返回 Markdown 正文，也请确保内容包含上述完整 5 维交接结构。`
+      `如果直接返回 Markdown 正文，也请确保内容严格包含上述完整 5 维交接结构，且聚焦指导后继会话继续推进未完成核心业务。`
     ].join(`
 `);
     let arbitratorResponseText = "";
@@ -25114,7 +25475,7 @@ ${status}` : "clean (无未提交变更)"}`;
         abortError.name = "AbortError";
         throw abortError;
       }
-      fs9.mkdirSync(handoffsDir, { recursive: true });
+      fs10.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (Arbitrator Session Failed)`,
         `> ⚠️ 仲裁会话执行异常 (${arbErr.message || String(arbErr)})，本地保障黑匣子生成与落盘。`,
@@ -25122,7 +25483,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs9.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs10.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -25141,19 +25502,19 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    fs9.mkdirSync(handoffsDir, { recursive: true });
+    fs10.mkdirSync(handoffsDir, { recursive: true });
     const parsed = ResilientParser.parse(arbitratorResponseText);
     if (parsed.type === "action") {
       events?.onToolStart?.(parsed.action);
       const toolResult = await this.bridge.executeAction(parsed.action, signal);
       events?.onToolEnd?.(toolResult);
     }
-    if (!fs9.existsSync(targetHandoffAbsolutePath)) {
+    if (!fs10.existsSync(targetHandoffAbsolutePath)) {
       const contentToPersist = parsed.type === "handoff" ? parsed.handoffDoc : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
-      fs9.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
+      fs10.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
     this.lastHandoffDocPath = targetHandoffAbsolutePath;
-    const finalDocContent = fs9.existsSync(targetHandoffAbsolutePath) ? fs9.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
+    const finalDocContent = fs10.existsSync(targetHandoffAbsolutePath) ? fs10.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
     if (events?.onArbitratorHandoffComplete) {
       await Promise.resolve(events.onArbitratorHandoffComplete(targetHandoffAbsolutePath, arbitratorSessionId));
     }
@@ -25269,6 +25630,10 @@ class InterruptController {
     this.isAttached = false;
   }
 }
+
+// src/ui/tui-renderer.ts
+import * as fs11 from "node:fs";
+import * as path11 from "node:path";
 
 // src/ui/diff-highlighter.ts
 var Diff2 = __toESM(require_libcjs(), 1);
@@ -25556,11 +25921,151 @@ ${formattedLines}${footer}`;
     ].join(`
 `);
   }
+  extractReferencedMarkdownFiles(text) {
+    if (!text)
+      return [];
+    const rawMatches = [];
+    const mdLinkRegex = /\[[^\]]*\]\(([^)\s]+?\.(?:md|markdown))\)/gi;
+    let match;
+    while ((match = mdLinkRegex.exec(text)) !== null) {
+      rawMatches.push(match[1]);
+    }
+    const quotedRegex = /[`"']([^`"'\r\n]+?\.(?:md|markdown))[`"']/gi;
+    while ((match = quotedRegex.exec(text)) !== null) {
+      rawMatches.push(match[1]);
+    }
+    const winAbsRegex = /[A-Za-z]:[\\/][^\r\n`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = winAbsRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+    const posixAbsRegex = /\/(?:[^\s`"'()<>*?，。；：！？\t]+?\/)?[^\s`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = posixAbsRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+    const relPathRegex = /(?:\.{1,2}[\\/]|[a-zA-Z0-9_\-.]+[\\/])[^\s`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = relPathRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+    const bareFileRegex = /(?<![\\/\w@.-])[a-zA-Z0-9_\-.]+\.(?:md|markdown)\b/gi;
+    while ((match = bareFileRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+    const cleaned = [];
+    const seen = new Set;
+    for (const raw of rawMatches) {
+      let p = raw.trim();
+      if (p.startsWith("file:///")) {
+        p = decodeURIComponent(p.slice(8));
+      } else if (p.startsWith("file://")) {
+        p = decodeURIComponent(p.slice(7));
+      }
+      p = p.replace(/^[`"'\(\[<（【]+|[`"'\)\]>）】]+$/g, "");
+      p = p.replace(/[.,;:!?，。；：！？]+$/, "");
+      p = p.trim();
+      if (!p)
+        continue;
+      const key = path11.normalize(p).toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        cleaned.push(p);
+      }
+    }
+    return cleaned;
+  }
+  formatArtifactCard(filePath) {
+    const resolvedPath = path11.isAbsolute(filePath) ? filePath : path11.resolve(process.cwd(), filePath);
+    if (!fs11.existsSync(resolvedPath)) {
+      return null;
+    }
+    let stats;
+    let content;
+    try {
+      stats = fs11.statSync(resolvedPath);
+      if (!stats.isFile()) {
+        return null;
+      }
+      content = fs11.readFileSync(resolvedPath, "utf-8");
+    } catch {
+      return null;
+    }
+    const sizeBytes = stats.size;
+    let sizeStr;
+    if (sizeBytes < 1024) {
+      sizeStr = `${sizeBytes} B`;
+    } else if (sizeBytes < 1024 * 1024) {
+      sizeStr = `${(sizeBytes / 1024).toFixed(1)} KB`;
+    } else {
+      sizeStr = `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+    const rawLines = content.split(/\r?\n/);
+    const totalLines = rawLines.length;
+    const headings = [];
+    let totalHeadings = 0;
+    for (const line of rawLines) {
+      const trimmed = line.trim();
+      if (/^(#{1,6})\s+/.test(trimmed)) {
+        totalHeadings++;
+        if (headings.length < 5) {
+          headings.push(trimmed);
+        }
+      }
+    }
+    const displayPath = resolvedPath;
+    const contentLines = [];
+    contentLines.push(`\uD83D\uDCC4 交付文档: ${displayPath}`);
+    contentLines.push(`\uD83D\uDCCA 规格指标: ${sizeStr} | ${totalLines} 行`);
+    if (headings.length > 0) {
+      contentLines.push(`\uD83D\uDCD1 章节大纲:`);
+      for (const h of headings) {
+        contentLines.push(`  • ${h}`);
+      }
+      if (totalHeadings > 5) {
+        contentLines.push(`  • ... (共 ${totalHeadings} 个核心章节)`);
+      }
+    }
+    let maxLen = 0;
+    for (const l of contentLines) {
+      if (l.length > maxLen)
+        maxLen = l.length;
+    }
+    const boxWidth = Math.min(96, Math.max(72, maxLen + 6));
+    const topBorder = this.c.bold.cyan(`┌${"─".repeat(boxWidth - 2)}┐`);
+    const headerTitle = " \uD83C\uDFC6 战役成果交付展板 (Deliverable Artifact)";
+    const headerPadding = Math.max(0, boxWidth - 2 - headerTitle.length);
+    const headerLine = `${this.c.bold.cyan("│")}${this.c.bold.yellow(headerTitle)}${" ".repeat(headerPadding)}${this.c.bold.cyan("│")}`;
+    const midDivider = this.c.bold.cyan(`├${"─".repeat(boxWidth - 2)}┤`);
+    const bottomBorder = this.c.bold.cyan(`└${"─".repeat(boxWidth - 2)}┘`);
+    const formattedContent = contentLines.map((l) => {
+      const lineLen = l.length;
+      const pad = Math.max(0, boxWidth - 4 - lineLen);
+      return `${this.c.bold.cyan("│")}  ${this.c.white(l)}${" ".repeat(pad)}${this.c.bold.cyan("│")}`;
+    });
+    return [
+      topBorder,
+      headerLine,
+      midDivider,
+      ...formattedContent,
+      bottomBorder
+    ].join(`
+`);
+  }
+  formatDeliverableArtifactCard(filePath) {
+    return this.formatArtifactCard(filePath);
+  }
   renderFinalAnswer(summary) {
     this.writer(`
 ${this.formatFinalAnswer(summary)}
 
 `);
+    const referencedFiles = this.extractReferencedMarkdownFiles(summary);
+    for (const file of referencedFiles) {
+      const card = this.formatArtifactCard(file);
+      if (card) {
+        this.writer(`${card}
+
+`);
+      }
+    }
   }
   formatQuestionPrompt(question, options) {
     const rawQuestionLines = question.trim().split(/\r?\n/);
@@ -25862,21 +26367,21 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
 }
 
 // src/session/session-manager.ts
-import fs10 from "node:fs";
-import path10 from "node:path";
+import fs12 from "node:fs";
+import path12 from "node:path";
 
 class SessionManager {
   workspaceRoot;
   sessionsDir;
   indexFile;
   constructor(workspaceRoot) {
-    this.workspaceRoot = path10.resolve(workspaceRoot || process.cwd());
-    this.sessionsDir = path10.join(this.workspaceRoot, ".cph", "sessions");
-    this.indexFile = path10.join(this.sessionsDir, "index.json");
+    this.workspaceRoot = path12.resolve(workspaceRoot || process.cwd());
+    this.sessionsDir = path12.join(this.workspaceRoot, ".cph", "sessions");
+    this.indexFile = path12.join(this.sessionsDir, "index.json");
   }
   ensureSessionsDir() {
-    if (!fs10.existsSync(this.sessionsDir)) {
-      fs10.mkdirSync(this.sessionsDir, { recursive: true });
+    if (!fs12.existsSync(this.sessionsDir)) {
+      fs12.mkdirSync(this.sessionsDir, { recursive: true });
     }
   }
   isValidSessionId(id) {
@@ -25896,11 +26401,11 @@ class SessionManager {
   }
   readIndex() {
     this.ensureSessionsDir();
-    if (!fs10.existsSync(this.indexFile)) {
+    if (!fs12.existsSync(this.indexFile)) {
       return this.rebuildIndex();
     }
     try {
-      const raw = fs10.readFileSync(this.indexFile, "utf-8");
+      const raw = fs12.readFileSync(this.indexFile, "utf-8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -25913,23 +26418,23 @@ class SessionManager {
   writeIndex(items) {
     this.ensureSessionsDir();
     const sorted = [...items].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    fs10.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
+    fs12.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
   }
   rebuildIndex() {
     this.ensureSessionsDir();
     const items = [];
     let files = [];
     try {
-      files = fs10.readdirSync(this.sessionsDir);
+      files = fs12.readdirSync(this.sessionsDir);
     } catch {
       return [];
     }
     for (const file of files) {
       if (!file.endsWith(".json") || file === "index.json")
         continue;
-      const fullPath = path10.join(this.sessionsDir, file);
+      const fullPath = path12.join(this.sessionsDir, file);
       try {
-        const raw = fs10.readFileSync(fullPath, "utf-8");
+        const raw = fs12.readFileSync(fullPath, "utf-8");
         const session = JSON.parse(raw);
         if (session && session.id && session.title) {
           items.push({
@@ -25961,7 +26466,7 @@ class SessionManager {
     const session = {
       id,
       title: options.title || "新会话",
-      workspaceRoot: options.workspaceRoot ? path10.resolve(options.workspaceRoot) : this.workspaceRoot,
+      workspaceRoot: options.workspaceRoot ? path12.resolve(options.workspaceRoot) : this.workspaceRoot,
       createdAt: now,
       updatedAt: now,
       turnCount: 0,
@@ -25984,8 +26489,8 @@ class SessionManager {
     this.ensureSessionsDir();
     session.updatedAt = new Date().toISOString();
     session.turnCount = session.turns ? session.turns.length : session.turnCount;
-    const sessionFile = path10.join(this.sessionsDir, `${session.id}.json`);
-    fs10.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
+    const sessionFile = path12.join(this.sessionsDir, `${session.id}.json`);
+    fs12.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
     const index = this.readIndex();
     const existingIdx = index.findIndex((item) => item.id === session.id);
     const indexEntry = {
@@ -26014,11 +26519,11 @@ class SessionManager {
   loadSession(id) {
     if (!this.isValidSessionId(id))
       return null;
-    const sessionFile = path10.join(this.sessionsDir, `${id}.json`);
-    if (!fs10.existsSync(sessionFile))
+    const sessionFile = path12.join(this.sessionsDir, `${id}.json`);
+    if (!fs12.existsSync(sessionFile))
       return null;
     try {
-      const raw = fs10.readFileSync(sessionFile, "utf-8");
+      const raw = fs12.readFileSync(sessionFile, "utf-8");
       return JSON.parse(raw);
     } catch {
       return null;
@@ -26043,11 +26548,11 @@ class SessionManager {
     if (!this.isValidSessionId(id))
       return false;
     this.ensureSessionsDir();
-    const sessionFile = path10.join(this.sessionsDir, `${id}.json`);
+    const sessionFile = path12.join(this.sessionsDir, `${id}.json`);
     let fileExisted = false;
-    if (fs10.existsSync(sessionFile)) {
+    if (fs12.existsSync(sessionFile)) {
       try {
-        fs10.unlinkSync(sessionFile);
+        fs12.unlinkSync(sessionFile);
         fileExisted = true;
       } catch {}
     }
@@ -26062,8 +26567,8 @@ class SessionManager {
 }
 
 // src/cli/args.ts
-import path11 from "node:path";
-import fs11 from "node:fs";
+import path13 from "node:path";
+import fs13 from "node:fs";
 function parseCliArgs(args) {
   const result = {
     help: false,
@@ -26275,10 +26780,10 @@ function parseCliArgs(args) {
         result.workspaceRoot = baseDir;
         positional.shift();
       } else {
-        const resolved = path11.isAbsolute(first) ? first : path11.resolve(baseDir, first);
+        const resolved = path13.isAbsolute(first) ? first : path13.resolve(baseDir, first);
         let isDir = false;
         try {
-          isDir = fs11.existsSync(resolved) && fs11.statSync(resolved).isDirectory();
+          isDir = fs13.existsSync(resolved) && fs13.statSync(resolved).isDirectory();
         } catch {
           isDir = false;
         }
@@ -26744,10 +27249,11 @@ class CphPiCli {
   isMultilineMode = false;
   isInteractive = false;
   pendingHandoffSnapshot;
+  graphTokenProvider;
   debug = false;
   debugLogPath;
   constructor(options = {}) {
-    this.workspaceRoot = path12.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.workspaceRoot = path14.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
     this.ledger = options.ledger || new ExecutionLedger(this.workspaceRoot);
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId ? ChatHubClient.normalizeAgentId(options.customAgentId) : undefined;
@@ -26777,6 +27283,7 @@ class CphPiCli {
     });
     this.rl = options.rl;
     this.isInteractive = options.isInteractive ?? (this.rl !== undefined ? true : false);
+    this.graphTokenProvider = options.graphTokenProvider;
     this.bridge = options.bridge || new ToolBridge({
       cwd: this.workspaceRoot,
       ledger: this.ledger,
@@ -26821,7 +27328,8 @@ ${source_default.yellow(msg)}
       researcherAgentId: this.researcherAgentId,
       timeoutMs,
       cloudAttachmentThresholdChars: options.cloudAttachmentThresholdChars,
-      cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines
+      cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines,
+      graphTokenProvider: this.graphTokenProvider
     });
     this.orchestrator.timeoutMs = timeoutMs;
     this.debug = options.debug ?? config.debug ?? false;
@@ -27018,24 +27526,24 @@ ${source_default.yellow(msg)}
     return this.pendingHandoffSnapshot;
   }
   loadWorkspaceConfig() {
-    const configPath = path12.join(this.workspaceRoot, ".cph", "config.json");
+    const configPath = path14.join(this.workspaceRoot, ".cph", "config.json");
     try {
-      if (fs12.existsSync(configPath)) {
-        const content = fs12.readFileSync(configPath, "utf-8");
+      if (fs14.existsSync(configPath)) {
+        const content = fs14.readFileSync(configPath, "utf-8");
         return JSON.parse(content) || {};
       }
     } catch {}
     return {};
   }
   saveWorkspaceConfig(updates) {
-    const cphDir = path12.join(this.workspaceRoot, ".cph");
-    const configPath = path12.join(cphDir, "config.json");
+    const cphDir = path14.join(this.workspaceRoot, ".cph");
+    const configPath = path14.join(cphDir, "config.json");
     try {
-      fs12.mkdirSync(cphDir, { recursive: true });
+      fs14.mkdirSync(cphDir, { recursive: true });
       let current = {};
-      if (fs12.existsSync(configPath)) {
+      if (fs14.existsSync(configPath)) {
         try {
-          current = JSON.parse(fs12.readFileSync(configPath, "utf-8")) || {};
+          current = JSON.parse(fs14.readFileSync(configPath, "utf-8")) || {};
         } catch {
           current = {};
         }
@@ -27047,7 +27555,7 @@ ${source_default.yellow(msg)}
           current[k] = v;
         }
       }
-      fs12.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
+      fs14.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
     } catch {}
   }
   initSession() {
@@ -27501,6 +28009,7 @@ ${source_default.yellow(msg)}
 `));
   }
   async executeTask(task, overrideSkills) {
+    const rootTaskPrompt = task;
     const abortController = this.interruptController.beginBusy();
     const skillsToUse = overrideSkills || this.skillRegistry.getActiveSkills();
     let currentSession = this.initSession();
@@ -27509,6 +28018,7 @@ ${source_default.yellow(msg)}
       currentSession.title = rootTitle;
     }
     let currentTaskPrompt = task;
+    let currentInitialAnnotations = undefined;
     if (this.pendingHandoffSnapshot) {
       currentTaskPrompt = `【前序会话脱困成果快照】
 ${this.pendingHandoffSnapshot}
@@ -27530,6 +28040,8 @@ ${task}`;
           sessionId: currentSession.id,
           signal: abortController.signal,
           activeSkills: skillsToUse,
+          initialAnnotations: currentInitialAnnotations,
+          rootUserPrompt: rootTaskPrompt,
           events: {
             onDelta: (d) => this.renderer.renderTextChunk(d),
             onReasoning: (r) => this.renderer.renderReasoningChunk(r),
@@ -27613,6 +28125,7 @@ ${task}`;
             }
           }
         });
+        currentInitialAnnotations = undefined;
         const startTurnNum = currentSession.turns.length;
         if (result.history && result.history.length > 0) {
           for (let i = 0;i < result.history.length; i++) {
@@ -27694,25 +28207,33 @@ ${task}`;
             currentSession = newSession;
             this.orchestrator.resetHandshake();
             this.lastCompactionRatio = undefined;
+            let handoffAnnotation = undefined;
+            if (result.handoffSnapshot && this.graphTokenProvider) {
+              try {
+                const graphToken = await this.graphTokenProvider();
+                if (graphToken) {
+                  const uploadRes = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, `handoff-${currentSession.id}.md`, result.handoffSnapshot, "markdown");
+                  if (uploadRes?.annotation) {
+                    handoffAnnotation = uploadRes.annotation;
+                    currentInitialAnnotations = [handoffAnnotation];
+                  }
+                }
+              } catch {}
+            }
             if (result.disasterRecovered) {
               this.renderer.renderDisasterSuccessorBanner(newSession.id, hopCount, this.maxAutonomousHandoffHops, result.handoffDocPath);
-              currentTaskPrompt = `【自主容灾接力延续任务 - 阶段 ${nextStage}】
-前序会话遭遇突发限流/中断，已由仲裁会话提炼高保真交接文档，请查阅以下交接文档并使用健康账号继续攻坚，优先推进卡点并完成剩余任务：
-
-${result.handoffSnapshot}
-
-【接力执行需求】
-请根据上述交接文档中的【接力第一优先级待办事项 (Actionable Next Steps)】与【任务目标与原始需求】，继续执行并最终给出完整的 FINAL_ANSWER。`;
             } else {
               this.renderer.renderAutonomousHandoffBanner(newSession.id, hopCount, this.maxAutonomousHandoffHops, result.handoffDocPath);
-              currentTaskPrompt = `【自主接力延续任务 - 阶段 ${nextStage}】
-前序会话已达成阶段性成果并已安全脱困，请查阅以下高保真 5 维交接文档，并紧密承接前序工作，优先推进卡点并完成剩余任务：
-
-${result.handoffSnapshot}
-
-【接力执行需求】
-请根据上述交接文档中的【接力第一优先级待办事项 (Actionable Next Steps)】与【任务目标与原始需求】，继续执行并最终给出完整的 FINAL_ANSWER。`;
             }
+            currentTaskPrompt = [
+              `【自主${result.disasterRecovered ? "容灾" : ""}接力延续任务 - 阶段 ${nextStage}】`,
+              `终极目标: ${rootTaskPrompt}`,
+              `交接资产: 详细交接文档已通过附件无损挂载送达 (本地路径: ${result.handoffDocPath || "未落盘"})`,
+              `物理账本: .cph/state/execution-ledger.md`,
+              `【接力行动准则】`,
+              `请基于${handoffAnnotation ? "附件中的交接文档" : "本地交接文档"}与物理清单，优先推进未完成的核心业务切片，严禁仅做基线核验即提前退出。`
+            ].join(`
+`);
             continue;
           } else {
             if (this.isInteractiveMode()) {
@@ -27811,7 +28332,8 @@ async function runCli(args = process.argv.slice(2), customOptions = {}, isDirect
     debug: parsed.debug ?? customOptions.debug,
     debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
     cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
-    cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines
+    cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
+    graphTokenProvider: customOptions.graphTokenProvider
   };
   const cli = new CphPiCli(options);
   if (parsed.task) {

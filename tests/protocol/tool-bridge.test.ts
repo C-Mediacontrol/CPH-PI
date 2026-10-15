@@ -121,26 +121,26 @@ describe("ToolBridge Unit Tests", () => {
     });
   });
 
-  describe("2. 100-Line Slice Protection Assertions", () => {
-    it("should default to 100 lines when no end_line or limit is specified", () => {
+  describe("2. Full Read Passthrough and 1MB Safety Circuit Breaker Assertions", () => {
+    it("should leave limit undefined and offset 1 when no end_line or limit is specified", () => {
       const mapped = bridge.mapAction({ tool: "read_file", path: "large.ts" });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
       expect(args.offset).toBe(1);
-      expect(args.limit).toBe(100);
+      expect(args.limit).toBeUndefined();
     });
 
-    it("should enforce maximum 100 lines when requestedLines exceeds 100 via end_line", () => {
+    it("should calculate exact limit without 100-line truncation when start_line and end_line are specified", () => {
       const mapped = bridge.mapAction({
         tool: "read_file",
         path: "large.ts",
-        start_line: 1,
-        end_line: 500,
+        start_line: 10,
+        end_line: 250,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
-      expect(args.offset).toBe(1);
-      expect(args.limit).toBe(100);
+      expect(args.offset).toBe(10);
+      expect(args.limit).toBe(241); // 250 - 10 + 1 = 241
     });
 
     it("should preserve requested lines when requestedLines <= 100 via end_line", () => {
@@ -150,21 +150,21 @@ describe("ToolBridge Unit Tests", () => {
         start_line: 10,
         end_line: 35,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
       expect(args.offset).toBe(10);
       expect(args.limit).toBe(26); // 35 - 10 + 1 = 26
     });
 
-    it("should clamp explicit limit parameter to 100 if requested > 100", () => {
+    it("should preserve explicit limit parameter even if > 100", () => {
       const mapped = bridge.mapAction({
         tool: "read",
         path: "large.ts",
         limit: 250,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
-      expect(args.limit).toBe(100);
+      expect(args.limit).toBe(250);
     });
 
     it("should preserve explicit limit if <= 100", () => {
@@ -173,22 +173,22 @@ describe("ToolBridge Unit Tests", () => {
         path: "large.ts",
         limit: 42,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
       expect(args.limit).toBe(42);
     });
 
-    it("should handle offset correctly with start_line", () => {
+    it("should handle offset correctly with start_line and end_line > 100", () => {
       const mapped = bridge.mapAction({
         tool: "cat",
         path: "mid.ts",
         start_line: 150,
         end_line: 300,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
       expect(args.offset).toBe(150);
-      expect(args.limit).toBe(100); // 300 - 150 + 1 = 151 -> clamped to 100
+      expect(args.limit).toBe(151); // 300 - 150 + 1 = 151
     });
 
     it("should safely handle inverted end_line < start_line", () => {
@@ -198,10 +198,25 @@ describe("ToolBridge Unit Tests", () => {
         start_line: 50,
         end_line: 40,
       });
-      const args = mapped.args as { path: string; offset: number; limit: number };
+      const args = mapped.args as { path: string; offset: number; limit?: number };
 
       expect(args.offset).toBe(50);
       expect(args.limit).toBe(1);
+    });
+
+    it("should reject full read when file size exceeds 1MB safety circuit breaker", async () => {
+      const testFile = "oversized.dat";
+      const largeBuffer = Buffer.alloc(1024 * 1024 + 1024, "a");
+      await writeFile(join(tempDir, testFile), largeBuffer);
+
+      const result = await bridge.executeAction({
+        tool: "read_file",
+        path: testFile,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.output).toContain("exceeds the 1MB safety threshold");
+      expect(result.output).toContain("start_line and end_line");
     });
   });
 
@@ -294,13 +309,13 @@ describe("ToolBridge Unit Tests", () => {
   });
 
   describe("4. Real Pi Tool Execution on Temp Files", () => {
-    it("should execute Pi native read tool on a real file with 100-line slice truncation", async () => {
+    it("should execute Pi native read tool on a real file reading all lines without artificial 100-line truncation", async () => {
       // Create a 150-line file
       const lines = Array.from({ length: 150 }, (_, i) => `line ${i + 1}`).join("\n");
       const testFile = "sample.txt";
       await writeFile(join(tempDir, testFile), lines, "utf-8");
 
-      // Read without limit -> should get max 100 lines + continuation hint
+      // Read without limit -> should read full 150 lines without artificial 100-line truncation
       const result = await bridge.executeAction({
         tool: "read_file",
         path: testFile,
@@ -310,9 +325,8 @@ describe("ToolBridge Unit Tests", () => {
       expect(result.piToolName).toBe("read");
       expect(result.target).toBe(testFile);
       expect(result.output).toContain("line 1");
-      expect(result.output).toContain("line 100");
-      // Pi read appends continuation message when more lines exist
-      expect(result.output).toContain("more lines in file");
+      expect(result.output).toContain("line 150");
+      expect(result.rawOutput).toContain("line 100");
       expect(result.formatted).toContain("【TOOL_RESULT: read_file (sample.txt) - SUCCESS】");
       expect(result.formatted).toContain("【END_TOOL_RESULT】");
     });

@@ -23,18 +23,22 @@ export class SubstrateUploader {
   /**
    * Resolve SPO base64 metadata (siteId,webId,listId) for LocalFile annotation
    */
-  public static async resolveSpoBase64(graphAccessToken: string): Promise<string> {
+  public static async resolveSpoBase64(
+    graphAccessToken: string,
+    customBaseUrl?: string
+  ): Promise<string> {
     if (this.spoBase64Cache.has(graphAccessToken)) {
       return this.spoBase64Cache.get(graphAccessToken)!;
     }
 
     try {
-      const res = await fetch(
-        "https://graph.microsoft.com/v1.0/me/drive/list?$select=id,name,parentReference",
-        {
-          headers: { Authorization: `Bearer ${graphAccessToken}` },
-        }
-      );
+      const listUrl = customBaseUrl
+        ? `${customBaseUrl}/list?$select=id,name,parentReference`
+        : "https://graph.microsoft.com/v1.0/me/drive/list?$select=id,name,parentReference";
+      const res = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${graphAccessToken}` },
+        signal: AbortSignal.timeout(2000),
+      });
       if (res.ok) {
         const listData = (await res.json()) as any;
         const listId = listData.id;
@@ -127,11 +131,26 @@ export class SubstrateUploader {
     fileName: string,
     customBaseUrl?: string
   ): Promise<UploadDocumentResult> {
-    const encodedName = encodeURIComponent(fileName);
-    const rootUrl = customBaseUrl || this.DEFAULT_GRAPH_URL;
-    const url = customBaseUrl
-      ? `${customBaseUrl}/${encodedName}:/content`
-      : `${rootUrl}:/${encodedName}:/content`;
+    let actualContent = content;
+    let actualFileName = fileName;
+    if (
+      (content.endsWith(".md") || content.endsWith(".txt") || content.startsWith("handoff-")) &&
+      !content.includes("\n") &&
+      (fileName.includes("\n") || fileName.length > 255)
+    ) {
+      actualContent = fileName;
+      actualFileName = content;
+    }
+
+    const encodedName = encodeURIComponent(actualFileName);
+    const rootUrl =
+      customBaseUrl && customBaseUrl.startsWith("http")
+        ? customBaseUrl
+        : this.DEFAULT_GRAPH_URL;
+    const url =
+      customBaseUrl && customBaseUrl.startsWith("http")
+        ? `${customBaseUrl}/${encodedName}:/content`
+        : `${rootUrl}:/${encodedName}:/content`;
 
     const res = await fetch(url, {
       method: "PUT",
@@ -160,7 +179,7 @@ export class SubstrateUploader {
     const driveId = data.parentReference?.driveId || "";
     const ext = finalName.split(".").pop() || "txt";
 
-    const spoBase64 = await this.resolveSpoBase64(graphAccessToken);
+    const spoBase64 = await this.resolveSpoBase64(graphAccessToken, customBaseUrl);
     const annotationId = spoBase64 ? `SPO_${spoBase64}_${data.id}` : data.id;
 
     const annotation: AttachmentAnnotation = {

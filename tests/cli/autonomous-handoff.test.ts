@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,11 +7,13 @@ import { SessionManager } from "../../src/session/session-manager.ts";
 import { TuiRenderer } from "../../src/ui/tui-renderer.ts";
 import { InterruptController } from "../../src/agent/interrupt-controller.ts";
 import type { IOrchestratorChatClient } from "../../src/agent/orchestrator.ts";
+import { SubstrateUploader } from "../../src/transport/substrate-uploader.ts";
 
 class MockChatClient implements IOrchestratorChatClient {
   public responses: string[] = [];
   public callCount = 0;
   public capturedPrompts: string[] = [];
+  public capturedMessages: any[] = [];
 
   constructor(responses: string[]) {
     this.responses = responses;
@@ -19,6 +21,7 @@ class MockChatClient implements IOrchestratorChatClient {
 
   async sendMessage(params: { text: string; [key: string]: any }): Promise<{ text: string }> {
     this.capturedPrompts.push(params.text);
+    this.capturedMessages.push(params);
     const resp = this.responses[this.callCount] || "FINAL_ANSWER: 任务接力推进圆满完成";
     this.callCount++;
     return { text: resp };
@@ -103,15 +106,83 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
       expect(mockClient.callCount).toBe(2);
       const stage2Prompt = mockClient.capturedPrompts[1];
       expect(stage2Prompt).toContain("【自主接力延续任务 - 阶段 2】");
-      expect(stage2Prompt).toContain("【任务目标与原始需求】");
-      expect(stage2Prompt).toContain("审查 CNNJI QUERY 核心模块并输出报告");
-      expect(stage2Prompt).toContain("【接力第一优先级待办事项 (Actionable Next Steps)】");
+      expect(stage2Prompt).toContain("终极目标: 审查 CNNJI QUERY 核心模块并输出报告");
+      expect(stage2Prompt).toContain("物理账本: .cph/state/execution-ledger.md");
+      expect(stage2Prompt).toContain("【接力行动准则】");
+      expect(stage2Prompt).not.toContain("【已验证客观事实与阶段性成果】");
+      expect(stage2Prompt.length).toBeLessThan(800);
 
       // Verify Banner output
       const combinedOutput = tuiOutput.join("");
       expect(combinedOutput).toContain("[Auto-Handoff]");
       expect(combinedOutput).toContain("自主换会话接力跃迁");
       expect(combinedOutput).toContain(session2.id);
+    });
+
+    it("should upload handoff snapshot to OneDrive when graphTokenProvider is provided and pass attachment as initialAnnotations to stage 2", async () => {
+      const responses = [
+        "```action\ntool: run_command\ncommand: echo init\n```",
+        "FINAL_ANSWER: 第二阶段完成",
+      ];
+      const mockClient = new MockChatClient(responses);
+
+      const dummyAnnotation = {
+        id: "mock-handoff-doc-id",
+        text: "handoff-doc.md",
+        url: "https://onedrive.example.com/handoff-doc.md",
+        messageAnnotationType: "LocalFile",
+        messageAnnotationMetadata: {
+          "@type": "File",
+          annotationType: "File",
+          fileName: "handoff-doc.md",
+          webUrl: "https://onedrive.example.com/handoff-doc.md",
+        },
+      };
+
+      const uploadSpy = spyOn(SubstrateUploader, "uploadDocumentToOneDrive").mockResolvedValue({
+        driveItemId: "mock-handoff-doc-id",
+        webUrl: "https://onedrive.example.com/handoff-doc.md",
+        fileName: "handoff-doc.md",
+        annotation: dummyAnnotation as any,
+      });
+
+      const cli = new CphPiCli({
+        workspaceRoot: tmpDir,
+        sessionManager,
+        renderer,
+        chatClient: mockClient,
+        maxTurns: 1,
+        maxAutonomousHandoffHops: 3,
+        customAgentId: "test-agent",
+        graphTokenProvider: async () => "mock-graph-token-123",
+      });
+
+      try {
+        await cli.executeTask("验证附件接力任务");
+
+        // Verify SubstrateUploader.uploadDocumentToOneDrive was called
+        expect(uploadSpy).toHaveBeenCalled();
+        const callArgs = uploadSpy.mock.calls[0];
+        expect(callArgs[0]).toBe("mock-graph-token-123");
+
+        // Verify Session 2 first message received annotations
+        expect(mockClient.callCount).toBe(2);
+        const stage2Params = mockClient.capturedMessages[1];
+        expect(stage2Params.annotations).toBeDefined();
+        expect(stage2Params.annotations?.length).toBe(1);
+        expect(stage2Params.annotations?.[0].id).toBe("mock-handoff-doc-id");
+
+        // Verify stage 2 prompt references attachment and minimal fingerprint header
+        const stage2Prompt = mockClient.capturedPrompts[1];
+        expect(stage2Prompt).toContain("【自主接力延续任务 - 阶段 2】");
+        expect(stage2Prompt).toContain("终极目标: 验证附件接力任务");
+        expect(stage2Prompt).toContain("附件中的交接文档");
+        expect(stage2Prompt).toContain("物理账本: .cph/state/execution-ledger.md");
+        expect(stage2Prompt).not.toContain("【已验证客观事实与阶段性成果】");
+        expect(stage2Prompt.length).toBeLessThan(800);
+      } finally {
+        uploadSpy.mockRestore();
+      }
     });
   });
 

@@ -119,6 +119,8 @@ export interface OrchestratorRunOptions {
   activeSkills?: Skill[] | string;
   sessionId?: string;
   arbitratorChatClient?: IOrchestratorChatClient;
+  initialAnnotations?: AttachmentAnnotation[];
+  rootUserPrompt?: string;
 }
 
 export interface OrchestratorRunResult {
@@ -333,6 +335,7 @@ export class Orchestrator {
    */
   public async run(options: OrchestratorRunOptions): Promise<OrchestratorRunResult> {
     const { task, signal, events } = options;
+    const rootUserPrompt = options.rootUserPrompt || options.task;
 
     if (signal?.aborted) {
       const abortError = new Error("The operation was aborted");
@@ -380,6 +383,7 @@ export class Orchestrator {
             events,
             sessionId,
             arbitratorChatClient: options.arbitratorChatClient,
+            rootUserPrompt,
           });
         }
         throw err;
@@ -428,7 +432,9 @@ export class Orchestrator {
     let emptyResponseRetries = 0;
     const maxEmptyResponseRetries = 2;
     let turn = 1;
-    let currentAnnotations: AttachmentAnnotation[] = [];
+    let currentAnnotations: AttachmentAnnotation[] = options.initialAnnotations
+      ? [...options.initialAnnotations]
+      : [];
 
     while (turn <= this.maxTurns) {
       if (signal?.aborted) {
@@ -514,6 +520,7 @@ export class Orchestrator {
             events,
             sessionId,
             arbitratorChatClient: options.arbitratorChatClient,
+            rootUserPrompt,
             lastPartialOutput:
               turnReasoningText || turnResponseText
                 ? {
@@ -539,6 +546,7 @@ export class Orchestrator {
           events,
           sessionId,
           arbitratorChatClient: options.arbitratorChatClient,
+          rootUserPrompt,
         });
       }
 
@@ -1427,6 +1435,7 @@ export class Orchestrator {
       reasoning?: string;
       response?: string;
     };
+    rootUserPrompt?: string;
   }): Promise<OrchestratorRunResult> {
     const { task, history, client, lastError, signal, events, sessionId } = params;
 
@@ -1437,7 +1446,9 @@ export class Orchestrator {
     }
 
     // 1. Extract high-density disaster recovery blackbox (5k~8k chars)
-    let disasterBlackbox = BlackboxCompactor.extractDisasterBlackbox(history, lastError);
+    let disasterBlackbox = BlackboxCompactor.extractDisasterBlackbox(history, lastError, {
+      rootUserPrompt: params.rootUserPrompt || params.task,
+    });
     if (params.lastPartialOutput && (params.lastPartialOutput.reasoning || params.lastPartialOutput.response)) {
       if (
         !disasterBlackbox.includes(params.lastPartialOutput.response || "___nonexistent___") &&
@@ -1474,7 +1485,11 @@ export class Orchestrator {
     // Local fallback when no account pool and no arbitrator client are configured
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
       fs.mkdirSync(handoffsDir, { recursive: true });
-      const localHandoffDoc = this.generateHandoffSnapshot(task, history, sessionId);
+      const localHandoffDoc = this.generateHandoffSnapshot(
+        params.rootUserPrompt || task,
+        history,
+        sessionId
+      );
       fs.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
 
@@ -1587,15 +1602,16 @@ export class Orchestrator {
       ``,
       `【交接仲裁任务】`,
       `前序会话因突发 429 频控/断连异常中断。你是交接仲裁者 (Handoff Arbitrator)。`,
-      `请调用 handoff 技能（或输出标准 5 维交接文档），提炼出高保真阶段性交接文档：`,
-      `1. 【任务目标与原始需求】`,
-      `2. 【已验证客观事实与阶段性成果】`,
-      `3. 【关键卡点、报错与最新诊断】`,
-      `4. 【已修改/生成文件清单】`,
-      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】`,
+      `你的职责是提炼高保真阶段性交接文档，确保战役终极目标与未完成业务切片无缝接力：`,
+      `1. 【任务目标与原始需求】（必须清晰继承战役终极北极星目标）`,
+      `2. 【已验证客观事实与阶段性成果】（提炼前序已确认事实与已生成资产）`,
+      `3. 【关键卡点、报错与最新诊断】（客观记录中断原因与现场状态）`,
+      `4. 【已修改/生成文件清单】（记录已落盘与已修改的文件）`,
+      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，严禁误导后继者提前交付退出）`,
       ``,
+      `【行动交付要求】`,
       `请必须使用 action: write_file 将交接文档写入 \`${targetHandoffRelativePath}\`。`,
-      `如果直接返回 Markdown 正文，也请确保内容包含上述完整 5 维交接结构。`,
+      `如果直接返回 Markdown 正文，也请确保内容严格包含上述完整 5 维交接结构，且聚焦指导后继会话继续推进未完成核心业务。`,
     ].join("\n");
 
     let arbitratorResponseText = "";

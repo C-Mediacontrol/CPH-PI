@@ -2,6 +2,10 @@ import type { TurnRecord } from "./compaction.ts";
 
 export interface BlackboxCompactorOptions {
   /**
+   * Root user prompt / battle ultimate goal to persist at top of blackbox.
+   */
+  rootUserPrompt?: string;
+  /**
    * Number of most recent turns to keep completely uncompacted (default: 2).
    */
   preserveRecentTurns?: number;
@@ -85,7 +89,13 @@ export class BlackboxCompactor {
     // 2. Build Crash Scene Section
     const crashSceneSection = this.renderCrashScene(sceneTurns, isSkip);
 
-    // 3. Build Metadata Section
+    // 3. Build Root Goal & Metadata Section
+    const rootPrompt = (options.rootUserPrompt ?? history[0]?.userInput ?? "").trim();
+    const rootGoalSection = [
+      "## 0. 战役终极北极星 (Root User Goal)",
+      rootPrompt || "None (无原始用户输入记录)",
+    ].join("\n");
+
     let compactionStatusText = "";
     if (isSkip) {
       compactionStatusText = "未折叠 (免裁剪模式生效，保留完整自然历史)";
@@ -95,9 +105,9 @@ export class BlackboxCompactor {
       compactionStatusText = `已折叠历史轮次 (前 ${historicalTurns.length} 轮已精炼压缩，保留末期 ${sceneTurns.length} 轮完整现场)`;
     }
 
+    const headerTitle = "# 🚨 事故现场黑匣子快照 (Disaster Recovery Blackbox Snapshot)";
+
     const metadataSection = [
-      "# 🚨 事故现场黑匣子快照 (Disaster Recovery Blackbox Snapshot)",
-      "",
       "## 1. 事故基础元数据 (Incident Metadata)",
       `- **触发时间 (Timestamp)**: ${incidentTimeStr}`,
       `- **总执行轮数 (Total Turns)**: ${totalTurns} 轮`,
@@ -115,6 +125,8 @@ export class BlackboxCompactor {
     // 4. Build Timeline Section with Adaptive Sizing
     // Fixed parts length estimation
     const fixedDocWithoutTimeline = [
+      headerTitle,
+      rootGoalSection,
       metadataSection,
       diagnosticSection,
       crashSceneSection,
@@ -134,6 +146,8 @@ export class BlackboxCompactor {
 
     // 5. Final Document Assembly
     const finalDoc = [
+      headerTitle,
+      rootGoalSection,
       metadataSection,
       diagnosticSection,
       timelineSection,

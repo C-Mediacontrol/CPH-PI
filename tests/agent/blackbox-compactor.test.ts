@@ -255,4 +255,54 @@ describe("BlackboxCompactor Unit Tests (TDD)", () => {
       expect(blackbox).toContain("Turn 4");
     });
   });
+
+  describe("6. Root User Goal Pinning (North Star Persistence)", () => {
+    it("should prioritize options.rootUserPrompt when provided and format Section 0", () => {
+      const history = createMockHistory(5, 500);
+      const blackbox = BlackboxCompactor.extractDisasterBlackbox(history, undefined, {
+        rootUserPrompt: "Fix critical memory leak in Sydney WebSocket handler",
+      });
+
+      expect(blackbox).toContain("## 0. 战役终极北极星 (Root User Goal)");
+      expect(blackbox).toContain("Fix critical memory leak in Sydney WebSocket handler");
+      const idx0 = blackbox.indexOf("## 0. 战役终极北极星 (Root User Goal)");
+      const idx1 = blackbox.indexOf("## 1. 事故基础元数据 (Incident Metadata)");
+      expect(idx0).toBeGreaterThanOrEqual(0);
+      expect(idx1).toBeGreaterThan(idx0);
+    });
+
+    it("should fallback to history[0].userInput when options.rootUserPrompt is not provided", () => {
+      const history = createMockHistory(5, 500);
+      history[0].userInput = "Original user query from first turn";
+      const blackbox = BlackboxCompactor.extractDisasterBlackbox(history, undefined);
+
+      expect(blackbox).toContain("## 0. 战役终极北极星 (Root User Goal)");
+      expect(blackbox).toContain("Original user query from first turn");
+    });
+
+    it("should fallback to default note when neither is available", () => {
+      const history: TurnRecord[] = [
+        { turn: 1, thought: "Starting without explicit userInput" },
+      ];
+      const blackbox = BlackboxCompactor.extractDisasterBlackbox(history, undefined);
+
+      expect(blackbox).toContain("## 0. 战役终极北极星 (Root User Goal)");
+      expect(blackbox).toContain("None (无原始用户输入记录)");
+    });
+
+    it("should retain Section 0 intact before Section 1 even under heavy compaction (30+ turns)", () => {
+      const history = createMockHistory(40, 2000);
+      const blackbox = BlackboxCompactor.extractDisasterBlackbox(history, "429 RateLimit", {
+        rootUserPrompt: "Important root goal that must never be compacted away",
+      });
+
+      expect(blackbox).toContain("## 0. 战役终极北极星 (Root User Goal)");
+      expect(blackbox).toContain("Important root goal that must never be compacted away");
+      const idx0 = blackbox.indexOf("## 0. 战役终极北极星 (Root User Goal)");
+      const idx1 = blackbox.indexOf("## 1. 事故基础元数据 (Incident Metadata)");
+      expect(idx1).toBeGreaterThan(idx0);
+      expect(blackbox.length).toBeLessThanOrEqual(8000);
+      expect(blackbox.length).toBeGreaterThanOrEqual(5000);
+    });
+  });
 });

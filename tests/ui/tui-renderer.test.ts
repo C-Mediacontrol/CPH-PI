@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 import { TuiRenderer, type SessionStatusInfo } from "../../src/ui/tui-renderer.ts";
 import type { CopilotAction, ToolBridgeResult } from "../../src/protocol/tool-bridge.ts";
 
@@ -235,6 +238,126 @@ describe("TuiRenderer Unit & Visual Tests", () => {
       expect(box).toContain("所有任务已完成！");
       expect(box).toContain("1. 接入 TUI 终端渲染");
       expect(box).toContain("2. 实现两段式安全中断");
+    });
+
+    it("should detect and render deliverable artifact card when final answer references existing markdown file", () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-tui-artifact-"));
+      const tempFilePath = path.join(tempDir, "CNNJI-review-report.md");
+      const reportContent = [
+        "# 核心审查报告",
+        "",
+        "这是长达数页的深度代码审查报告。",
+        "",
+        "## 1. 架构总览与执行摘要",
+        "系统的整体健壮度评分良好。",
+        "",
+        "## 2. 深度安全与异常审计",
+        "排查了 12 处边界错误与协议重连机制。",
+        "",
+        "## 3. 性能瓶颈分析",
+        "发现微压实前上下文占用过大问题。",
+        "",
+        "## 4. 优化建议与结论",
+        "建议全面启用交付展板以提升成果透明度。",
+      ].join("\n");
+      fs.writeFileSync(tempFilePath, reportContent, "utf-8");
+
+      try {
+        renderer.renderFinalAnswer(`审查圆满完成，报告已保存至 ${tempFilePath}`);
+        const output = getCombinedOutput();
+
+        // 包含战役成果交付展板标题
+        expect(output).toContain("🏆 战役成果交付展板 (Deliverable Artifact)");
+        // 包含报告文件路径或名称
+        expect(output).toContain(tempFilePath);
+        // 包含文件大小与行数提示
+        expect(output).toMatch(/\d+(\.\d+)?\s*(B|KB|MB)/i);
+        expect(output).toMatch(/\d+\s*行/);
+        // 包含提取的大纲核心标题
+        expect(output).toContain("# 核心审查报告");
+        expect(output).toContain("## 1. 架构总览与执行摘要");
+        expect(output).toContain("## 2. 深度安全与异常审计");
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should gracefully ignore non-existent markdown references in renderFinalAnswer", () => {
+      renderer.renderFinalAnswer("审查完成，见不存在的文件 nonexistent-report-404.md");
+      const output = getCombinedOutput();
+
+      expect(output).toContain("🎯 【任务已完成交付 / FINAL ANSWER】");
+      expect(output).toContain("nonexistent-report-404.md");
+      expect(output).not.toContain("🏆 战役成果交付展板 (Deliverable Artifact)");
+    });
+
+    it("should extract referenced markdown files from various text formats", () => {
+      const text = [
+        "报告见 `reports/summary.md` 和 [审查成果](.docs/review.md)。",
+        "另外还有 Windows 路径 C:\\workspace\\output.md 以及 bare-note.md。",
+      ].join("\n");
+
+      const files = renderer.extractReferencedMarkdownFiles(text);
+      expect(files).toContain("reports/summary.md");
+      expect(files).toContain(".docs/review.md");
+      expect(files).toContain("C:\\workspace\\output.md");
+      expect(files).toContain("bare-note.md");
+    });
+
+    it("should return null when formatArtifactCard is passed non-existent path or directory", () => {
+      expect(renderer.formatArtifactCard("non-existent-file-404.md")).toBeNull();
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-tui-dir-"));
+      try {
+        expect(renderer.formatArtifactCard(tempDir)).toBeNull();
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should format card with truncation note when file has more than 5 headings", () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-tui-headings-"));
+      const tempFilePath = path.join(tempDir, "large-report.md");
+      const headingsContent = [
+        "# Chapter 1",
+        "## Section 1.1",
+        "### Subsection 1.1.1",
+        "## Section 1.2",
+        "# Chapter 2",
+        "## Section 2.1",
+        "## Section 2.2",
+      ].join("\n");
+      fs.writeFileSync(tempFilePath, headingsContent, "utf-8");
+
+      try {
+        const card = renderer.formatDeliverableArtifactCard(tempFilePath);
+        expect(card).not.toBeNull();
+        expect(card).toContain("Chapter 1");
+        expect(card).toContain("Chapter 2");
+        expect(card).toContain("共 7 个核心章节");
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should render multiple artifact cards when multiple existing files are referenced", () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-tui-multi-"));
+      const file1 = path.join(tempDir, "report1.md");
+      const file2 = path.join(tempDir, "report2.md");
+      fs.writeFileSync(file1, "# Report 1\nContent 1", "utf-8");
+      fs.writeFileSync(file2, "# Report 2\nContent 2", "utf-8");
+
+      try {
+        renderer.renderFinalAnswer(`完成了两个报告: \`${file1}\` 与 \`${file2}\``);
+        const output = getCombinedOutput();
+
+        expect(output).toContain("report1.md");
+        expect(output).toContain("report2.md");
+        expect(output).toContain("# Report 1");
+        expect(output).toContain("# Report 2");
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
     });
   });
 

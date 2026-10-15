@@ -13,6 +13,8 @@ import { SessionManager, type SessionRecord } from "./session/session-manager.ts
 import { ChatHubClient } from "./transport/chathub-client.ts";
 import { TerminalLogger } from "./ui/terminal-logger.ts";
 import { ExecutionLedger } from "./session/ledger/execution-ledger.ts";
+import { SubstrateUploader } from "./transport/substrate-uploader.ts";
+import type { AttachmentAnnotation } from "./transport/types.ts";
 import {
   DEFAULT_MAIN_AGENT_ID,
   DEFAULT_CODER_AGENT_ID,
@@ -97,6 +99,7 @@ export interface CphPiCliOptions {
   debugLogPath?: string;
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
+  graphTokenProvider?: () => Promise<string>;
 }
 
 export type CliOptions = CphPiCliOptions;
@@ -133,6 +136,7 @@ export class CphPiCli {
   private isMultilineMode: boolean = false;
   private isInteractive: boolean = false;
   private pendingHandoffSnapshot?: string;
+  private graphTokenProvider?: () => Promise<string>;
   private debug: boolean = false;
   private debugLogPath?: string;
 
@@ -179,6 +183,7 @@ export class CphPiCli {
       });
     this.rl = options.rl;
     this.isInteractive = options.isInteractive ?? (this.rl !== undefined ? true : false);
+    this.graphTokenProvider = options.graphTokenProvider;
     this.bridge =
       options.bridge ||
       new ToolBridge({
@@ -229,6 +234,7 @@ export class CphPiCli {
         timeoutMs,
         cloudAttachmentThresholdChars: options.cloudAttachmentThresholdChars,
         cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines,
+        graphTokenProvider: this.graphTokenProvider,
       } as any);
     (this.orchestrator as any).timeoutMs = timeoutMs;
 
@@ -1098,6 +1104,7 @@ export class CphPiCli {
    * Executes a task using CopilotOrchestrator, guarded by InterruptController and Autonomous Handoff Loop.
    */
   public async executeTask(task: string, overrideSkills?: Skill[]): Promise<void> {
+    const rootTaskPrompt = task;
     const abortController = this.interruptController.beginBusy();
     const skillsToUse = overrideSkills || this.skillRegistry.getActiveSkills();
 
@@ -1112,6 +1119,7 @@ export class CphPiCli {
     }
 
     let currentTaskPrompt = task;
+    let currentInitialAnnotations: AttachmentAnnotation[] | undefined = undefined;
     if (this.pendingHandoffSnapshot) {
       currentTaskPrompt = `【前序会话脱困成果快照】\n${this.pendingHandoffSnapshot}\n\n【接力执行需求】\n${task}`;
       this.pendingHandoffSnapshot = undefined;
@@ -1132,6 +1140,8 @@ export class CphPiCli {
           sessionId: currentSession.id,
           signal: abortController.signal,
           activeSkills: skillsToUse,
+          initialAnnotations: currentInitialAnnotations,
+          rootUserPrompt: rootTaskPrompt,
           events: {
             onDelta: (d) => this.renderer.renderTextChunk(d),
             onReasoning: (r) => this.renderer.renderReasoningChunk(r),
@@ -1225,6 +1235,8 @@ export class CphPiCli {
             },
           },
         });
+
+        currentInitialAnnotations = undefined;
 
         // Record turns and persist to disk
         const startTurnNum = currentSession.turns.length;
@@ -1323,6 +1335,27 @@ export class CphPiCli {
             this.orchestrator.resetHandshake();
             this.lastCompactionRatio = undefined;
 
+            let handoffAnnotation: AttachmentAnnotation | undefined = undefined;
+            if (result.handoffSnapshot && this.graphTokenProvider) {
+              try {
+                const graphToken = await this.graphTokenProvider();
+                if (graphToken) {
+                  const uploadRes = await SubstrateUploader.uploadDocumentToOneDrive(
+                    graphToken,
+                    `handoff-${currentSession.id}.md`,
+                    result.handoffSnapshot,
+                    "markdown"
+                  );
+                  if (uploadRes?.annotation) {
+                    handoffAnnotation = uploadRes.annotation;
+                    currentInitialAnnotations = [handoffAnnotation];
+                  }
+                }
+              } catch {
+                // Graceful fallback to local document if upload fails
+              }
+            }
+
             if (result.disasterRecovered) {
               this.renderer.renderDisasterSuccessorBanner(
                 newSession.id,
@@ -1330,8 +1363,6 @@ export class CphPiCli {
                 this.maxAutonomousHandoffHops,
                 result.handoffDocPath
               );
-
-              currentTaskPrompt = `【自主容灾接力延续任务 - 阶段 ${nextStage}】\n前序会话遭遇突发限流/中断，已由仲裁会话提炼高保真交接文档，请查阅以下交接文档并使用健康账号继续攻坚，优先推进卡点并完成剩余任务：\n\n${result.handoffSnapshot}\n\n【接力执行需求】\n请根据上述交接文档中的【接力第一优先级待办事项 (Actionable Next Steps)】与【任务目标与原始需求】，继续执行并最终给出完整的 FINAL_ANSWER。`;
             } else {
               this.renderer.renderAutonomousHandoffBanner(
                 newSession.id,
@@ -1339,9 +1370,16 @@ export class CphPiCli {
                 this.maxAutonomousHandoffHops,
                 result.handoffDocPath
               );
-
-              currentTaskPrompt = `【自主接力延续任务 - 阶段 ${nextStage}】\n前序会话已达成阶段性成果并已安全脱困，请查阅以下高保真 5 维交接文档，并紧密承接前序工作，优先推进卡点并完成剩余任务：\n\n${result.handoffSnapshot}\n\n【接力执行需求】\n请根据上述交接文档中的【接力第一优先级待办事项 (Actionable Next Steps)】与【任务目标与原始需求】，继续执行并最终给出完整的 FINAL_ANSWER。`;
             }
+
+            currentTaskPrompt = [
+              `【自主${result.disasterRecovered ? "容灾" : ""}接力延续任务 - 阶段 ${nextStage}】`,
+              `终极目标: ${rootTaskPrompt}`,
+              `交接资产: 详细交接文档已通过附件无损挂载送达 (本地路径: ${result.handoffDocPath || "未落盘"})`,
+              `物理账本: .cph/state/execution-ledger.md`,
+              `【接力行动准则】`,
+              `请基于${handoffAnnotation ? "附件中的交接文档" : "本地交接文档"}与物理清单，优先推进未完成的核心业务切片，严禁仅做基线核验即提前退出。`,
+            ].join("\n");
 
             continue;
           } else {
@@ -1471,6 +1509,7 @@ export async function runCli(
     debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
     cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
     cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
+    graphTokenProvider: customOptions.graphTokenProvider,
   };
 
   const cli = new CphPiCli(options);

@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Chalk } from "chalk";
 import { DiffHighlighter } from "./diff-highlighter.ts";
 import type { CopilotAction, ToolBridgeResult } from "../protocol/tool-bridge.ts";
@@ -269,10 +271,196 @@ export class TuiRenderer {
   }
 
   /**
+   * Scans text to extract referenced Markdown file paths (.md / .markdown).
+   * Supports Markdown links, quoted/backticked strings, absolute and relative paths.
+   */
+  public extractReferencedMarkdownFiles(text: string): string[] {
+    if (!text) return [];
+
+    const rawMatches: string[] = [];
+
+    // 1. Markdown link targets: [text](path/to/file.md) or [text](file:///path/to/file.md)
+    const mdLinkRegex = /\[[^\]]*\]\(([^)\s]+?\.(?:md|markdown))\)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = mdLinkRegex.exec(text)) !== null) {
+      rawMatches.push(match[1]);
+    }
+
+    // 2. Quoted strings (backticks, double quotes, single quotes): `path/to/file.md`, "path/to/file.md"
+    const quotedRegex = /[`"']([^`"'\r\n]+?\.(?:md|markdown))[`"']/gi;
+    while ((match = quotedRegex.exec(text)) !== null) {
+      rawMatches.push(match[1]);
+    }
+
+    // 3. Windows absolute paths: e.g. C:\path\to\file.md or C:/path/to/file.md
+    const winAbsRegex = /[A-Za-z]:[\\/][^\r\n`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = winAbsRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+
+    // 4. Posix absolute paths: /path/to/file.md
+    const posixAbsRegex = /\/(?:[^\s`"'()<>*?，。；：！？\t]+?\/)?[^\s`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = posixAbsRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+
+    // 5. Relative paths with directories: reports/summary.md or .docs/review.md
+    const relPathRegex = /(?:\.{1,2}[\\/]|[a-zA-Z0-9_\-.]+[\\/])[^\s`"'()<>*?，。；：！？\t]+?\.(?:md|markdown)\b/gi;
+    while ((match = relPathRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+
+    // 6. Bare markdown filenames: bare-note.md
+    const bareFileRegex = /(?<![\\/\w@.-])[a-zA-Z0-9_\-.]+\.(?:md|markdown)\b/gi;
+    while ((match = bareFileRegex.exec(text)) !== null) {
+      rawMatches.push(match[0]);
+    }
+
+    // Clean, normalize and deduplicate
+    const cleaned: string[] = [];
+    const seen = new Set<string>();
+
+    for (const raw of rawMatches) {
+      let p = raw.trim();
+      if (p.startsWith("file:///")) {
+        p = decodeURIComponent(p.slice(8));
+      } else if (p.startsWith("file://")) {
+        p = decodeURIComponent(p.slice(7));
+      }
+      // Remove enclosing quotes, backticks, brackets
+      p = p.replace(/^[`"'\(\[<（【]+|[`"'\)\]>）】]+$/g, "");
+      // Remove trailing punctuation
+      p = p.replace(/[.,;:!?，。；：！？]+$/, "");
+      p = p.trim();
+
+      if (!p) continue;
+
+      const key = path.normalize(p).toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        cleaned.push(p);
+      }
+    }
+
+    return cleaned;
+  }
+
+  /**
+   * Formats a deliverable artifact card with physical metrics, file size, line count, and heading outline.
+   * Returns null if the file does not exist or is not a regular file.
+   */
+  public formatArtifactCard(filePath: string): string | null {
+    const resolvedPath = path.isAbsolute(filePath)
+      ? filePath
+      : path.resolve(process.cwd(), filePath);
+
+    if (!fs.existsSync(resolvedPath)) {
+      return null;
+    }
+
+    let stats: fs.Stats;
+    let content: string;
+    try {
+      stats = fs.statSync(resolvedPath);
+      if (!stats.isFile()) {
+        return null;
+      }
+      content = fs.readFileSync(resolvedPath, "utf-8");
+    } catch {
+      return null;
+    }
+
+    const sizeBytes = stats.size;
+    let sizeStr: string;
+    if (sizeBytes < 1024) {
+      sizeStr = `${sizeBytes} B`;
+    } else if (sizeBytes < 1024 * 1024) {
+      sizeStr = `${(sizeBytes / 1024).toFixed(1)} KB`;
+    } else {
+      sizeStr = `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    const rawLines = content.split(/\r?\n/);
+    const totalLines = rawLines.length;
+
+    // Extract top 3~5 markdown headings
+    const headings: string[] = [];
+    let totalHeadings = 0;
+    for (const line of rawLines) {
+      const trimmed = line.trim();
+      if (/^(#{1,6})\s+/.test(trimmed)) {
+        totalHeadings++;
+        if (headings.length < 5) {
+          headings.push(trimmed);
+        }
+      }
+    }
+
+    const displayPath = resolvedPath;
+    const contentLines: string[] = [];
+    contentLines.push(`📄 交付文档: ${displayPath}`);
+    contentLines.push(`📊 规格指标: ${sizeStr} | ${totalLines} 行`);
+
+    if (headings.length > 0) {
+      contentLines.push(`📑 章节大纲:`);
+      for (const h of headings) {
+        contentLines.push(`  • ${h}`);
+      }
+      if (totalHeadings > 5) {
+        contentLines.push(`  • ... (共 ${totalHeadings} 个核心章节)`);
+      }
+    }
+
+    let maxLen = 0;
+    for (const l of contentLines) {
+      if (l.length > maxLen) maxLen = l.length;
+    }
+    const boxWidth = Math.min(96, Math.max(72, maxLen + 6));
+
+    const topBorder = this.c.bold.cyan(`┌${"─".repeat(boxWidth - 2)}┐`);
+    const headerTitle = " 🏆 战役成果交付展板 (Deliverable Artifact)";
+    const headerPadding = Math.max(0, boxWidth - 2 - headerTitle.length);
+    const headerLine = `${this.c.bold.cyan("│")}${this.c.bold.yellow(headerTitle)}${" ".repeat(headerPadding)}${this.c.bold.cyan("│")}`;
+    const midDivider = this.c.bold.cyan(`├${"─".repeat(boxWidth - 2)}┤`);
+    const bottomBorder = this.c.bold.cyan(`└${"─".repeat(boxWidth - 2)}┘`);
+
+    const formattedContent = contentLines.map((l) => {
+      const lineLen = l.length;
+      const pad = Math.max(0, boxWidth - 4 - lineLen);
+      return `${this.c.bold.cyan("│")}  ${this.c.white(l)}${" ".repeat(pad)}${this.c.bold.cyan("│")}`;
+    });
+
+    return [
+      topBorder,
+      headerLine,
+      midDivider,
+      ...formattedContent,
+      bottomBorder,
+    ].join("\n");
+  }
+
+  /**
+   * Alias for formatArtifactCard.
+   */
+  public formatDeliverableArtifactCard(filePath: string): string | null {
+    return this.formatArtifactCard(filePath);
+  }
+
+  /**
    * Renders FINAL_ANSWER highlight box to terminal output.
+   * If any referenced deliverable markdown files are found on disk,
+   * automatically renders a deliverable artifact card.
    */
   public renderFinalAnswer(summary: string): void {
     this.writer(`\n${this.formatFinalAnswer(summary)}\n\n`);
+
+    const referencedFiles = this.extractReferencedMarkdownFiles(summary);
+    for (const file of referencedFiles) {
+      const card = this.formatArtifactCard(file);
+      if (card) {
+        this.writer(`${card}\n\n`);
+      }
+    }
   }
 
   /**

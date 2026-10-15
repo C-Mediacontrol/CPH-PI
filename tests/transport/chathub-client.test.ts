@@ -377,6 +377,15 @@ describe("ChatHub Transport Layer Unit Tests", () => {
       mockHttpServer = Bun.serve({
         port: 0,
         async fetch(req) {
+          if (req.method === "GET") {
+            return new Response(
+              JSON.stringify({
+                id: "list-123",
+                parentReference: { siteId: "contoso.sharepoint.com,site-abc,web-def" },
+              }),
+              { headers: { "Content-Type": "application/json" } }
+            );
+          }
           const content = await req.text();
           expect(content).toBe("console.log('hello world');");
           return new Response(
@@ -399,7 +408,7 @@ describe("ChatHub Transport Layer Unit Tests", () => {
       expect(res.driveItemId).toBe("onedrive-item-987");
       expect(res.webUrl).toBe("https://contoso.sharepoint.com/doc.ts");
       expect(res.annotation).toBeDefined();
-      expect(res.annotation.id).toBe("onedrive-item-987");
+      expect(res.annotation.id).toContain("onedrive-item-987");
       expect(res.annotation.messageAnnotationType).toBe("LocalFile");
       expect(res.annotation.text).toBe("code_bundle.ts");
       expect(res.annotation.url).toBe("https://contoso.sharepoint.com/doc.ts");

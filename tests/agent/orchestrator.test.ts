@@ -12,6 +12,7 @@ import { ToolBridge } from "../../src/protocol/tool-bridge.ts";
 class MockChatHubClient implements IOrchestratorChatClient {
   public responses: Array<string | { text: string; reasoning?: string }> = [];
   public sentPrompts: string[] = [];
+  public sentParams: any[] = [];
   public callCount = 0;
 
   constructor(responses: Array<string | { text: string; reasoning?: string }>) {
@@ -26,6 +27,7 @@ class MockChatHubClient implements IOrchestratorChatClient {
     }
   ): Promise<{ text: string }> {
     this.sentPrompts.push(params.text);
+    this.sentParams.push(params);
     const resp = this.responses[this.callCount] || "FINAL_ANSWER: No more mock responses.";
     this.callCount++;
 
@@ -238,6 +240,127 @@ path: sample.txt
           signal: controller.signal,
         })
       ).rejects.toThrow("aborted");
+    });
+  });
+
+  describe("5. Initial Annotations & Arbitrator Prompt Governance (Task 3)", () => {
+    it("should pass initialAnnotations into client.sendMessage on Turn 1", async () => {
+      const dummyAnnotation: any = {
+        id: "att-123",
+        text: "handoff.md",
+        url: "https://example.com/handoff.md",
+        messageAnnotationType: "LocalFile",
+      };
+
+      const mockResponses = [
+        "FINAL_ANSWER: Handshake and task completed.",
+      ];
+
+      const client = new MockChatHubClient(mockResponses);
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: client,
+        customAgentId: "cph-dev",
+      });
+
+      await orchestrator.run({
+        task: "Execute with initial attachment",
+        initialAnnotations: [dummyAnnotation],
+      });
+
+      expect(client.sentParams.length).toBeGreaterThan(0);
+      expect(client.sentParams[0].annotations).toEqual([dummyAnnotation]);
+    });
+
+    it("should reset annotations to undefined on Turn 2 when tool execution generates no cloud attachment", async () => {
+      const dummyAnnotation: any = {
+        id: "att-handoff-001",
+        text: "handoff.md",
+        url: "https://example.com/handoff.md",
+        messageAnnotationType: "LocalFile",
+      };
+
+      const mockResponses = [
+        // Turn 1: Model issues a small read action (does not trigger cloud upload)
+        `\`\`\`action
+tool: read_file
+path: sample.txt
+\`\`\``,
+        // Turn 2: Model finishes
+        "FINAL_ANSWER: Done reading file.",
+      ];
+
+      const client = new MockChatHubClient(mockResponses);
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: client,
+        customAgentId: "cph-dev",
+      });
+
+      await orchestrator.run({
+        task: "Read sample file",
+        initialAnnotations: [dummyAnnotation],
+      });
+
+      expect(client.sentParams.length).toBe(2);
+      expect(client.sentParams[0].annotations).toEqual([dummyAnnotation]);
+      expect(client.sentParams[1].annotations).toBeUndefined();
+    });
+
+    it("should pass rootUserPrompt to disaster recovery blackbox and clean arbitratorPrompt of defeatist phrases", async () => {
+      // Simulate victim client failing with 429
+      const victimClient: any = {
+        sendMessage: async () => {
+          const err: any = new Error("429 Too Many Requests: Throttled");
+          err.statusCode = 429;
+          throw err;
+        },
+      };
+
+      let arbitratorReceivedPrompt = "";
+      const arbitratorClient: any = {
+        sendMessage: async (params: any) => {
+          arbitratorReceivedPrompt = params.text;
+          return {
+            text: `\`\`\`action
+tool: write_file
+path: .cph/handoffs/handoff-test-session.md
+content: # Handoff Document
+\`\`\``,
+          };
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: victimClient,
+        arbitratorChatClient: arbitratorClient,
+      });
+
+      const rootUserPrompt = "战役北极星：重构所有鉴权模块并达到 100% 单测覆盖率";
+      const result = await orchestrator.run({
+        task: "当前阶段临时任务：排查 token 校验失败",
+        rootUserPrompt,
+        sessionId: "test-session",
+      });
+
+      expect(result.disasterRecovered).toBe(true);
+
+      // 1. rootUserPrompt must be passed to BlackboxCompactor and appear in Section 0
+      expect(arbitratorReceivedPrompt).toContain("## 0. 战役终极北极星 (Root User Goal)");
+      expect(arbitratorReceivedPrompt).toContain(rootUserPrompt);
+
+      // 2. arbitratorPrompt must NOT contain defeatist phrases
+      expect(arbitratorReceivedPrompt).not.toContain("若仅为交接");
+      expect(arbitratorReceivedPrompt).not.toContain("核验后即可交付");
+      expect(arbitratorReceivedPrompt).not.toContain("若任务仅为交接或阶段性报告交付");
+
+      // 3. arbitratorPrompt must require arranging unfinished slices as highest priority actionable next steps
+      expect(arbitratorReceivedPrompt).toContain("未完成切片");
+      expect(arbitratorReceivedPrompt).toContain("最高优先级待办");
     });
   });
 });

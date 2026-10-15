@@ -101,7 +101,7 @@ export interface InvokeSubagentAction extends CopilotAction {
 export interface MappedReadArgs {
   path: string;
   offset: number;
-  limit: number;
+  limit?: number;
 }
 
 export interface MappedEditArgs {
@@ -174,9 +174,9 @@ export interface ToolBridgeOptions {
 }
 
 /**
- * Maximum lines allowed in a single slice read (protects Copilot 2k token limit).
+ * Maximum file size in bytes for a full read before triggering safety circuit breaker (1MB).
  */
-export const MAX_READ_SLICE_LINES = 100;
+export const MAX_READ_FILE_BYTES_CIRCUIT_BREAKER = 1024 * 1024; // 1MB 安全熔断
 
 /**
  * Large output persistence thresholds and preview constraints.
@@ -537,25 +537,22 @@ export class ToolBridge {
       const rawStart = action.start_line ?? action.offset ?? action.startLine ?? 1;
       const offset = Math.max(1, Number(rawStart) || 1);
 
-      let requestedLines: number;
+      let limit: number | undefined = undefined;
       const rawEnd = action.end_line ?? action.endLine;
       if (rawEnd !== undefined) {
         const endLine = Number(rawEnd);
-        requestedLines = endLine >= offset ? endLine - offset + 1 : 1;
+        limit = endLine >= offset ? endLine - offset + 1 : 1;
       } else if (action.limit !== undefined || action.lines !== undefined) {
         const rawLimit = Number(action.limit ?? action.lines);
-        requestedLines = rawLimit > 0 ? rawLimit : MAX_READ_SLICE_LINES;
-      } else {
-        requestedLines = MAX_READ_SLICE_LINES;
+        if (rawLimit > 0) {
+          limit = rawLimit;
+        }
       }
-
-      // Enforce strict 100-line slice limit
-      const limit = Math.min(requestedLines, MAX_READ_SLICE_LINES);
 
       const args: MappedReadArgs = {
         path,
         offset,
-        limit,
+        ...(limit !== undefined ? { limit } : {}),
       };
 
       return {
@@ -814,6 +811,53 @@ export class ToolBridge {
           formatted,
           mappedArgs: mapped.args,
         };
+      }
+    }
+
+    // Read safety circuit breaker (1MB threshold for full read)
+    if (mapped.canonicalTool === "read") {
+      const readArgs = mapped.args as MappedReadArgs;
+      const rawPath = readArgs.path;
+      const hasSlice =
+        readArgs.limit !== undefined ||
+        action.start_line !== undefined ||
+        action.startLine !== undefined ||
+        action.end_line !== undefined ||
+        action.endLine !== undefined ||
+        action.limit !== undefined ||
+        action.lines !== undefined;
+
+      if (!hasSlice && rawPath) {
+        try {
+          const fullPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(this.cwd, rawPath);
+          if (fs.existsSync(fullPath)) {
+            const stat = fs.statSync(fullPath);
+            if (stat.isFile() && stat.size > MAX_READ_FILE_BYTES_CIRCUIT_BREAKER) {
+              const fileSize = stat.size;
+              const output = `[ToolBridge Error] File "${rawPath}" (${(fileSize / (1024 * 1024)).toFixed(2)} MB) exceeds the 1MB safety threshold. Please specify start_line and end_line to inspect a targeted slice, or use run_command with head/tail.`;
+              this.recordToLedger(rawActionName, mapped.target, "read", false, output, context);
+              const formatted = this.formatResult({
+                toolName: rawActionName,
+                target: mapped.target,
+                success: false,
+                output,
+              });
+
+              return {
+                actionName: rawActionName,
+                piToolName: "read",
+                target: mapped.target,
+                success: false,
+                output,
+                rawOutput: output,
+                formatted,
+                mappedArgs: mapped.args,
+              };
+            }
+          }
+        } catch {
+          // If stat fails, fall through to native tool execution for proper error handling
+        }
       }
     }
 
