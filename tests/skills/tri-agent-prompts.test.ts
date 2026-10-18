@@ -193,5 +193,15 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(researcherPrompt).not.toContain("不要");
     expect(researcherPrompt).not.toContain("杜绝");
   });
+
+  it("should declare Scout template, Dual-Track Scheduling, and Plan Scope Conservation in subagent SKILL.md (Task 4)", () => {
+    const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+    expect(skillContent).toContain("斥候角色");
+    expect(skillContent).toContain("isScout");
+    expect(skillContent).toContain("双轨调度门禁");
+    expect(skillContent).toContain("轨道 1：单 Scout 斥候内联等待");
+    expect(skillContent).toContain("轨道 2：Swarm 批量并发虚拟化");
+    expect(skillContent).toContain("Plan 范围守恒律与 Partial Success 纵向切片");
+  });
 });
 
