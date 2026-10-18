@@ -95,9 +95,9 @@ export interface OrchestratorEvents {
   onTurnEnd?: (turn: number, response: string) => void;
   onToolStart?: (action: CopilotAction) => void;
   onToolEnd?: (result: ToolBridgeResult) => void;
-  onSubagentStart?: (id: string, role: string, spec: any) => void;
+  onSubagentStart?: (id: string, role: string, spec: any, hop?: number, account?: string) => void;
   onSubagentEnd?: (report: any) => void;
-  onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any) => void;
+  onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any, hopCount?: number, account?: string) => void;
   onAccountSwitched?: (oldEmail: string, newEmail: string) => void;
   onRefusalIntercepted?: (refusalText: string, retryAttempt: number) => void;
   onCompacted?: (clearedChars: number, ratio: number) => void;
@@ -138,6 +138,39 @@ export interface OrchestratorRunResult {
     reasoning?: string;
     response?: string;
   };
+}
+
+/**
+ * Checks if the given subagents represent an inline scout exploration task.
+ * Inline scout tasks are single-agent lightweight probing tasks (researcher/searcher)
+ * that execute within the current main session without virtualizing/ending the main session connection.
+ */
+export function isInlineScoutTask(subagents: any[]): boolean {
+  if (!Array.isArray(subagents) || subagents.length !== 1) {
+    return false;
+  }
+  const task = subagents[0];
+  if (!task || typeof task !== "object") {
+    return false;
+  }
+  const role = String(task.role || "").trim().toLowerCase();
+  if (role !== "researcher" && role !== "searcher") {
+    return false;
+  }
+  if (task.isScout === true || task.isScout === "true") {
+    return true;
+  }
+  const scoutRegex = /scout|斥候|大纲|架构探查|结构梳理/i;
+  const desc = typeof task.description === "string" ? task.description : "";
+  const prompt = typeof task.prompt === "string" ? task.prompt : "";
+  const title = typeof task.title === "string" ? task.title : "";
+  const extraTask = typeof task.task === "string" ? task.task : "";
+  return (
+    scoutRegex.test(desc) ||
+    scoutRegex.test(prompt) ||
+    scoutRegex.test(title) ||
+    scoutRegex.test(extraTask)
+  );
 }
 
 export class Orchestrator {
@@ -360,9 +393,10 @@ export class Orchestrator {
       const pool = this.pool || new AccountPool();
       this.pool = pool;
       try {
-        const token = await pool.getNextAvailableToken(
-          this.customAgentId ? { forAgentId: this.customAgentId } : undefined
-        );
+        const token = await pool.getNextAvailableToken({
+          forAgentId: this.customAgentId,
+          sessionId: this.sessionId,
+        });
         client = this.chatClientFactory
           ? this.chatClientFactory(token, {
               modelTone: this.modelTone,
@@ -401,11 +435,12 @@ export class Orchestrator {
 
     let currentPrompt: string;
     if (this.customAgentId) {
-      // Direct Mode for Custom Agent (CPH-Dev): bypass handshake, send task directly
+      // Direct Mode for Custom Agent (CPH-Dev): bypass handshake, send task directly with 2-level directory skeleton
       currentPrompt = PromptBuilder.buildDirectAgentPrompt(
         this.workspaceRoot,
         task,
-        skillsSection
+        skillsSection,
+        dirTree
       );
     } else if (this.isHandshakePending) {
       // Turn 1 Grounding Handshake (Pure: NO task, NO skillsSection)
@@ -593,11 +628,10 @@ export class Orchestrator {
           // 重试当前 prompt，不递增正式 turn
           continue;
         }
-        // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环
+        // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环（空响应非429限流，严禁标记账号Throttled误杀健康账号）
         if (this.pool) {
           try {
             const currentEmail = (client as any)?.token?.email || "";
-            if (currentEmail) this.pool.markThrottled(currentEmail);
             const nextToken = await this.pool.getNextAvailableToken();
             events?.onAccountSwitched?.(currentEmail, nextToken.email);
             client = new ChatHubClient(nextToken, {
@@ -687,24 +721,31 @@ export class Orchestrator {
         events?.onToolStart?.(parsed.action);
 
         let toolResult: ToolBridgeResult;
+        let isInlineScout = false;
 
         if (parsed.action.tool === "invoke_subagent") {
           const thought = parsed.thought || (parsed as any).action?.thought || "";
           const subagents = (parsed.action as any).subagents || [];
-          const snapshot = createMainPlanSnapshot({
-            originalSessionId: this.sessionId,
-            originalTask: this.pendingTask || task,
-            thought,
-            workspaceRoot: this.workspaceRoot,
-            plannedSubagents: subagents,
-          });
-          const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
-          events?.onMainSessionVirtualized?.(snapshot, mdPath);
+          isInlineScout = isInlineScoutTask(subagents);
 
-          // Safely disconnect client WebSocket if close method exists to free cloud account
-          try {
-            (client as any)?.close?.();
-          } catch {}
+          let snapshot: any = null;
+          if (!isInlineScout) {
+            snapshot = createMainPlanSnapshot({
+              originalSessionId: this.sessionId,
+              originalTask: this.pendingTask || task,
+              thought,
+              workspaceRoot: this.workspaceRoot,
+              plannedSubagents: subagents,
+            });
+            const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
+            events?.onMainSessionVirtualized?.(snapshot, mdPath);
+
+            // Safely disconnect client WebSocket if close method exists to free cloud account
+            try {
+              (client as any)?.close?.();
+            } catch {}
+            this.pool?.releaseSessionLease?.(this.sessionId);
+          }
 
           const runner =
             this.subagentRunner ||
@@ -727,55 +768,60 @@ export class Orchestrator {
           });
 
           const summaryOutput = runner.formatReportSummary(reports);
+          const successCount = reports.filter((r: any) => r.success).length;
+          const isAllSuccess = successCount === reports.length;
+          const isPartialSuccess = successCount > 0 && !isAllSuccess;
           toolResult = {
             actionName: "invoke_subagent",
             piToolName: "subagent",
-            target: `${reports.length} subagents`,
-            success: reports.every((r: any) => r.success),
+            target: `${reports.length} subagents (${successCount}/${reports.length} 成功)`,
+            success: successCount > 0, // 部分成功即标绿，杜绝 1 个失败全量标红
             output: summaryOutput,
             formatted: summaryOutput,
           };
 
-          // Generational transition to Successor Main Session
-          const prevSessionId = this.sessionId;
-          this.generation++;
-          const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
-          this.sessionId = nextSessionId;
-          sessionId = nextSessionId;
-          this.conversationId = crypto.randomUUID();
-          conversationId = this.conversationId;
-          this.lineageTracker?.register({
-            sessionId: nextSessionId,
-            role: "main",
-            status: "active",
-            predecessorId: prevSessionId,
-          });
-          this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
+          if (!isInlineScout) {
+            // Generational transition to Successor Main Session
+            const prevSessionId = this.sessionId;
+            this.generation++;
+            const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
+            this.sessionId = nextSessionId;
+            sessionId = nextSessionId;
+            this.conversationId = crypto.randomUUID();
+            conversationId = this.conversationId;
+            this.lineageTracker?.register({
+              sessionId: nextSessionId,
+              role: "main",
+              status: "active",
+              predecessorId: prevSessionId,
+            });
+            this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
 
-          events?.onSuccessorAwakened?.(nextSessionId, this.generation);
+            events?.onSuccessorAwakened?.(nextSessionId, this.generation);
 
-          if (!this.chatClient && this.pool) {
-            try {
-              const token = await this.pool.getNextAvailableToken(
-                this.customAgentId ? { forAgentId: this.customAgentId } : undefined
-              );
-              client = this.chatClientFactory
-                ? this.chatClientFactory(token, {
-                    modelTone: this.modelTone,
-                    customAgentId: this.customAgentId,
-                  })
-                : new ChatHubClient(token, {
-                    modelTone: this.modelTone,
-                    customAgentId: this.customAgentId,
-                  });
-            } catch {}
-          }
+            if (!this.chatClient && this.pool) {
+              try {
+                const token = await this.pool.getNextAvailableToken(
+                  this.customAgentId ? { forAgentId: this.customAgentId } : undefined
+                );
+                client = this.chatClientFactory
+                  ? this.chatClientFactory(token, {
+                      modelTone: this.modelTone,
+                      customAgentId: this.customAgentId,
+                    })
+                  : new ChatHubClient(token, {
+                      modelTone: this.modelTone,
+                      customAgentId: this.customAgentId,
+                    });
+              } catch {}
+            }
 
-          currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
-          this.completeHandshake();
-          refusalRetries = 0;
-          if (this.generation <= this.maxGenerations) {
-            turn = 0; // Reset turn counter for fresh 30 turns budget!
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+            this.completeHandshake();
+            refusalRetries = 0;
+            if (this.generation <= this.maxGenerations) {
+              turn = 0; // Reset turn counter for fresh 30 turns budget!
+            }
           }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
@@ -788,21 +834,31 @@ export class Orchestrator {
         const rawContent = toolResult.rawOutput || toolResult.output || "";
         const lineCount = rawContent.split(/\r?\n/).length;
         const charCount = rawContent.length;
+        const isFileReadAction =
+          (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("read") ||
+          (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("cat");
+
         const shouldUpload =
           this.enableCloudAttachment &&
           toolResult.success &&
           charCount > 0 &&
-          (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0
-            ? true
-            : charCount > this.cloudAttachmentThresholdChars ||
-              lineCount > this.cloudAttachmentThresholdLines);
+          (isFileReadAction ||
+            (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0
+              ? true
+              : charCount > this.cloudAttachmentThresholdChars ||
+                lineCount > this.cloudAttachmentThresholdLines));
 
         if (shouldUpload) {
           try {
             const graphToken = await this.acquireGraphToken();
             if (graphToken) {
               const actionTag = (parsed.action.tool || toolResult.actionName || "tool").replace(/[^a-zA-Z0-9_-]/g, "_");
-              const uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
+              let uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
+              if (isFileReadAction && (parsed.action?.path || parsed.action?.file || parsed.action?.filePath)) {
+                const targetPath = parsed.action?.path || parsed.action?.file || parsed.action?.filePath || "";
+                const cleanBase = path.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
+                uploadFileName = `read-${cleanBase}-${Date.now()}.txt`;
+              }
               uploadedAttachment = await SubstrateUploader.uploadDocumentToOneDrive(
                 graphToken,
                 rawContent,
@@ -843,7 +899,7 @@ export class Orchestrator {
         }
 
         // Prepare next turn prompt
-        if (parsed.action.tool === "invoke_subagent") {
+        if (parsed.action.tool === "invoke_subagent" && !isInlineScout) {
           // Generational relay: currentPrompt was already set to formatSuccessorTurn1Prompt(...)
         } else if (this.isHandshakePending) {
           this.completeHandshake();
@@ -885,7 +941,7 @@ export class Orchestrator {
         }
 
         events?.onTurnEnd?.(turnIndex, turnResponseText);
-        if (parsed.action.tool === "invoke_subagent" && this.generation > this.maxGenerations) {
+        if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
           return {
             finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
             turnsCount: turnIndex,
@@ -1327,19 +1383,63 @@ export class Orchestrator {
   }
 
   /**
-   * Generates a compact preview of top-level directories and files.
+   * Generates a controlled 2-level directory skeleton of the workspace (zero token pollution, clear architectural perception).
    */
   private collectDirTreePreview(): string {
     try {
+      const ignored = new Set([
+        "node_modules", "dist", ".git", ".cph", ".gemini", "coverage", ".cache", "build"
+      ]);
       const entries = fs.readdirSync(this.workspaceRoot, { withFileTypes: true });
-      const filtered = entries
-        .filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "dist")
-        .slice(0, 15)
-        .map((e) => (e.isDirectory() ? `${e.name}/` : e.name));
-      return filtered.join("\n");
+      const lines: string[] = [];
+      const topEntries = entries
+        .filter((e) => !e.name.startsWith(".") && !ignored.has(e.name))
+        .slice(0, 20);
+
+      for (const entry of topEntries) {
+        if (entry.isDirectory()) {
+          lines.push(`- ${entry.name}/`);
+          try {
+            const subPath = path.join(this.workspaceRoot, entry.name);
+            const subEntries = fs.readdirSync(subPath, { withFileTypes: true })
+              .filter((se) => !se.name.startsWith(".") && !ignored.has(se.name))
+              .slice(0, 10);
+            for (const sub of subEntries) {
+              lines.push(`  - ${sub.name}${sub.isDirectory() ? "/" : ""}`);
+            }
+          } catch {}
+        } else {
+          lines.push(`- ${entry.name}`);
+        }
+      }
+      return lines.join("\n");
     } catch {
       return "";
     }
+  }
+
+  /**
+   * Identifies explicit 429 rate limit errors (excluding URLs containing 429 in GUIDs).
+   */
+  public isExplicitRateLimitError(err: any): boolean {
+    if (!err) return false;
+    const msg = String(err?.message || err || "").toLowerCase();
+    const cleanMsg = msg.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "");
+    const code = String(
+      err?.code || err?.statusCode || err?.status || err?.errorCode || ""
+    ).toLowerCase();
+
+    return (
+      code === "429" ||
+      code === "ratelimit" ||
+      /\b429\b/.test(cleanMsg) ||
+      cleanMsg.includes("throttled") ||
+      cleanMsg.includes("rate limit") ||
+      cleanMsg.includes("too many requests") ||
+      /\bquota\s*(?:exceeded|reached|limit)\b/i.test(cleanMsg) ||
+      cleanMsg.includes("配额已达上限") ||
+      cleanMsg.includes("请求过于频繁")
+    );
   }
 
   /**
@@ -1354,17 +1454,7 @@ export class Orchestrator {
       err?.code || err?.statusCode || err?.status || err?.errorCode || ""
     ).toLowerCase();
 
-    const isRateLimit =
-      code === "429" ||
-      code === "ratelimit" ||
-      msg.includes("429") ||
-      msg.includes("throttled") ||
-      msg.includes("rate limit") ||
-      msg.includes("quota") ||
-      msg.includes("exceeded") ||
-      msg.includes("too many requests") ||
-      msg.includes("配额已达上限") ||
-      msg.includes("请求过于频繁");
+    const isRateLimit = this.isExplicitRateLimitError(err);
 
     const isTimeout =
       code === "etimedout" ||
@@ -1375,18 +1465,26 @@ export class Orchestrator {
     const isNetBreak =
       code === "econnreset" ||
       code === "epipe" ||
+      code === "econnrefused" ||
+      code === "enotfound" ||
+      code === "ehostunreach" ||
+      code === "enetunreach" ||
       msg.includes("econnreset") ||
       msg.includes("etimedout") ||
       msg.includes("epipe") ||
       msg.includes("closed before") ||
       msg.includes("premature close") ||
-      msg.includes("socket hang up");
+      msg.includes("socket hang up") ||
+      msg.includes("failed to connect") ||
+      msg.includes("connection error") ||
+      msg.includes("connection ended") ||
+      msg.includes("fetch failed");
 
     return isRateLimit || isTimeout || isNetBreak;
   }
 
   private isRateLimitError(err: any): boolean {
-    return this.isRecoverableTransportError(err);
+    return this.isExplicitRateLimitError(err);
   }
 
   public isRateLimitResponseText(text: string): boolean {
@@ -1463,7 +1561,11 @@ export class Orchestrator {
       await Promise.resolve(events.onDisasterOccurred(disasterBlackbox, lastError));
     }
 
-    // 2. Mark victim account throttled in pool
+    // 2. Mark victim account throttled in pool ONLY when genuine rate limit occurred
+    const isRateLimitIncident =
+      this.isExplicitRateLimitError(lastError) ||
+      this.isRateLimitResponseText(lastError);
+
     let victimEmail =
       (client as any)?.token?.email ||
       (client as any)?.email ||
@@ -1474,7 +1576,7 @@ export class Orchestrator {
         victimEmail = accounts[0].email;
       }
     }
-    if (victimEmail && this.pool) {
+    if (isRateLimitIncident && victimEmail && this.pool) {
       this.pool.markThrottled(victimEmail);
     }
 

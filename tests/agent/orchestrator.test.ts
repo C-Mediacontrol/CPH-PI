@@ -4,6 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import {
   Orchestrator,
+  isInlineScoutTask,
   type IOrchestratorChatClient,
 } from "../../src/agent/orchestrator.ts";
 import { ToolBridge } from "../../src/protocol/tool-bridge.ts";
@@ -14,6 +15,11 @@ class MockChatHubClient implements IOrchestratorChatClient {
   public sentPrompts: string[] = [];
   public sentParams: any[] = [];
   public callCount = 0;
+  public closed = false;
+
+  close(): void {
+    this.closed = true;
+  }
 
   constructor(responses: Array<string | { text: string; reasoning?: string }>) {
     this.responses = responses;
@@ -363,4 +369,391 @@ content: # Handoff Document
       expect(arbitratorReceivedPrompt).toContain("最高优先级待办");
     });
   });
+
+  describe("6. Error Classification & Rate Limit Distinction", () => {
+    it("should distinguish network drops from 429 rate limit even when URL contains GUID 4329", async () => {
+      let throttledEmail = "";
+      const mockPool: any = {
+        markThrottled: (email: string) => {
+          throttledEmail = email;
+        },
+        getNextAvailableToken: async () => ({
+          token: "dummy",
+          email: "arbitrator@example.com",
+        }),
+      };
+
+      const victimClient: any = {
+        token: { email: "victim@example.com" },
+        sendMessage: async () => {
+          throw new Error(
+            "WebSocket connection to wss://substrate.office.com/m365Copilot/Chathub/hub?sub=9d314297-75dc-4329-8f94-a66489b4b9bb failed: socket hang up"
+          );
+        },
+      };
+
+      const arbitratorClient: any = {
+        sendMessage: async () => ({
+          text: `\`\`\`action\ntool: write_file\npath: .cph/handoffs/handoff-net-session.md\ncontent: # Handoff Document\n\`\`\``,
+        }),
+      };
+
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: victimClient,
+        arbitratorChatClient: arbitratorClient,
+        pool: mockPool,
+      });
+
+      await orchestrator.run({
+        task: "Test task",
+        sessionId: "net-session",
+      });
+
+      // Pure socket hang up must NOT mark account as throttled!
+      expect(throttledEmail).toBe("");
+    });
+
+    it("should mark account as throttled when error is genuine HTTP 429", async () => {
+      let throttledEmail = "";
+      const mockPool: any = {
+        markThrottled: (email: string) => {
+          throttledEmail = email;
+        },
+        getNextAvailableToken: async () => ({
+          token: "dummy",
+          email: "arbitrator@example.com",
+        }),
+      };
+
+      const victimClient: any = {
+        token: { email: "victim@example.com" },
+        sendMessage: async () => {
+          throw new Error("HTTP 429 Too Many Requests: Request limit exceeded");
+        },
+      };
+
+      const arbitratorClient: any = {
+        sendMessage: async () => ({
+          text: `\`\`\`action\ntool: write_file\npath: .cph/handoffs/handoff-429-session.md\ncontent: # Handoff Document\n\`\`\``,
+        }),
+      };
+
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: victimClient,
+        arbitratorChatClient: arbitratorClient,
+        pool: mockPool,
+      });
+
+      await orchestrator.run({
+        task: "Test task",
+        sessionId: "429-session",
+      });
+
+      // Real 429 MUST mark account as throttled!
+      expect(throttledEmail).toBe("victim@example.com");
+    });
+
+    it("should classify initial handshake failure 'failed: Failed to connect' as recoverable transport error", async () => {
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+      });
+
+      const handshakeErr = new Error(
+        "WebSocket connection error: WebSocket connection to 'wss://substrate.office.com/m365Copilot/Chathub/hub' failed: Failed to connect"
+      );
+      expect(orchestrator.isRecoverableTransportError(handshakeErr)).toBe(true);
+
+      const connEndedErr = new Error(
+        "WebSocket connection error: WebSocket connection to 'wss://substrate.office.com/m365Copilot/Chathub/hub' failed: Connection ended"
+      );
+      expect(orchestrator.isRecoverableTransportError(connEndedErr)).toBe(true);
+
+      const refusedErr: any = new Error("connect ECONNREFUSED 127.0.0.1:443");
+      refusedErr.code = "ECONNREFUSED";
+      expect(orchestrator.isRecoverableTransportError(refusedErr)).toBe(true);
+    });
+  });
+
+  describe("7. Scout Inline Wait Mode & Account Physical Isolation (Task 1)", () => {
+    describe("isInlineScoutTask helper function", () => {
+      it("should return true for single researcher with scout-matching description or prompt", () => {
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", description: "斥候探查代码库大纲", prompt: "探查项目结构" },
+          ])
+        ).toBe(true);
+
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", description: "探查系统结构", prompt: "架构探查并整理依赖" },
+          ])
+        ).toBe(true);
+
+        expect(
+          isInlineScoutTask([
+            { role: "searcher", description: "项目大纲梳理", prompt: "搜索项目模块" },
+          ])
+        ).toBe(true);
+
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", description: "进行结构梳理", prompt: "分析代码结构" },
+          ])
+        ).toBe(true);
+
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", description: "Scout codebase architecture", prompt: "list files" },
+          ])
+        ).toBe(true);
+      });
+
+      it("should return true when isScout === true regardless of text", () => {
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", isScout: true, description: "常规调研", prompt: "检查配置" },
+          ])
+        ).toBe(true);
+
+        expect(
+          isInlineScoutTask([
+            { role: "searcher", isScout: "true", description: "快速探查", prompt: "检查环境" },
+          ])
+        ).toBe(true);
+      });
+
+      it("should return false for multi-subagent tasks", () => {
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", isScout: true, description: "斥候1" },
+            { role: "researcher", isScout: true, description: "斥候2" },
+          ])
+        ).toBe(false);
+      });
+
+      it("should return false for coder role even if description mentions scout", () => {
+        expect(
+          isInlineScoutTask([
+            { role: "coder", description: "斥候代码探查", prompt: "编写代码" },
+          ])
+        ).toBe(false);
+      });
+
+      it("should return false for non-scout researcher tasks", () => {
+        expect(
+          isInlineScoutTask([
+            { role: "researcher", description: "深度代码审查与单元测试分析", prompt: "排查所有错误" },
+          ])
+        ).toBe(false);
+      });
+
+      it("should return false for empty or invalid input", () => {
+        expect(isInlineScoutTask([])).toBe(false);
+        expect(isInlineScoutTask(null as any)).toBe(false);
+        expect(isInlineScoutTask([{}])).toBe(false);
+      });
+    });
+
+    describe("Orchestrator Scout Inline Wait Closed-Loop", () => {
+      it("should NOT trigger onMainSessionVirtualized, NOT increment generation, NOT close client, and return result in current session", async () => {
+        const mockResponses = [
+          // Turn 1: Orchestrator issues inline scout subagent
+          `THOUGHT: 派发斥候子代理探查系统架构大纲
+\`\`\`action
+tool: invoke_subagent
+subagents:
+  - role: researcher
+    description: 斥候探查代码库大纲
+    prompt: 探查当前工作区目录并提取架构大纲
+\`\`\``,
+          // Turn 2: Orchestrator receives scout report and completes with FINAL_ANSWER
+          `THOUGHT: 收到斥候探测报告，已清晰掌握架构。
+FINAL_ANSWER: 架构大纲探查完毕，包含 auth、agent 与 protocol 核心模块。`,
+        ];
+
+        const client = new MockChatHubClient(mockResponses);
+
+        let executeBatchTasks: any[] = [];
+        const mockRunner = {
+          executeBatch: async (tasks: any[]) => {
+            executeBatchTasks = tasks;
+            return [
+              {
+                id: "sub-scout-1",
+                role: "researcher",
+                description: "斥候探查代码库大纲",
+                success: true,
+                finalAnswer: "发现 auth、agent、protocol 模块，结构完整。",
+                turnsCount: 2,
+                durationMs: 650,
+                deliverablePath: ".cph/reports/report-scout-1.md",
+              },
+            ];
+          },
+          formatReportSummary: () =>
+            `### 🎯 斥候子代理探测报告: 发现 auth、agent、protocol 模块，结构完整。`,
+        };
+
+        const orchestrator = new Orchestrator({
+          workspaceRoot: tempDir,
+          bridge,
+          chatClient: client,
+          subagentRunner: mockRunner as any,
+          customAgentId: "main-scout-agent",
+        });
+
+        let virtualizedCalled = false;
+        let virtualizedSnapshot: any = null;
+        let successorAwakenedCalled = false;
+        const toolStarts: string[] = [];
+        const toolEnds: string[] = [];
+
+        const initialGeneration = orchestrator.getGeneration();
+        expect(initialGeneration).toBe(1);
+
+        const result = await orchestrator.run({
+          task: "探查代码库并输出大纲",
+          sessionId: "main-scout-session",
+          events: {
+            onMainSessionVirtualized: (snapshot) => {
+              virtualizedCalled = true;
+              virtualizedSnapshot = snapshot;
+            },
+            onSuccessorAwakened: () => {
+              successorAwakenedCalled = true;
+            },
+            onToolStart: (a) => {
+              toolStarts.push(a.tool || "");
+            },
+            onToolEnd: (r) => {
+              toolEnds.push(r.actionName);
+            },
+          },
+        });
+
+        // 1. Task completed in current session
+        expect(result.completed).toBe(true);
+        expect(result.turnsCount).toBe(2);
+        expect(result.finalAnswer).toContain("架构大纲探查完毕");
+
+        // 2. Scout Inline Wait invariants:
+        // - onMainSessionVirtualized MUST NOT be triggered
+        expect(virtualizedCalled).toBe(false);
+        expect(virtualizedSnapshot).toBeNull();
+
+        // - Client connection MUST remain open and NOT closed
+        expect(client.closed).toBe(false);
+
+        // - Generation MUST NOT increment
+        expect(orchestrator.getGeneration()).toBe(1);
+
+        // - onSuccessorAwakened MUST NOT be called
+        expect(successorAwakenedCalled).toBe(false);
+
+        // 3. Runner was called with subagents spec
+        expect(executeBatchTasks.length).toBe(1);
+        expect(executeBatchTasks[0].description).toBe("斥候探查代码库大纲");
+
+        // 4. Tool start and end events fired for invoke_subagent
+        expect(toolStarts).toContain("invoke_subagent");
+        expect(toolEnds).toContain("invoke_subagent");
+
+        // 5. Turn 2 prompt sent to client contained scout report
+        expect(client.sentPrompts.length).toBe(2);
+        expect(client.sentPrompts[1]).toContain("斥候子代理探测报告");
+      });
+
+      it("should execute standard virtualization and generational increment for non-scout multi-subagent batch", async () => {
+        const mockResponses = [
+          // Turn 1: Orchestrator issues standard batch with coder and researcher
+          `THOUGHT: 派发多智能体协作实施复杂任务
+\`\`\`action
+tool: invoke_subagent
+subagents:
+  - role: coder
+    description: 编写业务代码
+    prompt: 实现重构代码
+  - role: researcher
+    description: 验证单元测试
+    prompt: 运行测试并分析覆盖率
+\`\`\``,
+          // Turn 2: Successor session completes
+          `FINAL_ANSWER: 多智能体批处理任务圆满完成。`,
+        ];
+
+        const client = new MockChatHubClient(mockResponses);
+
+        const mockRunner = {
+          executeBatch: async () => [
+            {
+              id: "sub-1",
+              role: "coder",
+              description: "编写业务代码",
+              success: true,
+              finalAnswer: "代码已编写",
+              turnsCount: 3,
+              durationMs: 1500,
+            },
+            {
+              id: "sub-2",
+              role: "researcher",
+              description: "验证单元测试",
+              success: true,
+              finalAnswer: "单测 100% 通过",
+              turnsCount: 2,
+              durationMs: 1200,
+            },
+          ],
+          formatReportSummary: () => "### 🎯 子代理多会话并发执行报告: 全部成功",
+        };
+
+        const orchestrator = new Orchestrator({
+          workspaceRoot: tempDir,
+          bridge,
+          chatClient: client,
+          subagentRunner: mockRunner as any,
+          customAgentId: "main-batch-agent",
+        });
+
+        let virtualizedCalled = false;
+        let successorAwakenedCalled = false;
+        let successorNewSessionId = "";
+
+        const result = await orchestrator.run({
+          task: "多智能体批量实施任务",
+          sessionId: "main-batch-session",
+          events: {
+            onMainSessionVirtualized: () => {
+              virtualizedCalled = true;
+            },
+            onSuccessorAwakened: (newSessionId) => {
+              successorAwakenedCalled = true;
+              successorNewSessionId = newSessionId;
+            },
+          },
+        });
+
+        // For non-scout batch:
+        // - Virtualization MUST be triggered
+        expect(virtualizedCalled).toBe(true);
+
+        // - Client close method was called
+        expect(client.closed).toBe(true);
+
+        // - Generation MUST increment
+        expect(orchestrator.getGeneration()).toBe(2);
+
+        // - onSuccessorAwakened MUST be triggered
+        expect(successorAwakenedCalled).toBe(true);
+        expect(successorNewSessionId).toContain("_gen2");
+      });
+    });
+  });
 });
+
+
