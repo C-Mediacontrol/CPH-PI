@@ -1173,7 +1173,7 @@ class ChatHubClient {
       };
       ws.onclose = (ev) => {
         if (!hasSentChat) {
-          if (ev.code === 1008 || ev.code === 1006) {
+          if (ev.code === 1008) {
             events?.onRateLimitDetected?.(this.token.email);
           }
           settleReject(new Error(`WebSocket closed prematurely (${ev.code}): ${ev.reason || "unknown reason"}`));

@@ -57,12 +57,12 @@
 - Consumes: `AccountPool.getNextAvailableToken`, `SubagentRunner.executeBatch`
 - Produces: `isInlineScoutTask(subagents: any[]): boolean`
 
-- [ ] **Step 1: 编写内联模式失败测试用例**
+- [x] **Step 1: 编写内联模式失败测试用例**
 
 在 `tests/agent/orchestrator.test.ts` 中添加测试：
 当 `subagents.length === 1 && subagents[0].role === 'researcher' && subagents[0].isScout === true`（或描述包含大纲/斥候/scout）时，验证主控不触发 `onMainSessionVirtualized`，会话代次保持为当前代次（不自增 `generation`），且子代理完成后直接作为 tool call 的输出回传。
 
-- [ ] **Step 2: 运行测试确认红灯**
+- [x] **Step 2: 运行测试确认红灯**
 
 运行命令:
 ```bash
@@ -70,7 +70,7 @@ bun test tests/agent/orchestrator.test.ts
 ```
 预期: 失败（当前无内联等待分支，默认全量虚拟化）。
 
-- [ ] **Step 3: 实现 Orchestrator 内联等待分支**
+- [x] **Step 3: 实现 Orchestrator 内联等待分支**
 
 在 `src/agent/orchestrator.ts` 中：
 1. 增加判定辅助函数 `isInlineScoutTask(subagents)`：
@@ -85,7 +85,7 @@ bun test tests/agent/orchestrator.test.ts
    - 若不命中（批量攻坚或含 Coder）：
      - 维持既有的虚拟化归档与代际交接逻辑不变。
 
-- [ ] **Step 4: 运行测试确认绿灯**
+- [x] **Step 4: 运行测试确认绿灯**
 
 运行命令:
 ```bash
@@ -93,7 +93,7 @@ bun test tests/agent/orchestrator.test.ts
 ```
 预期: PASS。
 
-- [ ] **Step 5: Git 提交**
+- [x] **Step 5: Git 提交**
 
 ```bash
 git add src/agent/orchestrator.ts tests/agent/orchestrator.test.ts
@@ -112,12 +112,12 @@ git commit -m "feat(orchestrator): add inline wait mode for single scout researc
 - Consumes: `SubstrateUploader.uploadSourceFile`
 - Produces: `extractTargetFilePath(prompt: string): string | null`, 自动注入 `initialAnnotations` 到子会话
 
-- [ ] **Step 1: 编写开局附件注入失败测试用例**
+- [x] **Step 1: 编写开局附件注入失败测试用例**
 
 在 `tests/agent/subagent-runner.test.ts` 中添加测试：
 当派发单文件子任务且提示词中声明目标文件路径时，验证 `SubagentRunner` 在调用 `orchestrator.run` 时传入了包含该文件 OneDrive 信息的 `initialAnnotations`。
 
-- [ ] **Step 2: 运行测试确认红灯**
+- [x] **Step 2: 运行测试确认红灯**
 
 运行命令:
 ```bash
@@ -125,7 +125,7 @@ bun test tests/agent/subagent-runner.test.ts
 ```
 预期: 失败（当前未提取目标文件预传附件）。
 
-- [ ] **Step 3: 实现目标文件提取与自动挂载逻辑**
+- [x] **Step 3: 实现目标文件提取与自动挂载逻辑**
 
 在 `src/agent/subagent-runner.ts` 中：
 1. 增加路径探测辅助函数 `extractTargetFilePath(taskSpec: SubagentTaskSpec, workspaceRoot: string): string | null`；
@@ -136,7 +136,7 @@ bun test tests/agent/subagent-runner.test.ts
    - 将 `initialAnnotations` 传入 `orchestrator.run({ task: currentTaskPrompt, initialAnnotations, ... })`；
    - 在日志中记录 `☁️ [开局附件已直传挂载] <文件路径>`。
 
-- [ ] **Step 4: 运行测试确认绿灯**
+- [x] **Step 4: 运行测试确认绿灯**
 
 运行命令:
 ```bash
@@ -144,7 +144,7 @@ bun test tests/agent/subagent-runner.test.ts
 ```
 预期: PASS。
 
-- [ ] **Step 5: Git 提交**
+- [x] **Step 5: Git 提交**
 
 ```bash
 git add src/agent/subagent-runner.ts tests/agent/subagent-runner.test.ts
@@ -164,14 +164,14 @@ git commit -m "feat(subagent-runner): automatically upload and mount target file
 - Consumes: `AGENTS.md` 纯粹正向引导规则
 - Produces: 更新后的 `cph-main-agent-prompt.txt`, `cph-researcher-agent-prompt.txt`
 
-- [ ] **Step 1: 检查既有提示词测试基线**
+- [x] **Step 1: 检查既有提示词测试基线**
 
 运行命令:
 ```bash
 bun test tests/skills/tri-agent-prompts.test.ts
 ```
 
-- [ ] **Step 2: 更新 `cph-main-agent-prompt.txt`**
+- [x] **Step 2: 更新 `cph-main-agent-prompt.txt`**
 1. 注入**两阶段斥候领航（Two-Stage Scout & Swarm）工作法**：
    - 面对未知大文件时，优先派发单个 Researcher 斥候（内联等待），在 Turn 3 获取结构化大纲后再立桩精细的 `plan.md`；
 2. 注入**Plan 调整规范与范围守恒律（Conservation of Scope）**：
@@ -179,13 +179,13 @@ bun test tests/skills/tri-agent-prompts.test.ts
    - 恪守战役目标范围守恒，严禁横向发散新增无关顶层任务；
 3. 升级**子任务切片物理指标**：单任务关注点聚焦于 ≤300 行代码或单一逻辑子系统。
 
-- [ ] **Step 3: 更新 `cph-researcher-agent-prompt.txt`**
+- [x] **Step 3: 更新 `cph-researcher-agent-prompt.txt`**
 1. 强化**全量附件直通与宏观语义块审阅心智**：
    - 明确指出工作区与源文件均已通过附件完整提供，直接通读并定位函数定义与数据流，摒弃通过命令分块切片读取文件的做法；
 2. 强化**单 Hop 闭环交付心智**：
    - 证据闭环后立即输出 `FINAL_ANSWER` 结题，以原生单会话交付为主导。
 
-- [ ] **Step 4: 运行提示词合规性与无负面词校验测试**
+- [x] **Step 4: 运行提示词合规性与无负面词校验测试**
 
 运行命令:
 ```bash
@@ -193,7 +193,7 @@ bun test tests/skills/tri-agent-prompts.test.ts
 ```
 预期: PASS（100% 正向引导，无负面词，各三元组职责清晰）。
 
-- [ ] **Step 5: Git 提交**
+- [x] **Step 5: Git 提交**
 
 ```bash
 git add cph-main-agent-prompt.txt cph-researcher-agent-prompt.txt tests/skills/tri-agent-prompts.test.ts
@@ -210,16 +210,16 @@ git commit -m "docs(prompts): update main and researcher prompts with scout prot
 **Interfaces:**
 - Produces: 规范化的 Scout 斥候工单模板与双轨调度门禁指南
 
-- [ ] **Step 1: 升级 `skills/subagent/SKILL.md` 核心内容**
+- [x] **Step 1: 升级 `skills/subagent/SKILL.md` 核心内容**
 1. 增加 **Scout 斥候模式工单标准模板**（说明其内联等待机制、首轮附件挂载与大纲输出要求）；
 2. 明确 **双轨调度门禁 (Dual-Track Scheduling Gate)**（单 Scout 内联等待 vs 批量 Swarm 虚拟化归档）；
 3. 增加 **后继主控 Plan 范围守恒律与 Partial Success 纵向切片指引**。
 
-- [ ] **Step 2: 校验技能内容符合正向引导**
+- [x] **Step 2: 校验技能内容符合正向引导**
 
 检查是否有违背正向引导规范的词汇，确保语言积极专业。
 
-- [ ] **Step 3: Git 提交**
+- [x] **Step 3: Git 提交**
 
 ```bash
 git add skills/subagent/SKILL.md
@@ -234,7 +234,7 @@ git commit -m "docs(skills): update subagent skill with scout template and dual-
 - Verify: 全部 86 个测试套件
 - Build: `dist/copilot-agent-bundle.zip`
 
-- [ ] **Step 1: 运行全量测试套件**
+- [x] **Step 1: 运行全量测试套件**
 
 运行命令:
 ```bash
@@ -242,7 +242,7 @@ bun test tests/
 ```
 预期: 622+ 个测试 100% PASS。
 
-- [ ] **Step 2: 重新构建与打包 Agent 分发包**
+- [x] **Step 2: 重新构建与打包 Agent 分发包**
 
 运行命令:
 ```bash
@@ -251,11 +251,11 @@ bun run package
 ```
 预期: 生成更新后的 `dist/copilot-agent-bundle.zip` 及 `dist/copilot-agent-bundle/` 解压目录。
 
-- [ ] **Step 3: 检查打包产物完整性**
+- [x] **Step 3: 检查打包产物完整性**
 
 核对 `dist/copilot-agent-bundle/` 下的 `cph-main-agent-prompt.txt`、`cph-researcher-agent-prompt.txt`、`skills/subagent/SKILL.md` 与工作区完全一致。
 
-- [ ] **Step 4: Git 提交**
+- [x] **Step 4: Git 提交**
 
 ```bash
 git add .
@@ -269,3 +269,4 @@ git commit -m "chore: verify tests and rebuild distribution bundle"
 - [x] **无占位符**: 所有步骤均有具体的函数名、判定逻辑与运行命令，无 TBD/TODO；
 - [x] **类型一致性**: `isInlineScoutTask`、`initialAnnotations` 与 `AttachmentAnnotation` 类型接口前后对应；
 - [x] **Agent-Friendly 切片**: 任务按底层调度（Task 1）、执行器（Task 2）、提示词（Task 3）、技能（Task 4）、打包（Task 5）分层正交拆分，利于单点突破。
+

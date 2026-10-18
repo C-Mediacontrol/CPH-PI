@@ -11559,7 +11559,7 @@ class ChatHubClient {
       };
       ws.onclose = (ev) => {
         if (!hasSentChat) {
-          if (ev.code === 1008 || ev.code === 1006) {
+          if (ev.code === 1008) {
             events?.onRateLimitDetected?.(this.token.email);
           }
           settleReject(new Error(`WebSocket closed prematurely (${ev.code}): ${ev.reason || "unknown reason"}`));
@@ -11587,6 +11587,7 @@ class AccountPool {
   allowedAccounts;
   originalAllowedCase = new Map;
   inFlightLeases = new Set;
+  sessionLeases = new Map;
   currentIndex = 0;
   maxAccounts;
   defaultCooldownMs;
@@ -11669,8 +11670,9 @@ class AccountPool {
   }
   refreshAccountList() {
     const rawAccounts = this.manager.loadAccounts();
-    const capped = rawAccounts.slice(0, this.maxAccounts);
-    for (const acc of capped) {
+    const hasAllowedFilter = this.allowedAccounts && this.allowedAccounts.size > 0;
+    const targetAccounts = hasAllowedFilter ? rawAccounts.filter((acc) => this.isAccountAllowed(acc.email)) : rawAccounts.slice(0, this.maxAccounts);
+    for (const acc of rawAccounts) {
       const key = acc.email.toLowerCase();
       const isAllowed = this.isAccountAllowed(acc.email);
       if (!this.statuses.has(key)) {
@@ -11689,7 +11691,7 @@ class AccountPool {
         st.isAllowed = isAllowed;
       }
     }
-    return capped.filter((acc) => this.isAccountAllowed(acc.email));
+    return targetAccounts;
   }
   getPoolStatus() {
     this.refreshAccountList();
@@ -11701,13 +11703,125 @@ class AccountPool {
         st.cooldownUntil = 0;
       }
       st.isAllowed = this.isAccountAllowed(st.email);
-      const ineligibles = this.ineligibleAgents.get(st.email.toLowerCase());
+      const lower = st.email.toLowerCase();
+      const ineligibles = this.ineligibleAgents.get(lower);
+      const isLeased = this.isAccountLeased(lower);
+      let leasedBy;
+      for (const [sId, lEmail] of this.sessionLeases.entries()) {
+        if (lEmail === lower) {
+          leasedBy = sId;
+          break;
+        }
+      }
       result.push({
         ...st,
+        isLeased,
+        leasedBy,
         ineligibleAgents: ineligibles ? Array.from(ineligibles) : []
       });
     }
     return result;
+  }
+  isAccountLeased(email) {
+    const lower = email.trim().toLowerCase();
+    for (const leasedEmail of this.sessionLeases.values()) {
+      if (leasedEmail === lower)
+        return true;
+    }
+    return this.inFlightLeases.has(lower);
+  }
+  getAvailableCapacity(forAgentId) {
+    const normAgentId = forAgentId?.trim().toLowerCase();
+    const accounts = this.refreshAccountList();
+    const now = Date.now();
+    let capacity = 0;
+    for (const acc of accounts) {
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key);
+      if (!status)
+        continue;
+      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId))
+        continue;
+      if (status.isThrottled && now < status.cooldownUntil)
+        continue;
+      if (this.isAccountLeased(key))
+        continue;
+      capacity++;
+    }
+    return capacity;
+  }
+  async acquireSessionLease(sessionId, options) {
+    const normSessionId = sessionId.trim();
+    if (!normSessionId) {
+      throw new Error("sessionId is required to acquire a session lease");
+    }
+    const existingEmail = this.sessionLeases.get(normSessionId);
+    if (existingEmail) {
+      const status = this.statuses.get(existingEmail.toLowerCase());
+      if (status && !status.isThrottled) {
+        status.lastUsedAt = Date.now();
+        status.totalRequests++;
+        return await this.manager.getAccessToken(existingEmail);
+      }
+      this.sessionLeases.delete(normSessionId);
+    }
+    const accounts = this.refreshAccountList();
+    const total = accounts.length;
+    if (total === 0) {
+      throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
+    }
+    const rawAgentId = options?.forAgentId;
+    const normAgentId = rawAgentId ? ChatHubClient.normalizeAgentId(rawAgentId) || rawAgentId.trim() : undefined;
+    const now = Date.now();
+    const startIndex = this.currentIndex;
+    for (let i = 0;i < total; i++) {
+      const idx = (startIndex + i) % total;
+      const acc = accounts[idx];
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key);
+      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+        continue;
+      }
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+      }
+      if (status.isThrottled) {
+        continue;
+      }
+      if (this.isAccountLeased(key)) {
+        continue;
+      }
+      this.sessionLeases.set(normSessionId, key);
+      this.currentIndex = (idx + 1) % total;
+      try {
+        const session = await this.manager.getAccessToken(acc.email);
+        status.lastUsedAt = Date.now();
+        status.totalRequests++;
+        return session;
+      } catch (err) {
+        this.sessionLeases.delete(normSessionId);
+        status.isThrottled = true;
+        status.cooldownUntil = Date.now() + 60 * 1000;
+        status.throttledCount = (status.throttledCount || 0) + 1;
+      }
+    }
+    const eligibleAccounts = accounts.filter((acc) => !normAgentId || this.isAgentEligible(acc.email, normAgentId));
+    const unthrottledCount = eligibleAccounts.filter((acc) => !this.statuses.get(acc.email.toLowerCase())?.isThrottled).length;
+    const error = new Error(`ALL_ACCOUNTS_LEASED: All ${unthrottledCount} available accounts in the pool are currently leased by active sessions.`);
+    error.code = "ALL_ACCOUNTS_LEASED";
+    throw error;
+  }
+  releaseSessionLease(sessionId) {
+    const normSessionId = sessionId.trim();
+    this.sessionLeases.delete(normSessionId);
+  }
+  getSessionLease(sessionId) {
+    const normSessionId = sessionId.trim();
+    const lower = this.sessionLeases.get(normSessionId);
+    if (!lower)
+      return;
+    return this.originalAllowedCase.get(lower) || this.statuses.get(lower)?.email || lower;
   }
   markThrottled(email, durationMs) {
     const key = email.toLowerCase();
@@ -11786,6 +11900,9 @@ class AccountPool {
     if (accounts.length === 0) {
       throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
     }
+    if (typeof targetAgentOrOptions === "object" && targetAgentOrOptions?.sessionId) {
+      return await this.acquireSessionLease(targetAgentOrOptions.sessionId, targetAgentOrOptions);
+    }
     const rawAgentId = typeof targetAgentOrOptions === "string" ? targetAgentOrOptions : targetAgentOrOptions?.forAgentId;
     const normAgentId = rawAgentId ? ChatHubClient.normalizeAgentId(rawAgentId) || rawAgentId.trim() : undefined;
     const now = Date.now();
@@ -11813,7 +11930,8 @@ class AccountPool {
         if (status.isThrottled) {
           continue;
         }
-        if (preferUnleased && this.inFlightLeases.has(key)) {
+        const isLeased = this.inFlightLeases.has(key) || this.isAccountLeased(key);
+        if (preferUnleased && isLeased) {
           continue;
         }
         this.inFlightLeases.add(key);
@@ -12738,8 +12856,8 @@ function createOutputFileStream(prefix, extension) {
 }
 
 // pi/packages/coding-agent/src/core/tools/truncate.ts
-var DEFAULT_MAX_LINES = 2000;
-var DEFAULT_MAX_BYTES = 50 * 1024;
+var DEFAULT_MAX_LINES = 500000;
+var DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
 function splitLinesForCounting(content) {
   if (content.length === 0) {
     return [];
@@ -20904,7 +21022,7 @@ function createReadToolDefinition(cwd, options) {
   return {
     name: "read",
     label: "read",
-    description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+    description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Reads the complete file content losslessly without arbitrary truncation (physical safeguard ceiling: 100MB). Use offset and limit only when you specifically need a partial line window.`,
     promptSnippet: readToolSystemPromptContribution.snippet,
     promptGuidelines: [...readToolSystemPromptContribution.guidelines],
     parameters: readSchema,
@@ -20987,28 +21105,14 @@ ${nonVisionImageNote}`;
               let outputText;
               if (truncation.firstLineExceedsLimit) {
                 const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
-                outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
+                outputText = `[File exceeds ${formatSize(DEFAULT_MAX_BYTES)} physical safety limit (${firstLineSize}). Please use targeted shell commands (ripgrep/sed/head) to inspect specific sections.]`;
                 details = { truncation };
               } else if (truncation.truncated) {
                 const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
-                const nextOffset = endLineDisplay + 1;
-                outputText = truncation.content;
-                if (truncation.truncatedBy === "lines") {
-                  outputText += `
-
-[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Use offset=${nextOffset} to continue.]`;
-                } else {
-                  outputText += `
-
-[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Use offset=${nextOffset} to continue.]`;
-                }
-                details = { truncation };
-              } else if (userLimitedLines !== undefined && startLine + userLimitedLines < allLines.length) {
-                const remaining = allLines.length - (startLine + userLimitedLines);
-                const nextOffset = startLine + userLimitedLines + 1;
                 outputText = `${truncation.content}
 
-[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
+[Content reached ${formatSize(DEFAULT_MAX_BYTES)} physical safety ceiling. Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}.]`;
+                details = { truncation };
               } else {
                 outputText = truncation.content;
               }
@@ -22128,10 +22232,16 @@ ${options.task}
 
 ` : ""}${this.PROTOCOL_REMINDER}`;
   }
-  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "") {
+  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "") {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
     let prompt = `【本地宿主机工作区事实】
 - 工作区绝对路径: ${wsNorm}`;
+    if (dirSkeleton && dirSkeleton.trim() !== "") {
+      prompt += `
+
+【工作区受控目录骨架 (2-Level Skeleton)】
+${dirSkeleton.trim()}`;
+    }
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
       prompt += `
 
@@ -22743,7 +22853,8 @@ class BlackboxCompactor {
     const lastTurn = history && history.length > 0 ? history[history.length - 1] : undefined;
     const lastTurnErr = (lastTurn?.error || "").trim();
     const combined = `${errText} ${lastTurnErr}`.toLowerCase();
-    if (/429|rate[- ]?limit|throttl|quota|too many requests/.test(combined)) {
+    const sanitized = combined.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "");
+    if (/\b429\b|rate[- ]?limit|throttl|\bquota\s*(?:exceeded|reached|limit)\b|too many requests|配额已达上限|请求过于频繁/.test(sanitized)) {
       return {
         category: "429_RATE_LIMIT (上游频控限流)",
         signature: "检测到 Sydney 上游 429 频控限流或请求阈值溢出，会话被迫异常终止。",
@@ -23593,6 +23704,80 @@ class TerminalLogger {
 }
 
 // src/agent/subagent-runner.ts
+function cleanCandidatePath(raw) {
+  let cleaned = raw.trim();
+  cleaned = cleaned.replace(/^[`'"]+|[`'"]+$/g, "");
+  cleaned = cleaned.replace(/[,.;:!?`'"’”’\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF09\u3011\u300B\)>\]}]+$/, "");
+  cleaned = cleaned.replace(/^[,\.;:!?`'"’”’\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF08\u3010\u300A\(<\[{]+/, "");
+  return cleaned.trim();
+}
+function resolveExistingFilePath(candidate, workspaceRoot) {
+  if (!candidate || typeof candidate !== "string")
+    return null;
+  const cleaned = cleanCandidatePath(candidate);
+  if (!cleaned)
+    return null;
+  const tryCandidates = [cleaned];
+  const cjkPunctIdx = cleaned.search(/[\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F]/);
+  if (cjkPunctIdx !== -1) {
+    const beforePunct = cleanCandidatePath(cleaned.substring(0, cjkPunctIdx));
+    if (beforePunct && beforePunct !== cleaned) {
+      tryCandidates.push(beforePunct);
+    }
+  }
+  for (const item of tryCandidates) {
+    try {
+      const absPath = path7.isAbsolute(item) ? item : path7.resolve(workspaceRoot, item);
+      if (fs7.existsSync(absPath) && fs7.statSync(absPath).isFile()) {
+        return absPath;
+      }
+    } catch {}
+  }
+  return null;
+}
+function extractTargetFilePath(taskSpec, workspaceRoot) {
+  if (!taskSpec)
+    return null;
+  const explicit = taskSpec.targetPath || taskSpec.file || taskSpec.filePath;
+  if (typeof explicit === "string" && explicit.trim()) {
+    return resolveExistingFilePath(explicit, workspaceRoot);
+  }
+  const texts = [taskSpec.prompt, taskSpec.description].filter((t) => typeof t === "string" && t.trim().length > 0);
+  const quotedPrefixRegex = /(?:目标文件|针对文件|分析文件|读取文件|探查文件|target\s*file|file)[:：\s]+["'`]([^"'`\r\n]+)["'`]/gi;
+  for (const text of texts) {
+    quotedPrefixRegex.lastIndex = 0;
+    let match;
+    while ((match = quotedPrefixRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+  const unquotedPrefixRegex = /(?:目标文件|针对文件|分析文件|读取文件|探查文件|target\s*file|file)[:：\s]+([^\s\r\n`'"]+)/gi;
+  for (const text of texts) {
+    unquotedPrefixRegex.lastIndex = 0;
+    let match;
+    while ((match = unquotedPrefixRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+  const backtickRegex = /`([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]{1,10})`/g;
+  for (const text of texts) {
+    backtickRegex.lastIndex = 0;
+    let match;
+    while ((match = backtickRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+  return null;
+}
 var DEFAULT_MAIN_AGENT_ID = "T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852";
 var DEFAULT_CODER_AGENT_ID = "T_c7c2ff36-0f20-091f-6f1b-e6d9a241b5ea.4a89c07f-839b-4880-9ce0-d769c4ec9375.gpt.b5725a70-9850-4f60-8446-cb4fe2345296";
 var DEFAULT_RESEARCHER_AGENT_ID = "T_970346be-8c26-0c5a-2f5e-e9f341d7614d.ac4af79e-acec-4578-8b0c-8d725dcf21ee.gpt.c0b8b1d4-a865-4c4c-a30e-dd3508e2bd7c";
@@ -23609,6 +23794,7 @@ class SubagentRunner {
   createOrchestratorFn;
   lineageTracker;
   maxAutonomousHops;
+  staggerIntervalMs;
   constructor(options) {
     this.workspaceRoot = options.workspaceRoot;
     this.mainSessionId = options.mainSessionId;
@@ -23621,10 +23807,11 @@ class SubagentRunner {
     this.createOrchestratorFn = options.createOrchestratorFn;
     this.lineageTracker = options.lineageTracker;
     this.maxAutonomousHops = options.maxAutonomousHops || 5;
+    this.staggerIntervalMs = options.staggerIntervalMs ?? (process.argv.some((a) => a.includes("test")) ? 0 : 1500);
   }
   async executeBatch(tasks, signal, events) {
     const poolStatus = this.pool?.getPoolStatus?.() || [];
-    const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled);
+    const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled && !acc.isLeased);
     const effectiveCapacity = activeAllowedAccounts.length > 0 ? activeAllowedAccounts.length : poolStatus.length > 0 && poolStatus.every((a) => a.isThrottled) ? 1 : Math.max(1, poolStatus.length);
     const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
     this.loggerTree?.logTimelineEvent({
@@ -23675,19 +23862,15 @@ class SubagentRunner {
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
             settled[item.index] = { status: "fulfilled", value: report };
-            if (!report.success) {
-              circuitBreakerTriggered = true;
-            }
           } catch (err) {
             settled[item.index] = { status: "rejected", reason: err };
-            circuitBreakerTriggered = true;
           }
         }
       } else {
         let stageCursor = 0;
         const stageWorker = async () => {
           while (stageCursor < stageTasks.length) {
-            if (signal?.aborted || circuitBreakerTriggered)
+            if (signal?.aborted)
               return;
             const itemIndex = stageCursor++;
             const item = stageTasks[itemIndex];
@@ -23697,16 +23880,20 @@ class SubagentRunner {
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
               settled[item.index] = { status: "fulfilled", value: report };
-              if (!report.success) {
-                circuitBreakerTriggered = true;
-              }
             } catch (err) {
               settled[item.index] = { status: "rejected", reason: err };
-              circuitBreakerTriggered = true;
             }
           }
         };
-        const workers = Array.from({ length: Math.min(maxConcurrency, stageTasks.length) }, () => stageWorker());
+        const workers = Array.from({ length: Math.min(maxConcurrency, stageTasks.length) }, (_, workerIdx) => {
+          if (workerIdx === 0 || this.staggerIntervalMs <= 0)
+            return stageWorker();
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              stageWorker().then(resolve, resolve);
+            }, workerIdx * this.staggerIntervalMs);
+          });
+        });
         await Promise.all(workers);
       }
       for (const item of stageTasks) {
@@ -23794,29 +23981,63 @@ class SubagentRunner {
   }
   async runSingleSubagent(subId, role, spec, signal, events) {
     const startTime = Date.now();
-    events?.onSubagentStart?.(subId, role, spec);
+    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
+    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
+    let subagentAccount = "";
+    try {
+      const leaseRes = await this.pool?.acquireSessionLease?.(currentSessionId, { forAgentId: customAgentId });
+      subagentAccount = leaseRes?.email || "";
+    } catch {}
+    if (!subagentAccount && this.pool?.getSessionLease) {
+      subagentAccount = this.pool.getSessionLease(currentSessionId) || "";
+    }
+    events?.onSubagentStart?.(subId, role, spec, 1, subagentAccount);
     this.loggerTree?.logTimelineEvent({
       type: "SUBAGENT_STARTED",
       subagentId: subId,
       role,
       description: spec.description,
+      account: subagentAccount || undefined,
       timestamp: startTime
     });
-    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
     const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
     logStream?.write(`
-=== 任务目标与初始提示词 ===
+=== 任务目标与初始提示词 (执行账号: ${subagentAccount || "默认"}) ===
 ${spec.prompt}
 ============================
 
 `);
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
-    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
     let previousSessionId = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";
     let completed = false;
+    let initialAnnotations = undefined;
+    const targetFilePath = extractTargetFilePath(spec, this.workspaceRoot);
+    if (targetFilePath && fs7.existsSync(targetFilePath)) {
+      try {
+        let graphToken;
+        if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
+          graphToken = await this.pool.getGraphAccessToken();
+        }
+        if (graphToken) {
+          const fileContent = fs7.readFileSync(targetFilePath, "utf8");
+          const fileName = path7.basename(targetFilePath);
+          const uploaded = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, fileContent, fileName);
+          if (uploaded && uploaded.annotation) {
+            initialAnnotations = [uploaded.annotation];
+            logStream?.write(`
+☁️ [开局附件已直传挂载] ${targetFilePath} (${fileName})
+`);
+          }
+        }
+      } catch (err) {
+        logStream?.write(`
+⚠️ [开局附件直传失败，降级本地工具读取] ${err?.message || err}
+`);
+      }
+    }
     let handoffSkills = [];
     try {
       const loader = new SkillLoader(this.workspaceRoot);
@@ -23865,17 +24086,23 @@ ${spec.prompt}
         });
         const res = await orchestrator.run({
           task: currentTaskPrompt,
+          initialAnnotations,
           signal,
           events: {
             onDelta: (delta) => {
               logStream?.write(delta);
-              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount);
+              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount, subagentAccount);
             },
             onTurnStart: (turn) => {
+              if (this.pool?.getSessionLease) {
+                const latest = this.pool.getSessionLease(currentSessionId);
+                if (latest)
+                  subagentAccount = latest;
+              }
               logStream?.write(`
---- [Hop ${hopCount}] Turn ${turn} ---
+--- [Hop ${hopCount}] Turn ${turn} (账号: ${subagentAccount || "默认"}) ---
 `);
-              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount);
+              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount, subagentAccount);
             },
             onToolStart: (action) => {
               const actName = action?.tool || action?.action || "tool";
@@ -23883,7 +24110,7 @@ ${spec.prompt}
               logStream?.write(`
 [Tool Start] ${actName} ${target}
 `);
-              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount);
+              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount, subagentAccount);
             },
             onToolEnd: (toolRes) => {
               logStream?.write(`
@@ -23920,6 +24147,7 @@ ${spec.prompt}
 
 ` + docContent;
           previousSessionId = currentSessionId;
+          this.pool?.releaseSessionLease?.(previousSessionId);
           const nextSessionId = `${this.mainSessionId}_${subId}_${role}_hop${hopCount + 1}`;
           if (this.lineageTracker) {
             this.lineageTracker.register({
@@ -23933,9 +24161,18 @@ ${spec.prompt}
             this.lineageTracker.linkSubagent(this.mainSessionId, nextSessionId);
           }
           currentSessionId = nextSessionId;
+          try {
+            const nextLease = await this.pool?.acquireSessionLease?.(currentSessionId, { forAgentId: customAgentId });
+            if (nextLease?.email) {
+              subagentAccount = nextLease.email;
+            }
+          } catch {}
+          if (!subagentAccount && this.pool?.getSessionLease) {
+            subagentAccount = this.pool.getSessionLease(currentSessionId) || subagentAccount;
+          }
           logStream?.write(`
 ========================================
-` + `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} <<<
+` + `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} (账号: ${subagentAccount || "默认"}) <<<
 ` + `========================================
 
 `);
@@ -23946,6 +24183,7 @@ ${spec.prompt}
             hop: hopCount,
             nextHop: hopCount + 1,
             handoffDocPath: docPath,
+            account: subagentAccount || undefined,
             timestamp: Date.now()
           });
           continue;
@@ -23967,25 +24205,56 @@ ${spec.prompt}
       const targetSessionId = this.lineageTracker ? this.lineageTracker.resolveActiveHead(this.mainSessionId) : this.mainSessionId;
       const subHandoffCount = Math.max(0, hopCount - 1);
       logStream?.write(`
-=== [Subagent ${subId} Finished: ${success ? "SUCCESS" : "FAILED"}] ` + `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次) ===
+=== [Subagent ${subId} Finished: ${success ? "SUCCESS" : "FAILED"}] ` + `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次, 账号: ${subagentAccount || "默认"}) ===
 `);
+      let deliverablePath;
+      try {
+        const reportsDir = path7.join(this.workspaceRoot, ".cph", "reports");
+        fs7.mkdirSync(reportsDir, { recursive: true });
+        const reportFileName = `report-${role}-${subId}.md`;
+        const absReportPath = path7.join(reportsDir, reportFileName);
+        const header = [
+          `# 专项任务交付报告: ${spec.description}`,
+          ``,
+          `- **子任务 ID**: ${subId}`,
+          `- **执行角色**: ${role}`,
+          `- **最终状态**: ${success ? "SUCCESS (已完成)" : "FAILED (未达成)"}`,
+          `- **执行耗时**: ${(durationMs / 1000).toFixed(1)}s (共 ${totalTurns} 轮, ${hopCount} 代)`,
+          `- **物理落盘时间**: ${new Date().toISOString()}`,
+          ``,
+          `## 原始需求要求`,
+          `\`\`\`text`,
+          spec.prompt,
+          `\`\`\``,
+          ``,
+          `## 交付结题内容`,
+          ``
+        ].join(`
+`);
+        fs7.writeFileSync(absReportPath, header + finalAnswer + `
+`, "utf8");
+        deliverablePath = `.cph/reports/${reportFileName}`;
+      } catch (saveErr) {}
       const report = {
         id: subId,
         role,
         description: spec.description,
         success,
         finalAnswer,
+        deliverablePath,
         turnsCount: totalTurns,
         durationMs,
         targetSessionId,
         hopCount,
-        handoffCount: subHandoffCount
+        handoffCount: subHandoffCount,
+        account: subagentAccount || undefined
       };
       events?.onSubagentEnd?.(report);
       this.loggerTree?.logTimelineEvent({
         type: "SUBAGENT_FINISHED",
         subagentId: subId,
         role,
+        account: subagentAccount || undefined,
         success: report.success,
         turnsCount: report.turnsCount,
         durationMs,
@@ -24014,7 +24283,7 @@ ${spec.prompt}
       }
       const subHandoffCount = Math.max(0, hopCount - 1);
       logStream?.write(`
-=== [Subagent ${subId} Error: ${errorMsg}] ` + `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次) ===
+=== [Subagent ${subId} Error: ${errorMsg}] ` + `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次, 账号: ${subagentAccount || "默认"}) ===
 `);
       const report = {
         id: subId,
@@ -24027,11 +24296,16 @@ ${spec.prompt}
         error: errorMsg,
         targetSessionId,
         hopCount: Math.max(1, hopCount),
-        handoffCount: subHandoffCount
+        handoffCount: subHandoffCount,
+        account: subagentAccount || undefined
       };
       events?.onSubagentEnd?.(report);
       return report;
     } finally {
+      this.pool?.releaseSessionLease?.(currentSessionId);
+      if (previousSessionId) {
+        this.pool?.releaseSessionLease?.(previousSessionId);
+      }
       if (logStream) {
         try {
           if (typeof logStream.end === "function") {
@@ -24061,8 +24335,14 @@ ${spec.prompt}
       return `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 0 个子任务)
 `;
     }
+    const successCount = reports.filter((r) => r && r.success).length;
+    const failedCount = reports.length - successCount;
+    const isAllSuccess = successCount === reports.length;
+    const isPartialSuccess = successCount > 0 && !isAllSuccess;
     const parts = [
-      `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 ${reports.length} 个子任务)`,
+      `### \uD83C\uDFAF 子代理多会话并发执行报告 (共 ${reports.length} 个子任务 | ${successCount} 成功, ${failedCount} 失败)`,
+      `**执行判定**: ${isAllSuccess ? "✅ 全量成功" : isPartialSuccess ? "\uD83D\uDFE1 部分成功 (Partial Success)" : "❌ 全部失败"}`,
+      `**成果物理落盘说明**: 所有子任务的完整结题报告与证据链已由 Harness 底层自动落盘为物理报告文件（\`.cph/reports/\`）。主控会话只收取结构化目录索引（TOC），零 Token 额外开销。`,
       ``
     ];
     for (let i = 0;i < reports.length; i++) {
@@ -24073,11 +24353,27 @@ ${spec.prompt}
       const durationSec = ((r.durationMs ?? 0) / 1000).toFixed(1);
       const handoffs = r.handoffCount ?? Math.max(0, (r.hopCount || 1) - 1);
       const handoffLabel = handoffs > 0 ? ` (经 ${handoffs} 次接力)` : ` (接手 0 次)`;
-      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}] ${r.description || ""}${handoffLabel}`);
-      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次)`);
-      parts.push(`- **交付结论**:`);
-      parts.push((r.finalAnswer || "").trim());
+      const accountBadge = r.account ? ` [账号: ${r.account}]` : "";
+      const accountStatus = r.account ? `, 账号: ${r.account}` : "";
+      const reportFile = r.deliverablePath || `.cph/reports/report-${r.role || "sub"}-${r.id}.md`;
+      const rawAnswer = (r.finalAnswer || "").trim();
+      const answerLines = rawAnswer.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const summarySnippet = answerLines.slice(0, 3).join(`
+`).slice(0, 300) || "（无详细文字摘要）";
+      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}]${accountBadge} ${r.description || ""}${handoffLabel}`);
+      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次${accountStatus})`);
+      parts.push(`- **物理报告文件**: \`${reportFile}\``);
+      parts.push(`- **核心交付摘要**:`);
+      parts.push(summarySnippet);
       parts.push(``);
+    }
+    parts.push(`---`);
+    parts.push(`【主控对账与推进指引 (Plan Convergence Guidance)】:`);
+    parts.push(`1. 对于状态为【✅ 成功】的子任务，其完整交付报告已落盘至对应物理文件，请立即使用 patch_file 将 plan.md 对应项更新打勾为 \`- [x] ...\`；`);
+    if (failedCount > 0) {
+      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，严禁全盘推翻已完成成果或重写整个计划！`);
+    } else {
+      parts.push(`2. 所有规划子任务均已圆满交付，若无后续 Stage，即可验证后收敛输出 FINAL_ANSWER。`);
     }
     return parts.join(`
 `);
@@ -24374,13 +24670,37 @@ ${mountSection}
 ${reportsSummary}
 
 ---
-请你作为后继主控智能体，以当前全新满额的推理配额，综合审阅上述交付物，执行交叉验证与必要测试。
-若需回溯具体的执行细节，可按需调阅已挂载的物理账本；
-若全部达成目标且验证充分，请直接输出 FINAL_ANSWER 完成结题；
-若评估后需要第二阶段专项攻坚，可继续派发 invoke_subagent。`;
+请你作为后继主控智能体，以当前全新满额的推理配额，推进工程对账与收敛：
+1. 【对账打勾】：根据上述各子任务结题成果，使用 patch_file 立即将 plan.md 中已成功的任务项更新打勾为 - [x] 步骤描述；
+2. 【成果引用】：完整调研报告与证据链已由底层自动落盘至物理报告文件（.cph/reports/），若需回溯执行细节可按需调阅已挂载的物理账本或使用 read_file 调阅；
+3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，严禁推翻已完成的规划与成果；
+4. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
 }
 
 // src/agent/orchestrator.ts
+function isInlineScoutTask(subagents) {
+  if (!Array.isArray(subagents) || subagents.length !== 1) {
+    return false;
+  }
+  const task = subagents[0];
+  if (!task || typeof task !== "object") {
+    return false;
+  }
+  const role = String(task.role || "").trim().toLowerCase();
+  if (role !== "researcher" && role !== "searcher") {
+    return false;
+  }
+  if (task.isScout === true || task.isScout === "true") {
+    return true;
+  }
+  const scoutRegex = /scout|斥候|大纲|架构探查|结构梳理/i;
+  const desc = typeof task.description === "string" ? task.description : "";
+  const prompt = typeof task.prompt === "string" ? task.prompt : "";
+  const title = typeof task.title === "string" ? task.title : "";
+  const extraTask = typeof task.task === "string" ? task.task : "";
+  return scoutRegex.test(desc) || scoutRegex.test(prompt) || scoutRegex.test(title) || scoutRegex.test(extraTask);
+}
+
 class Orchestrator {
   workspaceRoot;
   maxTurns;
@@ -24556,7 +24876,10 @@ class Orchestrator {
       const pool = this.pool || new AccountPool;
       this.pool = pool;
       try {
-        const token = await pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
+        const token = await pool.getNextAvailableToken({
+          forAgentId: this.customAgentId,
+          sessionId: this.sessionId
+        });
         client = this.chatClientFactory ? this.chatClientFactory(token, {
           modelTone: this.modelTone,
           customAgentId: this.customAgentId
@@ -24587,7 +24910,7 @@ class Orchestrator {
     const skillsSection = this.formatSkillsSection(skillsToUse);
     let currentPrompt;
     if (this.customAgentId) {
-      currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection);
+      currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree);
     } else if (this.isHandshakePending) {
       this.pendingTask = task;
       this.pendingSkills = skillsSection;
@@ -24737,8 +25060,6 @@ class Orchestrator {
         if (this.pool) {
           try {
             const currentEmail = client?.token?.email || "";
-            if (currentEmail)
-              this.pool.markThrottled(currentEmail);
             const nextToken = await this.pool.getNextAvailableToken();
             events?.onAccountSwitched?.(currentEmail, nextToken.email);
             client = new ChatHubClient(nextToken, {
@@ -24815,21 +25136,27 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
       if (parsed.type === "action") {
         events?.onToolStart?.(parsed.action);
         let toolResult;
+        let isInlineScout = false;
         if (parsed.action.tool === "invoke_subagent") {
           const thought = parsed.thought || parsed.action?.thought || "";
           const subagents = parsed.action.subagents || [];
-          const snapshot = createMainPlanSnapshot({
-            originalSessionId: this.sessionId,
-            originalTask: this.pendingTask || task,
-            thought,
-            workspaceRoot: this.workspaceRoot,
-            plannedSubagents: subagents
-          });
-          const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
-          events?.onMainSessionVirtualized?.(snapshot, mdPath);
-          try {
-            client?.close?.();
-          } catch {}
+          isInlineScout = isInlineScoutTask(subagents);
+          let snapshot = null;
+          if (!isInlineScout) {
+            snapshot = createMainPlanSnapshot({
+              originalSessionId: this.sessionId,
+              originalTask: this.pendingTask || task,
+              thought,
+              workspaceRoot: this.workspaceRoot,
+              plannedSubagents: subagents
+            });
+            const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
+            events?.onMainSessionVirtualized?.(snapshot, mdPath);
+            try {
+              client?.close?.();
+            } catch {}
+            this.pool?.releaseSessionLease?.(this.sessionId);
+          }
           const runner = this.subagentRunner || new SubagentRunner({
             workspaceRoot: this.workspaceRoot,
             mainSessionId: this.sessionId,
@@ -24847,46 +25174,51 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             onSubagentProgress: events?.onSubagentProgress
           });
           const summaryOutput = runner.formatReportSummary(reports);
+          const successCount = reports.filter((r) => r.success).length;
+          const isAllSuccess = successCount === reports.length;
+          const isPartialSuccess = successCount > 0 && !isAllSuccess;
           toolResult = {
             actionName: "invoke_subagent",
             piToolName: "subagent",
-            target: `${reports.length} subagents`,
-            success: reports.every((r) => r.success),
+            target: `${reports.length} subagents (${successCount}/${reports.length} 成功)`,
+            success: successCount > 0,
             output: summaryOutput,
             formatted: summaryOutput
           };
-          const prevSessionId = this.sessionId;
-          this.generation++;
-          const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
-          this.sessionId = nextSessionId;
-          sessionId = nextSessionId;
-          this.conversationId = crypto5.randomUUID();
-          conversationId = this.conversationId;
-          this.lineageTracker?.register({
-            sessionId: nextSessionId,
-            role: "main",
-            status: "active",
-            predecessorId: prevSessionId
-          });
-          this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
-          events?.onSuccessorAwakened?.(nextSessionId, this.generation);
-          if (!this.chatClient && this.pool) {
-            try {
-              const token = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
-              client = this.chatClientFactory ? this.chatClientFactory(token, {
-                modelTone: this.modelTone,
-                customAgentId: this.customAgentId
-              }) : new ChatHubClient(token, {
-                modelTone: this.modelTone,
-                customAgentId: this.customAgentId
-              });
-            } catch {}
-          }
-          currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
-          this.completeHandshake();
-          refusalRetries = 0;
-          if (this.generation <= this.maxGenerations) {
-            turn = 0;
+          if (!isInlineScout) {
+            const prevSessionId = this.sessionId;
+            this.generation++;
+            const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
+            this.sessionId = nextSessionId;
+            sessionId = nextSessionId;
+            this.conversationId = crypto5.randomUUID();
+            conversationId = this.conversationId;
+            this.lineageTracker?.register({
+              sessionId: nextSessionId,
+              role: "main",
+              status: "active",
+              predecessorId: prevSessionId
+            });
+            this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
+            events?.onSuccessorAwakened?.(nextSessionId, this.generation);
+            if (!this.chatClient && this.pool) {
+              try {
+                const token = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
+                client = this.chatClientFactory ? this.chatClientFactory(token, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId
+                }) : new ChatHubClient(token, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId
+                });
+              } catch {}
+            }
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+            this.completeHandshake();
+            refusalRetries = 0;
+            if (this.generation <= this.maxGenerations) {
+              turn = 0;
+            }
           }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
@@ -24896,13 +25228,19 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         const rawContent = toolResult.rawOutput || toolResult.output || "";
         const lineCount = rawContent.split(/\r?\n/).length;
         const charCount = rawContent.length;
-        const shouldUpload = this.enableCloudAttachment && toolResult.success && charCount > 0 && (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines);
+        const isFileReadAction = (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("read") || (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("cat");
+        const shouldUpload = this.enableCloudAttachment && toolResult.success && charCount > 0 && (isFileReadAction || (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines));
         if (shouldUpload) {
           try {
             const graphToken = await this.acquireGraphToken();
             if (graphToken) {
               const actionTag = (parsed.action.tool || toolResult.actionName || "tool").replace(/[^a-zA-Z0-9_-]/g, "_");
-              const uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
+              let uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
+              if (isFileReadAction && (parsed.action?.path || parsed.action?.file || parsed.action?.filePath)) {
+                const targetPath = parsed.action?.path || parsed.action?.file || parsed.action?.filePath || "";
+                const cleanBase = path10.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
+                uploadFileName = `read-${cleanBase}-${Date.now()}.txt`;
+              }
               uploadedAttachment = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, rawContent, uploadFileName);
               currentAnnotations = [uploadedAttachment.annotation];
               events?.onAttachmentUploaded?.(uploadedAttachment, parsed.action.tool || toolResult.actionName);
@@ -24929,7 +25267,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
           }
         }
-        if (parsed.action.tool === "invoke_subagent") {} else if (this.isHandshakePending) {
+        if (parsed.action.tool === "invoke_subagent" && !isInlineScout) {} else if (this.isHandshakePending) {
           this.completeHandshake();
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
@@ -24951,7 +25289,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           }
         }
         events?.onTurnEnd?.(turnIndex, turnResponseText);
-        if (parsed.action.tool === "invoke_subagent" && this.generation > this.maxGenerations) {
+        if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
           return {
             finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
             turnsCount: turnIndex,
@@ -25276,13 +25614,46 @@ ${status}` : "clean (无未提交变更)"}`;
   }
   collectDirTreePreview() {
     try {
+      const ignored = new Set([
+        "node_modules",
+        "dist",
+        ".git",
+        ".cph",
+        ".gemini",
+        "coverage",
+        ".cache",
+        "build"
+      ]);
       const entries = fs10.readdirSync(this.workspaceRoot, { withFileTypes: true });
-      const filtered = entries.filter((e) => !e.name.startsWith(".") && e.name !== "node_modules" && e.name !== "dist").slice(0, 15).map((e) => e.isDirectory() ? `${e.name}/` : e.name);
-      return filtered.join(`
+      const lines = [];
+      const topEntries = entries.filter((e) => !e.name.startsWith(".") && !ignored.has(e.name)).slice(0, 20);
+      for (const entry of topEntries) {
+        if (entry.isDirectory()) {
+          lines.push(`- ${entry.name}/`);
+          try {
+            const subPath = path10.join(this.workspaceRoot, entry.name);
+            const subEntries = fs10.readdirSync(subPath, { withFileTypes: true }).filter((se) => !se.name.startsWith(".") && !ignored.has(se.name)).slice(0, 10);
+            for (const sub of subEntries) {
+              lines.push(`  - ${sub.name}${sub.isDirectory() ? "/" : ""}`);
+            }
+          } catch {}
+        } else {
+          lines.push(`- ${entry.name}`);
+        }
+      }
+      return lines.join(`
 `);
     } catch {
       return "";
     }
+  }
+  isExplicitRateLimitError(err) {
+    if (!err)
+      return false;
+    const msg = String(err?.message || err || "").toLowerCase();
+    const cleanMsg = msg.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "");
+    const code = String(err?.code || err?.statusCode || err?.status || err?.errorCode || "").toLowerCase();
+    return code === "429" || code === "ratelimit" || /\b429\b/.test(cleanMsg) || cleanMsg.includes("throttled") || cleanMsg.includes("rate limit") || cleanMsg.includes("too many requests") || /\bquota\s*(?:exceeded|reached|limit)\b/i.test(cleanMsg) || cleanMsg.includes("配额已达上限") || cleanMsg.includes("请求过于频繁");
   }
   isRecoverableTransportError(err) {
     if (!err)
@@ -25291,13 +25662,13 @@ ${status}` : "clean (无未提交变更)"}`;
       return false;
     const msg = String(err?.message || err || "").toLowerCase();
     const code = String(err?.code || err?.statusCode || err?.status || err?.errorCode || "").toLowerCase();
-    const isRateLimit = code === "429" || code === "ratelimit" || msg.includes("429") || msg.includes("throttled") || msg.includes("rate limit") || msg.includes("quota") || msg.includes("exceeded") || msg.includes("too many requests") || msg.includes("配额已达上限") || msg.includes("请求过于频繁");
+    const isRateLimit = this.isExplicitRateLimitError(err);
     const isTimeout = code === "etimedout" || msg.includes("timed out") || msg.includes("timeout") || msg.includes("idle timeout");
-    const isNetBreak = code === "econnreset" || code === "epipe" || msg.includes("econnreset") || msg.includes("etimedout") || msg.includes("epipe") || msg.includes("closed before") || msg.includes("premature close") || msg.includes("socket hang up");
+    const isNetBreak = code === "econnreset" || code === "epipe" || code === "econnrefused" || code === "enotfound" || code === "ehostunreach" || code === "enetunreach" || msg.includes("econnreset") || msg.includes("etimedout") || msg.includes("epipe") || msg.includes("closed before") || msg.includes("premature close") || msg.includes("socket hang up") || msg.includes("failed to connect") || msg.includes("connection error") || msg.includes("connection ended") || msg.includes("fetch failed");
     return isRateLimit || isTimeout || isNetBreak;
   }
   isRateLimitError(err) {
-    return this.isRecoverableTransportError(err);
+    return this.isExplicitRateLimitError(err);
   }
   isRateLimitResponseText(text) {
     if (!text)
@@ -25336,6 +25707,7 @@ ${status}` : "clean (无未提交变更)"}`;
     if (events?.onDisasterOccurred) {
       await Promise.resolve(events.onDisasterOccurred(disasterBlackbox, lastError));
     }
+    const isRateLimitIncident = this.isExplicitRateLimitError(lastError) || this.isRateLimitResponseText(lastError);
     let victimEmail = client?.token?.email || client?.email || "";
     if (!victimEmail && this.pool?.refreshAccountList) {
       const accounts = this.pool.refreshAccountList();
@@ -25343,7 +25715,7 @@ ${status}` : "clean (无未提交变更)"}`;
         victimEmail = accounts[0].email;
       }
     }
-    if (victimEmail && this.pool) {
+    if (isRateLimitIncident && victimEmail && this.pool) {
       this.pool.markThrottled(victimEmail);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
@@ -26291,7 +26663,8 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
     const role = state.role || "unknown";
     const status = state.status || "unknown";
     const action = state.lastAction || "";
-    return `[Subagent Event] [${displayId}] [${role}] 状态: ${status} | 动作: ${action}
+    const account = state.account ? ` [${state.account}]` : "";
+    return `[Subagent Event] [${displayId}] [${role}]${account} 状态: ${status} | 动作: ${action}
 `;
   }
   formatSubagentMatrix(states, compact = false) {
@@ -26304,12 +26677,14 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
     for (let i = 0;i < states.length; i++) {
       const s = states[i];
       const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const accountBadge = s.account ? this.c.magenta(`[${s.account}]`) : "";
       const hop = s.hopCount ?? (s.handoffCount !== undefined ? s.handoffCount + 1 : 1);
       const subHandoffs = s.handoffCount ?? Math.max(0, hop - 1);
       const hopBadge = subHandoffs > 0 ? this.c.yellow(`[Hop ${hop} (接手 ${subHandoffs} 次)]`) : this.c.gray(`[Hop 1 (接手 0 次)]`);
       const statusBadge = s.status === "completed" ? this.c.green("✅ 已完成") : s.status === "failed" ? this.c.red("❌ 失败") : this.c.cyan("\uD83D\uDD04 运行中");
       const durationSec = ((s.durationMs ?? 0) / 1000).toFixed(1);
-      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${roleBadge} ${hopBadge} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
+      const headerBadges = [roleBadge, accountBadge, hopBadge].filter(Boolean).join(" ");
+      lines.push(this.c.bold(`│ [Sub-${i + 1}] `) + `${headerBadges} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`);
       if (s.lastAction) {
         lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);
       }
@@ -27613,7 +27988,9 @@ ${source_default.yellow(msg)}
       }
     }
     const statuses = this.pool.getPoolStatus();
-    const currentAcc = session.currentAccount || statuses.find((s) => !s.isThrottled)?.email || statuses[0]?.email;
+    const activeAllowed = statuses.filter((s) => s.isAllowed !== false && !s.isThrottled);
+    const activeSessionLease = this.pool?.getSessionLease ? this.pool.getSessionLease(session.id) : undefined;
+    const currentAcc = session.currentAccount || activeSessionLease || activeAllowed[0]?.email || statuses.find((s) => s.isAllowed !== false)?.email || statuses[0]?.email;
     const agentBadge = this.customAgentId ? this.customAgentId.length > 15 ? this.customAgentId.slice(0, 12) + "..." : this.customAgentId : "通用握手模式";
     const gen = this.orchestrator ? this.orchestrator.getGeneration?.() : session.generation || 1;
     const handoffs = this.orchestrator ? this.orchestrator.getHandoffCount?.() : session.handoffCount || 0;
@@ -27798,8 +28175,10 @@ ${source_default.yellow(msg)}
   }
   getDiagnosticCard() {
     const statuses = this.pool.getPoolStatus();
-    const available = statuses.filter((s) => !s.isThrottled).length;
-    const total = statuses.length;
+    const hasAllowedFilter = this.pool.getAllowedAccounts() !== undefined;
+    const allowedStatuses = hasAllowedFilter ? statuses.filter((s) => s.isAllowed !== false) : statuses;
+    const available = allowedStatuses.filter((s) => !s.isThrottled).length;
+    const total = allowedStatuses.length;
     const activeSkills = this.skillRegistry.getActiveSkills();
     const activeSkillStr = activeSkills.length > 0 ? activeSkills.map((s) => s.name).join(", ") : "无 (全部待机)";
     const currentSession = this.currentSession || this.initSession();
@@ -27815,6 +28194,8 @@ ${source_default.yellow(msg)}
     const tokenDisplay = estimatedChars > 0 ? `~${Math.round(estimatedChars / 3.5)} tokens` : "0 (全新)";
     const ratioDisplay = this.lastCompactionRatio !== undefined ? `${Math.round(this.lastCompactionRatio * 100)}%` : "0%";
     const agentDisplay = this.customAgentId ? source_default.green(this.customAgentId) : source_default.gray("无 (通用模式)");
+    const activeSessionLease = this.pool?.getSessionLease ? this.pool.getSessionLease(currentSession.id) : undefined;
+    const preferredEmail = currentSession.currentAccount || activeSessionLease || allowedStatuses.find((s) => !s.isThrottled)?.email || allowedStatuses[0]?.email || "默认";
     const lines = [
       source_default.bold.cyan(`
 [CPH-PI 运行状态] - CPH-PI 运行与会话诊断卡`),
@@ -27832,7 +28213,7 @@ ${source_default.yellow(msg)}
       `  工作区目录:    ${source_default.white(this.workspaceRoot)}`,
       `  模型风格:      ${source_default.white(this.modelTone)}`,
       `  可用账号数:    ${source_default.green(`${available}/${total}`)}`,
-      `  当前/首选账号: ${source_default.cyan(currentSession.currentAccount || (statuses.find((s) => !s.isThrottled)?.email || "默认"))}`,
+      `  当前/首选账号: ${source_default.cyan(preferredEmail)}`,
       `  已激活技能:    ${source_default.magenta(activeSkillStr)}`,
       ""
     ];
@@ -28045,15 +28426,23 @@ ${task}`;
           events: {
             onDelta: (d) => this.renderer.renderTextChunk(d),
             onReasoning: (r) => this.renderer.renderReasoningChunk(r),
-            onTurnStart: (turn) => this.renderer.renderTurnHeader(turn),
+            onTurnStart: (turn) => {
+              if (this.pool?.getSessionLease) {
+                const leased = this.pool.getSessionLease(currentSession.id);
+                if (leased)
+                  currentSession.currentAccount = leased;
+              }
+              this.renderer.renderTurnHeader(turn);
+            },
             onToolStart: (action) => this.renderer.renderToolBadge(action),
             onToolEnd: (result) => this.renderer.renderToolResult(result),
-            onSubagentStart: (id, role, spec, initialHop) => {
+            onSubagentStart: (id, role, spec, initialHop, account) => {
               subagentStartTimes.set(id, Date.now());
               const hop = initialHop || 1;
               activeSubagents.set(id, {
                 id,
                 role: role === "coder" ? "coder" : "researcher",
+                account,
                 description: spec?.description || spec?.prompt?.slice(0, 40) || id,
                 status: "running",
                 currentTurn: 1,
@@ -28064,13 +28453,17 @@ ${task}`;
               });
               this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
             },
-            onSubagentProgress: (id, turn, _delta, action, hopCount) => {
+            onSubagentProgress: (id, turn, _delta, action, hopCount, account) => {
               const state = activeSubagents.get(id);
               if (!state)
                 return;
               const startTime = subagentStartTimes.get(id) || Date.now();
               state.durationMs = Date.now() - startTime;
               let changed = false;
+              if (account && account !== state.account) {
+                state.account = account;
+                changed = true;
+              }
               if (hopCount && hopCount !== state.hopCount) {
                 state.hopCount = hopCount;
                 state.handoffCount = Math.max(0, hopCount - 1);
@@ -28097,6 +28490,8 @@ ${task}`;
                 state.status = report.success ? "completed" : "failed";
                 state.durationMs = report.durationMs || Date.now() - (subagentStartTimes.get(report.id) || Date.now());
                 state.currentTurn = report.turnsCount || state.currentTurn;
+                if (report.account)
+                  state.account = report.account;
                 if (report.hopCount)
                   state.hopCount = report.hopCount;
                 if (report.handoffCount !== undefined)
@@ -28110,7 +28505,10 @@ ${task}`;
               this.lastCompactionRatio = ratio;
               this.renderer.renderCompactedNotice(cleared, ratio);
             },
-            onAccountSwitched: (oldEmail, newEmail) => this.renderer.renderAccountSwitchedNotice(oldEmail, newEmail),
+            onAccountSwitched: (oldEmail, newEmail) => {
+              currentSession.currentAccount = newEmail;
+              this.renderer.renderAccountSwitchedNotice(oldEmail, newEmail);
+            },
             onCompleted: (ans) => this.renderer.renderFinalAnswer(ans),
             onError: (err) => this.renderer.renderError(err),
             onDisasterOccurred: (blackbox, err) => this.renderer.renderDisasterBlackboxBanner(currentSession.id, err),
@@ -28125,6 +28523,11 @@ ${task}`;
             }
           }
         });
+        if (this.pool?.getSessionLease) {
+          const leased = this.pool.getSessionLease(currentSession.id);
+          if (leased)
+            currentSession.currentAccount = leased;
+        }
         currentInitialAnnotations = undefined;
         const startTurnNum = currentSession.turns.length;
         if (result.history && result.history.length > 0) {
@@ -28199,6 +28602,7 @@ ${task}`;
               workspaceRoot: this.workspaceRoot,
               maxTurns: this.maxTurns,
               modelTone: this.modelTone,
+              currentAccount: currentSession.currentAccount,
               handoffSnapshot: result.handoffSnapshot,
               handoffDocPath: result.handoffDocPath,
               disasterBlackbox: result.disasterBlackbox
