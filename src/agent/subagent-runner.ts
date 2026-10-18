@@ -7,6 +7,130 @@ import { TerminalLogger, type SessionLoggerTree } from "../ui/terminal-logger.ts
 import { AccountPool } from "../auth/account-pool.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import { SkillLoader, type Skill } from "../skills/skill-loader.ts";
+import { SubstrateUploader } from "../transport/substrate-uploader.ts";
+import type { AttachmentAnnotation } from "../transport/types.ts";
+
+/**
+ * Clean candidate file path by stripping enclosing quotes/backticks and leading/trailing punctuation.
+ */
+function cleanCandidatePath(raw: string): string {
+  let cleaned = raw.trim();
+  // Strip quotes and backticks from edges
+  cleaned = cleaned.replace(/^[`'"]+|[`'"]+$/g, "");
+  // Strip trailing punctuation marks (ASCII and common full-width CJK punctuation/brackets)
+  cleaned = cleaned.replace(
+    /[,.;:!?`'"’”’\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF09\u3011\u300B\)>\]}]+$/,
+    ""
+  );
+  // Strip leading punctuation marks if any
+  cleaned = cleaned.replace(
+    /^[,\.;:!?`'"’”’\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF08\u3010\u300A\(<\[{]+/,
+    ""
+  );
+  return cleaned.trim();
+}
+
+/**
+ * Resolve candidate path against workspaceRoot and verify it exists and is a file.
+ */
+function resolveExistingFilePath(candidate: string, workspaceRoot: string): string | null {
+  if (!candidate || typeof candidate !== "string") return null;
+  const cleaned = cleanCandidatePath(candidate);
+  if (!cleaned) return null;
+
+  const tryCandidates = [cleaned];
+  // If there's full-width Chinese punctuation embedded without space (e.g. "src/foo.ts，请分析")
+  const cjkPunctIdx = cleaned.search(/[\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F]/);
+  if (cjkPunctIdx !== -1) {
+    const beforePunct = cleanCandidatePath(cleaned.substring(0, cjkPunctIdx));
+    if (beforePunct && beforePunct !== cleaned) {
+      tryCandidates.push(beforePunct);
+    }
+  }
+
+  for (const item of tryCandidates) {
+    try {
+      const absPath = path.isAbsolute(item) ? item : path.resolve(workspaceRoot, item);
+      if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
+        return absPath;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract target file path from SubagentTaskSpec if present and exists on disk.
+ */
+export function extractTargetFilePath(
+  taskSpec: SubagentTaskSpec,
+  workspaceRoot: string
+): string | null {
+  if (!taskSpec) return null;
+
+  // a) Explicit targetPath / file / filePath
+  const explicit =
+    (taskSpec as any).targetPath ||
+    (taskSpec as any).file ||
+    (taskSpec as any).filePath;
+
+  if (typeof explicit === "string" && explicit.trim()) {
+    return resolveExistingFilePath(explicit, workspaceRoot);
+  }
+
+  // b) Check taskSpec.prompt and taskSpec.description
+  const texts = [taskSpec.prompt, taskSpec.description].filter(
+    (t): t is string => typeof t === "string" && t.trim().length > 0
+  );
+
+  // Priority 1: Match prefix regex
+  // 1a: Quoted prefix, e.g. 目标文件: "src/foo.ts" or `src/foo.ts`
+  const quotedPrefixRegex =
+    /(?:目标文件|针对文件|分析文件|读取文件|探查文件|target\s*file|file)[:：\s]+["'`]([^"'`\r\n]+)["'`]/gi;
+  for (const text of texts) {
+    quotedPrefixRegex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = quotedPrefixRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  // 1b: Unquoted prefix, e.g. 目标文件: src/foo.ts
+  const unquotedPrefixRegex =
+    /(?:目标文件|针对文件|分析文件|读取文件|探查文件|target\s*file|file)[:：\s]+([^\s\r\n`'"]+)/gi;
+  for (const text of texts) {
+    unquotedPrefixRegex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = unquotedPrefixRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  // Priority 2: Match backtick wrapped file path
+  // `([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]{1,10})`
+  const backtickRegex = /`([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9_]{1,10})`/g;
+  for (const text of texts) {
+    backtickRegex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = backtickRegex.exec(text)) !== null) {
+      const resolved = resolveExistingFilePath(match[1], workspaceRoot);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  // c) No valid match or file does not exist
+  return null;
+}
 
 export const DEFAULT_MAIN_AGENT_ID =
   "T_9ace94c8-cb78-caab-ddf7-4ae2d8f5a40d.93a3fbbc-c122-4a07-b670-857581a51135.gpt.94067efc-1741-4e5f-a603-b0573efa2852";
@@ -27,6 +151,7 @@ export interface SubagentRunnerOptions {
   createOrchestratorFn?: (opts: any) => any;
   lineageTracker?: SessionLineageTracker;
   maxAutonomousHops?: number;
+  staggerIntervalMs?: number;
 }
 
 export interface SubagentTaskReport {
@@ -35,12 +160,14 @@ export interface SubagentTaskReport {
   description: string;
   success: boolean;
   finalAnswer: string;
+  deliverablePath?: string;
   turnsCount: number;
   durationMs: number;
   error?: string;
   targetSessionId?: string;
   hopCount?: number;
   handoffCount?: number;
+  account?: string;
 }
 
 export class SubagentRunner {
@@ -55,6 +182,7 @@ export class SubagentRunner {
   private createOrchestratorFn?: (opts: any) => any;
   private lineageTracker?: SessionLineageTracker;
   private maxAutonomousHops: number;
+  private staggerIntervalMs: number;
 
   constructor(options: SubagentRunnerOptions) {
     this.workspaceRoot = options.workspaceRoot;
@@ -70,20 +198,25 @@ export class SubagentRunner {
     this.createOrchestratorFn = options.createOrchestratorFn;
     this.lineageTracker = options.lineageTracker;
     this.maxAutonomousHops = options.maxAutonomousHops || 5;
+    this.staggerIntervalMs =
+      options.staggerIntervalMs ??
+      (process.env.NODE_ENV === "test" || process.argv.some((a) => a.includes("test"))
+        ? 0
+        : 1500);
   }
 
   public async executeBatch(
     tasks: SubagentTaskSpec[],
     signal?: AbortSignal,
     events?: {
-      onSubagentStart?: (id: string, role: string, spec: SubagentTaskSpec) => void;
+      onSubagentStart?: (id: string, role: string, spec: SubagentTaskSpec, hop?: number, account?: string) => void;
       onSubagentEnd?: (report: SubagentTaskReport) => void;
-      onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any) => void;
+      onSubagentProgress?: (id: string, turn: number, delta?: string, action?: any, hopCount?: number, account?: string) => void;
     }
   ): Promise<SubagentTaskReport[]> {
     const poolStatus = (this.pool?.getPoolStatus?.() || []) as any[];
     const activeAllowedAccounts = poolStatus.filter(
-      (acc) => acc.isAllowed !== false && !acc.isThrottled
+      (acc) => acc.isAllowed !== false && !acc.isThrottled && !acc.isLeased
     );
     const effectiveCapacity =
       activeAllowedAccounts.length > 0
@@ -149,12 +282,8 @@ export class SubagentRunner {
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
             settled[item.index] = { status: "fulfilled", value: report };
-            if (!report.success) {
-              circuitBreakerTriggered = true;
-            }
           } catch (err) {
             settled[item.index] = { status: "rejected", reason: err };
-            circuitBreakerTriggered = true;
           }
         }
       } else {
@@ -162,7 +291,7 @@ export class SubagentRunner {
         let stageCursor = 0;
         const stageWorker = async () => {
           while (stageCursor < stageTasks.length) {
-            if (signal?.aborted || circuitBreakerTriggered) return;
+            if (signal?.aborted) return;
             const itemIndex = stageCursor++;
             const item = stageTasks[itemIndex];
             const taskSpec = item.task;
@@ -171,18 +300,21 @@ export class SubagentRunner {
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
               settled[item.index] = { status: "fulfilled", value: report };
-              if (!report.success) {
-                circuitBreakerTriggered = true;
-              }
             } catch (err) {
               settled[item.index] = { status: "rejected", reason: err };
-              circuitBreakerTriggered = true;
             }
           }
         };
         const workers = Array.from(
           { length: Math.min(maxConcurrency, stageTasks.length) },
-          () => stageWorker()
+          (_, workerIdx) => {
+            if (workerIdx === 0 || this.staggerIntervalMs <= 0) return stageWorker();
+            return new Promise<void>((resolve) => {
+              setTimeout(() => {
+                stageWorker().then(resolve, resolve);
+              }, workerIdx * this.staggerIntervalMs);
+            });
+          }
         );
         await Promise.all(workers);
       }
@@ -302,26 +434,70 @@ export class SubagentRunner {
     events?: any
   ): Promise<SubagentTaskReport> {
     const startTime = Date.now();
-    events?.onSubagentStart?.(subId, role, spec);
+    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
+    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
+
+    let subagentAccount = "";
+    try {
+      const leaseRes = await this.pool?.acquireSessionLease?.(currentSessionId, { forAgentId: customAgentId });
+      subagentAccount = leaseRes?.email || "";
+    } catch {}
+    if (!subagentAccount && this.pool?.getSessionLease) {
+      subagentAccount = this.pool.getSessionLease(currentSessionId) || "";
+    }
+
+    events?.onSubagentStart?.(subId, role, spec, 1, subagentAccount);
     this.loggerTree?.logTimelineEvent({
       type: "SUBAGENT_STARTED",
       subagentId: subId,
       role,
       description: spec.description,
+      account: subagentAccount || undefined,
       timestamp: startTime,
     });
 
-    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
     const logStream = this.loggerTree?.createSubagentLogStream(subId, role);
-    logStream?.write(`\n=== 任务目标与初始提示词 ===\n${spec.prompt}\n============================\n\n`);
+    logStream?.write(
+      `\n=== 任务目标与初始提示词 (执行账号: ${subagentAccount || "默认"}) ===\n${spec.prompt}\n============================\n\n`
+    );
 
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
-    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
     let previousSessionId: string | undefined = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";
     let completed = false;
+
+    // 单文件任务开局全量附件自动挂载探测
+    let initialAnnotations: AttachmentAnnotation[] | undefined = undefined;
+    const targetFilePath = extractTargetFilePath(spec, this.workspaceRoot);
+    if (targetFilePath && fs.existsSync(targetFilePath)) {
+      try {
+        let graphToken: string | undefined;
+        if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
+          graphToken = await this.pool.getGraphAccessToken();
+        }
+        if (graphToken) {
+          const fileContent = fs.readFileSync(targetFilePath, "utf8");
+          const fileName = path.basename(targetFilePath);
+          const uploaded = await SubstrateUploader.uploadDocumentToOneDrive(
+            graphToken,
+            fileContent,
+            fileName
+          );
+          if (uploaded && uploaded.annotation) {
+            initialAnnotations = [uploaded.annotation];
+            logStream?.write(
+              `\n☁️ [开局附件已直传挂载] ${targetFilePath} (${fileName})\n`
+            );
+          }
+        }
+      } catch (err: any) {
+        logStream?.write(
+          `\n⚠️ [开局附件直传失败，降级本地工具读取] ${err?.message || err}\n`
+        );
+      }
+    }
 
     // 子代理仅挂载 handoff 技能，不挂载 subagent 技能
     let handoffSkills: Skill[] = [];
@@ -381,21 +557,26 @@ export class SubagentRunner {
 
         const res = await orchestrator.run({
           task: currentTaskPrompt,
+          initialAnnotations,
           signal,
           events: {
             onDelta: (delta: string) => {
               logStream?.write(delta);
-              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount);
+              events?.onSubagentProgress?.(subId, -1, delta, undefined, hopCount, subagentAccount);
             },
             onTurnStart: (turn: number) => {
-              logStream?.write(`\n--- [Hop ${hopCount}] Turn ${turn} ---\n`);
-              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount);
+              if (this.pool?.getSessionLease) {
+                const latest = this.pool.getSessionLease(currentSessionId);
+                if (latest) subagentAccount = latest;
+              }
+              logStream?.write(`\n--- [Hop ${hopCount}] Turn ${turn} (账号: ${subagentAccount || "默认"}) ---\n`);
+              events?.onSubagentProgress?.(subId, turn, undefined, undefined, hopCount, subagentAccount);
             },
             onToolStart: (action: any) => {
               const actName = action?.tool || action?.action || "tool";
               const target = action?.path || action?.filePath || action?.command || "";
               logStream?.write(`\n[Tool Start] ${actName} ${target}\n`);
-              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount);
+              events?.onSubagentProgress?.(subId, -1, undefined, action, hopCount, subagentAccount);
             },
             onToolEnd: (toolRes: any) => {
               logStream?.write(`\n[Tool End] ${toolRes?.toolName || toolRes?.actionName} (success: ${toolRes?.success})\n`);
@@ -438,6 +619,7 @@ export class SubagentRunner {
             docContent;
 
           previousSessionId = currentSessionId;
+          this.pool?.releaseSessionLease?.(previousSessionId);
           const nextSessionId = `${this.mainSessionId}_${subId}_${role}_hop${hopCount + 1}`;
 
           if (this.lineageTracker) {
@@ -454,9 +636,19 @@ export class SubagentRunner {
 
           currentSessionId = nextSessionId;
 
+          try {
+            const nextLease = await this.pool?.acquireSessionLease?.(currentSessionId, { forAgentId: customAgentId });
+            if (nextLease?.email) {
+              subagentAccount = nextLease.email;
+            }
+          } catch {}
+          if (!subagentAccount && this.pool?.getSessionLease) {
+            subagentAccount = this.pool.getSessionLease(currentSessionId) || subagentAccount;
+          }
+
           logStream?.write(
             `\n========================================\n` +
-            `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} <<<\n` +
+            `>>> [跨会话自主接力 Hop ${hopCount} -> ${hopCount + 1}] 新会话: ${nextSessionId} (账号: ${subagentAccount || "默认"}) <<<\n` +
             `========================================\n\n`
           );
 
@@ -467,6 +659,7 @@ export class SubagentRunner {
             hop: hopCount,
             nextHop: hopCount + 1,
             handoffDocPath: docPath,
+            account: subagentAccount || undefined,
             timestamp: Date.now(),
           });
 
@@ -500,8 +693,36 @@ export class SubagentRunner {
       const subHandoffCount = Math.max(0, hopCount - 1);
       logStream?.write(
         `\n=== [Subagent ${subId} Finished: ${success ? "SUCCESS" : "FAILED"}] ` +
-        `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次) ===\n`
+        `(Total Turns: ${totalTurns}, Hops: ${hopCount}, 接手: ${subHandoffCount} 次, 账号: ${subagentAccount || "默认"}) ===\n`
       );
+
+      // 3. 成果物理落盘: Harness 底层自动落盘为物理报告，主控只收引用 (TOC)
+      let deliverablePath: string | undefined;
+      try {
+        const reportsDir = path.join(this.workspaceRoot, ".cph", "reports");
+        fs.mkdirSync(reportsDir, { recursive: true });
+        const reportFileName = `report-${role}-${subId}.md`;
+        const absReportPath = path.join(reportsDir, reportFileName);
+        const header = [
+          `# 专项任务交付报告: ${spec.description}`,
+          ``,
+          `- **子任务 ID**: ${subId}`,
+          `- **执行角色**: ${role}`,
+          `- **最终状态**: ${success ? "SUCCESS (已完成)" : "FAILED (未达成)"}`,
+          `- **执行耗时**: ${(durationMs / 1000).toFixed(1)}s (共 ${totalTurns} 轮, ${hopCount} 代)`,
+          `- **物理落盘时间**: ${new Date().toISOString()}`,
+          ``,
+          `## 原始需求要求`,
+          `\`\`\`text`,
+          spec.prompt,
+          `\`\`\``,
+          ``,
+          `## 交付结题内容`,
+          ``,
+        ].join("\n");
+        fs.writeFileSync(absReportPath, header + finalAnswer + "\n", "utf8");
+        deliverablePath = `.cph/reports/${reportFileName}`;
+      } catch (saveErr) {}
 
       const report: SubagentTaskReport = {
         id: subId,
@@ -509,11 +730,13 @@ export class SubagentRunner {
         description: spec.description,
         success,
         finalAnswer,
+        deliverablePath,
         turnsCount: totalTurns,
         durationMs,
         targetSessionId,
         hopCount,
         handoffCount: subHandoffCount,
+        account: subagentAccount || undefined,
       };
 
       events?.onSubagentEnd?.(report);
@@ -521,6 +744,7 @@ export class SubagentRunner {
         type: "SUBAGENT_FINISHED",
         subagentId: subId,
         role,
+        account: subagentAccount || undefined,
         success: report.success,
         turnsCount: report.turnsCount,
         durationMs,
@@ -560,7 +784,7 @@ export class SubagentRunner {
       const subHandoffCount = Math.max(0, hopCount - 1);
       logStream?.write(
         `\n=== [Subagent ${subId} Error: ${errorMsg}] ` +
-        `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次) ===\n`
+        `(Hops: ${Math.max(1, hopCount)}, 接手: ${subHandoffCount} 次, 账号: ${subagentAccount || "默认"}) ===\n`
       );
 
       const report: SubagentTaskReport = {
@@ -575,10 +799,15 @@ export class SubagentRunner {
         targetSessionId,
         hopCount: Math.max(1, hopCount),
         handoffCount: subHandoffCount,
+        account: subagentAccount || undefined,
       };
       events?.onSubagentEnd?.(report);
       return report;
     } finally {
+      this.pool?.releaseSessionLease?.(currentSessionId);
+      if (previousSessionId) {
+        this.pool?.releaseSessionLease?.(previousSessionId);
+      }
       if (logStream) {
         try {
           if (typeof (logStream as any).end === "function") {
@@ -609,8 +838,15 @@ export class SubagentRunner {
       return "### 🎯 子代理多会话并发执行报告 (共 0 个子任务)\n";
     }
 
+    const successCount = reports.filter((r) => r && r.success).length;
+    const failedCount = reports.length - successCount;
+    const isAllSuccess = successCount === reports.length;
+    const isPartialSuccess = successCount > 0 && !isAllSuccess;
+
     const parts: string[] = [
-      `### 🎯 子代理多会话并发执行报告 (共 ${reports.length} 个子任务)`,
+      `### 🎯 子代理多会话并发执行报告 (共 ${reports.length} 个子任务 | ${successCount} 成功, ${failedCount} 失败)`,
+      `**执行判定**: ${isAllSuccess ? "✅ 全量成功" : isPartialSuccess ? "🟡 部分成功 (Partial Success)" : "❌ 全部失败"}`,
+      `**成果物理落盘说明**: 所有子任务的完整结题报告与证据链已由 Harness 底层自动落盘为物理报告文件（\`.cph/reports/\`）。主控会话只收取结构化目录索引（TOC），零 Token 额外开销。`,
       ``,
     ];
 
@@ -621,11 +857,30 @@ export class SubagentRunner {
       const durationSec = ((r.durationMs ?? 0) / 1000).toFixed(1);
       const handoffs = r.handoffCount ?? Math.max(0, (r.hopCount || 1) - 1);
       const handoffLabel = handoffs > 0 ? ` (经 ${handoffs} 次接力)` : ` (接手 0 次)`;
-      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}] ${r.description || ""}${handoffLabel}`);
-      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次)`);
-      parts.push(`- **交付结论**:`);
-      parts.push((r.finalAnswer || "").trim());
+      const accountBadge = r.account ? ` [账号: ${r.account}]` : "";
+      const accountStatus = r.account ? `, 账号: ${r.account}` : "";
+      const reportFile = r.deliverablePath || `.cph/reports/report-${r.role || "sub"}-${r.id}.md`;
+
+      const rawAnswer = (r.finalAnswer || "").trim();
+      const answerLines = rawAnswer.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const summarySnippet =
+        answerLines.slice(0, 3).join("\n").slice(0, 300) || "（无详细文字摘要）";
+
+      parts.push(`#### [Sub-${i + 1}] [${r.role || "unknown"}]${accountBadge} ${r.description || ""}${handoffLabel}`);
+      parts.push(`- **状态**: ${statusIcon} (耗时 ${durationSec}s, 共 ${r.turnsCount ?? 0} 轮, 接手 ${handoffs} 次${accountStatus})`);
+      parts.push(`- **物理报告文件**: \`${reportFile}\``);
+      parts.push(`- **核心交付摘要**:`);
+      parts.push(summarySnippet);
       parts.push(``);
+    }
+
+    parts.push(`---`);
+    parts.push(`【主控对账与推进指引 (Plan Convergence Guidance)】:`);
+    parts.push(`1. 对于状态为【✅ 成功】的子任务，其完整交付报告已落盘至对应物理文件，请立即使用 patch_file 将 plan.md 对应项更新打勾为 \`- [x] ...\`；`);
+    if (failedCount > 0) {
+      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，严禁全盘推翻已完成成果或重写整个计划！`);
+    } else {
+      parts.push(`2. 所有规划子任务均已圆满交付，若无后续 Stage，即可验证后收敛输出 FINAL_ANSWER。`);
     }
 
     return parts.join("\n");
