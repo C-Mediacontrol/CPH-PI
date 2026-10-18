@@ -128,3 +128,4 @@ Harness 调度核（`Orchestrator`）根据主控调派的工单形态，自适�
 2. **打包与分发产物校验**：
    - 运行 `bun run build:package; bun run package`；
    - 验证 `dist/copilot-agent-bundle.zip` 正确包含最新提示词与更新后的 `skills/subagent/`。
+
