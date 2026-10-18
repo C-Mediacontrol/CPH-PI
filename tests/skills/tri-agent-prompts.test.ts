@@ -158,4 +158,40 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(coderPrompt).not.toContain("tool: write_file");
     expect(researcherPrompt).not.toContain("tool: write_file");
   });
+
+  it("should positively guide script-based testing and error diagnostic self-healing in coder prompt", () => {
+    const coderPrompt = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
+    // Positive guidance on simple commands and script file generation for complex validations
+    expect(coderPrompt).toMatch(/(?:单行原生命令|原生测试命令)/);
+    expect(coderPrompt).toMatch(/(?:独立测试脚本文件|脚本文件)/);
+    // Positive guidance on error diagnostic self-healing
+    expect(coderPrompt).toMatch(/(?:语法错误|报错输出|具体信息)/);
+    expect(coderPrompt).toMatch(/(?:基于客观事实|自愈与纠偏闭环|调整命令)/);
+    // Strict compliance with Rule 3: No negative prohibition words in new guidance
+    expect(coderPrompt).not.toContain("严禁执行复杂命令");
+    expect(coderPrompt).not.toContain("切勿重试");
+  });
+
+  it("should declare Two-Stage Scout protocol and Plan Refinement Scope Conservation in main prompt (Task 3)", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    expect(mainPrompt).toContain("两阶段斥候领航协议");
+    expect(mainPrompt).toMatch(/isScout|斥候探查架构大纲/);
+    expect(mainPrompt).toContain("内联等待模式");
+    expect(mainPrompt).toContain("范围守恒律");
+    expect(mainPrompt).toMatch(/300\s*行/);
+    expect(mainPrompt).toContain("单点补缺");
+  });
+
+  it("should positively guide turn-1 attachment reading and semantic chunk review in researcher prompt (Task 3)", () => {
+    const researcherPrompt = fs.readFileSync(path.join(root, "cph-researcher-agent-prompt.txt"), "utf8");
+    expect(researcherPrompt).toContain("开局附件直通与全量阅读");
+    expect(researcherPrompt).toContain("宏观语义块审阅");
+    expect(researcherPrompt).toContain("单会话高效交付闭环");
+    // Strict compliance with Rule 3: No negative prohibition words in new guidance
+    expect(researcherPrompt).not.toContain("严禁");
+    expect(researcherPrompt).not.toContain("切勿");
+    expect(researcherPrompt).not.toContain("不要");
+    expect(researcherPrompt).not.toContain("杜绝");
+  });
 });
+
