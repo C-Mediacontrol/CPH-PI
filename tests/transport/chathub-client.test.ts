@@ -168,6 +168,81 @@ describe("ChatHub Transport Layer Unit Tests", () => {
       expect(heartbeatReceived).toBe(true);
     });
 
+    it("should accept authoritative m.text from bot message over partial writeAtCursor tokens", async () => {
+      mockServer = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response("Upgrade failed", { status: 500 });
+        },
+        websocket: {
+          message(ws, msg) {
+            const raw = typeof msg === "string" ? msg : msg.toString();
+            const frames = ChatHubClient.decodeSignalRFrames(raw);
+
+            for (const f of frames) {
+              if (f.protocol === "json") {
+                ws.send(ChatHubClient.encodeSignalR({}));
+              } else if (f.target === "chat") {
+                // Step 1: Stream partial typing tokens from model without fences (writeAtCursor)
+                ws.send(
+                  ChatHubClient.encodeSignalR({
+                    type: 1,
+                    target: "update",
+                    arguments: [
+                      {
+                        writeAtCursor: "正在调查...action\ntool: run_command\n cd /e/test",
+                      },
+                    ],
+                  })
+                );
+
+                // Step 2: Sydney gateway delivers complete authoritative m.text with standard markdown fences
+                ws.send(
+                  ChatHubClient.encodeSignalR({
+                    type: 1,
+                    target: "update",
+                    arguments: [
+                      {
+                        messages: [
+                          {
+                            author: "bot",
+                            text: "正在调查...\n```action\ntool: run_command\ncommand: cd /e/test\n```",
+                          },
+                        ],
+                      },
+                    ],
+                  })
+                );
+
+                // Step 3: Complete
+                ws.send(ChatHubClient.encodeSignalR({ type: 2 }));
+              }
+            }
+          },
+        },
+      });
+
+      const client = new ChatHubClient(mockToken, {
+        wsBaseUrl: `ws://127.0.0.1:${mockServer.port}/chathub`,
+        timeoutMs: 5000,
+      });
+
+      const response = await client.sendMessage({
+        text: "Run script",
+        conversationId: "conv-authoritative",
+        sessionId: "sess-authoritative",
+        requestId: "req-authoritative",
+      });
+
+      // Must receive the authoritative m.text with markdown block
+      expect(response.text).toBe(
+        "正在调查...\n```action\ntool: run_command\ncommand: cd /e/test\n```"
+      );
+      expect(response.text).toContain("```action");
+      expect(response.text).toContain("command: cd /e/test");
+    });
+
     it("should detect rate limit in streaming message and trigger onRateLimitDetected", async () => {
       let detectedEmail = "";
 
@@ -230,6 +305,92 @@ describe("ChatHub Transport Layer Unit Tests", () => {
         }
       );
 
+      expect(detectedEmail).toBe(mockToken.email);
+    });
+
+    it("should NOT trigger onRateLimitDetected when WebSocket closes prematurely with code 1006 (network drop)", async () => {
+      let detectedEmail = "";
+
+      mockServer = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response("Upgrade failed", { status: 500 });
+        },
+        websocket: {
+          open(ws) {
+            // Immediately close with 1006 (abnormal close) before chat is sent
+            ws.close(1006, "Abnormal closure");
+          },
+          message() {},
+        },
+      });
+
+      const client = new ChatHubClient(mockToken, {
+        wsBaseUrl: `ws://127.0.0.1:${mockServer.port}/chathub`,
+        timeoutMs: 5000,
+      });
+
+      try {
+        await client.sendMessage(
+          {
+            text: "Hello",
+            conversationId: "c_1006",
+            sessionId: "s_1006",
+            requestId: "r_1006",
+          },
+          {
+            onRateLimitDetected: (email) => {
+              detectedEmail = email;
+            },
+          }
+        );
+      } catch {}
+
+      // Code 1006 must NOT falsely mark account as throttled
+      expect(detectedEmail).toBe("");
+    });
+
+    it("should trigger onRateLimitDetected when WebSocket closes prematurely with code 1008 (policy violation)", async () => {
+      let detectedEmail = "";
+
+      mockServer = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response("Upgrade failed", { status: 500 });
+        },
+        websocket: {
+          open(ws) {
+            // Close with 1008 (policy violation / rate limit)
+            ws.close(1008, "Policy Violation");
+          },
+          message() {},
+        },
+      });
+
+      const client = new ChatHubClient(mockToken, {
+        wsBaseUrl: `ws://127.0.0.1:${mockServer.port}/chathub`,
+        timeoutMs: 5000,
+      });
+
+      try {
+        await client.sendMessage(
+          {
+            text: "Hello",
+            conversationId: "c_1008",
+            sessionId: "s_1008",
+            requestId: "r_1008",
+          },
+          {
+            onRateLimitDetected: (email) => {
+              detectedEmail = email;
+            },
+          }
+        );
+      } catch {}
+
+      // Code 1008 must trigger rate limit detection
       expect(detectedEmail).toBe(mockToken.email);
     });
   });

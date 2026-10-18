@@ -2,6 +2,18 @@
 
 本文档记录 CPH-PI 核心调度核、协议层、会话治理与展现层的关键变更历史，严格遵循《AGENTS.md》开发与治理准则。
 
+## [2026-10-19] 传输层权威消息恢复与工具执行生命周期链路修复
+
+### 概述
+修复 ChatHub 传输层错误保留 `writeAtCursor` 局部光标增量而压制权威 `m.text` 的缺陷。全面对齐《AGENTS.md》准则 1（Harness 纯粹与中立原则），不在调度层为残缺流打特化补丁，直接向 Orchestrator 交付包含完整 Markdown 栅格与字段结构的权威消息体，彻底恢复工具执行状态（`onToolStart` / `onToolEnd`）与终端/日志中 `⚡ 正在执行` 与 `✔ 执行成功` 的客观反馈。全量 648 项测试保持 100% 绿灯全通。
+
+### 变更分类明细
+
+#### 1. 传输层权威终态帧契约归正 (`src/transport/chathub-client.ts`)
+- **根因**: 此前为避免 Sydney Markdown 方括号转义 `[foo\]`，错误地以 `!fullText` 条件阻止了权威帧 `m.text` 的覆盖。由于 `writeAtCursor` 增量流已先期填充 `fullText`，导致结构完整的 `m.text` 被丢弃，下游 `ResilientParser` 将无反引号与标签的流式碎片判定为 `invalid_chatter`，造成工具调度完全中断与终端日志执行结果丢失。
+- **改动**: 收到 `m.author === "bot" && m.text` 时，统一将 `fullText` 设置为权威完整的 `m.text`，回归标准协议物理契约。转义处理交由 `ToolBridge` 执行层常规规范化处理，避免分层越权。
+- **测试**: 更新 `tests/transport/chathub-client.test.ts` 中的断言，确保权威 `m.text` 优先于局部 `writeAtCursor` 交付。
+
 ---
 
 ## [2026-10-14] 对抗性代码审查安全整改与拓扑解耦 (Adversarial Remediation & Decoupling: CR-1 ~ CR-4)

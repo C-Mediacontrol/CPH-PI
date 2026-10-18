@@ -11505,7 +11505,10 @@ class ChatHubClient {
                         resetIdleTimer();
                       }
                     }
-                  } else if ((m.author === "bot" || m.messageType === "Disengaged" || m.messageType === "OffTopic") && m.text) {
+                  } else if (m.messageType === "Disengaged" || m.messageType === "OffTopic") {
+                    fullText = m.text;
+                    resetIdleTimer();
+                  } else if (m.author === "bot" && m.text) {
                     if (/rate limit|too many requests|配额已达上限|请稍后再试/i.test(m.text)) {
                       events?.onRateLimitDetected?.(this.token.email);
                     }
@@ -21851,8 +21854,14 @@ class ToolBridge {
       };
     }
     if (toolName === "run_command" || toolName === "bash" || toolName === "exec") {
-      const command = action.command ?? action.cmd ?? "";
+      let command = action.command ?? action.cmd ?? "";
       const timeout = action.timeout !== undefined ? Number(action.timeout) : 30;
+      if (typeof command === "string" && command.includes("\\]")) {
+        command = command.replace(/([a-zA-Z0-9_.]+)\\\]/g, "$1]");
+      }
+      if (typeof command === "string" && command.includes("\\[")) {
+        command = command.replace(/\\\[([a-zA-Z0-9_.]+)/g, "[$1");
+      }
       const args = {
         command,
         timeout
@@ -22322,7 +22331,6 @@ ${this.PROTOCOL_REMINDER}`;
 Error: ${error || "Execution failed"}
 Output: ${output}
 
-请根据错误进行分析并尝试排查修复：
 ${this.PROTOCOL_REMINDER}`;
     }
   }
@@ -24009,6 +24017,12 @@ ${spec.prompt}
 `);
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
+    const isScout = isInlineScoutTask([spec]);
+    if (isScout) {
+      currentTaskPrompt = `【斥候宏观侦察工单】：本阶段任务聚焦于目标文件的宏观结构概览与顶层大纲探查（顶层函数/类列表、对外导出与大致行号分布）。请在梳理出清晰目录大纲后，立即输出包含大纲与建议切片的 FINAL_ANSWER 结题，以便主控进入下一阶段精准拆解任务。
+
+` + currentTaskPrompt;
+    }
     let previousSessionId = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";

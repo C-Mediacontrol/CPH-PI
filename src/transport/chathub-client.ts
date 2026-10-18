@@ -386,11 +386,15 @@ export class ChatHubClient {
                         resetIdleTimer();
                       }
                     }
-                  } else if ((m.author === "bot" || m.messageType === "Disengaged" || m.messageType === "OffTopic") && m.text) {
+                  } else if (m.messageType === "Disengaged" || m.messageType === "OffTopic") {
+                    fullText = m.text;
+                    resetIdleTimer();
+                  } else if (m.author === "bot" && m.text) {
                     // Check for rate limit keywords in bot message
                     if (/rate limit|too many requests|配额已达上限|请稍后再试/i.test(m.text)) {
                       events?.onRateLimitDetected?.(this.token.email);
                     }
+                    // Authoritative bot message payload: always update fullText with the complete m.text
                     fullText = m.text;
                     resetIdleTimer();
                   }
@@ -459,8 +463,8 @@ export class ChatHubClient {
 
       ws.onclose = (ev) => {
         if (!hasSentChat) {
-          // Code 1006 / 1008 usually indicates auth failure or rate limit
-          if (ev.code === 1008 || ev.code === 1006) {
+          // Code 1008 indicates policy violation or rate limit rejection from gateway
+          if (ev.code === 1008) {
             events?.onRateLimitDetected?.(this.token.email);
           }
           settleReject(
