@@ -2,6 +2,43 @@
 
 本文档记录 CPH-PI 核心调度核、协议层、会话治理与展现层的关键变更历史，严格遵循《AGENTS.md》开发与治理准则。
 
+## [2026-10-20] 全工作区源码快照增压、大文件分块直传、SharePoint 物理镜像与子代理微切片隔离体系 (Unified Workspace Supercharger, Resumable Upload & PnP Mirror)
+
+### 概述
+完成 `CR-2026-10-19-01` 实施全流程（Phase 0 至 Phase 5）。经历 6 轮严苛的中立对抗性审计（report-C 至 report-H），彻底解决大型工程全景视野盲区、大文件断点传输、云端爬虫高延迟、快照时效性崩塌与子代理认知污染五大系统性难题。在完全独立的开发分支 `feat/unified-supercharger-execution` 上通过子代理驱动模式（Subagent-Driven Development）完成全部组件的研发、TDD 测试与端到端集成。全仓测试用例由 655 扩增至 **710 项（3189 个断言，91 个测试文件）**，100% 绿灯全通，零破坏、零回归。
+
+### 变更分类明细
+
+#### 1. 纯协议自适应直传与断点分块引擎 (`src/transport/substrate-uploader.ts`, `tests/transport/resumable-uploader.test.ts`)
+- **核心常量**: 定义 `CLIENT_SPLIT_THRESHOLD_HYPOTHESIS = 4MB`，分块步长 `CHUNK_SIZE = 8,192,000` 字节（严格符合微软 320 KiB 整数倍标准）；
+- **加固简易直传 (`uploadSimple`)**: 支持 Buffer/string 统一接入，支持解析 429/503 的 `Retry-After`（整数秒与 HTTP-Date）并进行指数退避重试；遇到 400/401/403 等不可恢复客户端或鉴权错误立即熔断上抛，杜绝无意义重试；
+- **可中断等待 (`sleepInterruptible`)**: 退避过程中全程监听 `AbortSignal`，取消时毫秒级抛出 `AbortError`；
+- **断点分块状态机 (`uploadResumable`)**: 通过 `createUploadSession` 获取预授权 URL，循环发送 8,000 KB 切片，依据 202/201 状态码推进并完成 DriveItem 解析与附件卡片组装；
+- **向后兼容别名**: `uploadDocumentToOneDrive` 支持 3 参、4 参以及参数错序启发式互换，平滑重定向至 `uploadDocumentAuto`。
+
+#### 2. SharePoint 物理镜像与增量状态基线 (`scripts/sp-sync-engine.ps1`, `scripts/lib/PnPSession.psm1`, `tests/scripts/sp-sync-engine.test.ts`)
+- **环境强锁定**: 强制断言 Windows PowerShell 5.1，使用 `pwsh` (PS7+) 时立即抛出致命错误；
+- **凭据隔离与 Windows ACL**: 默认强绑定单一入口 `~/.cph/pnp-session.json`，在写文件后施加 Windows ACL 限定仅当前用户完全控制并包含 `try/catch` 跨平台平滑降级；保留 `-AllowLegacyFallback` opt-in 开关；在模块头记录差异清单 `# LOCAL DIVERGENCE`；
+- **本地 SSOT 与增量状态基线**: 建立 `.cph/state/sync-manifest.json`，推送前比对本地文件 SHA256，未变更文件 100% 跳过；推送失败 3 次后非致命写入 `.cph/state/dirty-sync.jsonl`；本地为唯一真实源，SharePoint 镜像为只读投影。
+
+#### 3. Git-Aware 全景快照器与子代理微切片生成器 (`src/workspace/snapshot-generator.ts`, `tests/workspace/snapshot-generator.test.ts`)
+- **全景快照 (`WorkspaceSnapshot`)**: 基于 `git ls-files -z` 跨平台安全枚举，排除构建与文档目录及锁文件，强制执行 9 大核心源码存在性硬门禁与密钥安全扫描；落盘前自动 `mkdirSync(recursive: true)` 锁定在 `.cph/snapshots/`，物理文件名按哈希寻址 `workspace-snapshot-<sha256>.txt`，云端展示映射为 `workspace-v<generation>.txt`；连续多次生成 100% 幂等防膨胀；
+- **子代理微切片 (`generateScopedSubagentSlice`)**: 按工单自动提取目标文件及其导入接口定义，生成 10~30KB 闭包切片，为 Researcher/Coder 提供聚焦的工作内存。
+
+#### 4. 双层流调度、注解复用、模型可见降级与物理指纹头 (`src/agent/orchestrator.ts`, `src/agent/subagent-runner.ts`, `tests/agent/dual-layer-lifecycle.test.ts`)
+- **双快照正交分层**: 明确代码全景快照 (`.cph/snapshots/`) 与规划执行账本快照 `MainPlanSnapshot` (`.cph/handoffs/`) 职责正交；
+- **Turn 1 完整注解复用**: 工作区哈希未变时，直接复用 `.cph/state/workspace-snapshot-cache.json` 中持久化的完整 `UploadDocumentResult`（含 `annotation` 对象），消除 20~25s 重复上传延迟；
+- **显式容错与模型可见感知**: 首轮上传失败时 TUI 黄色告警、堆栈写入 `upload-error.log`，严禁内联倾倒 1.3MB，向 Turn 1 Prompt 注入显式降级感知通知，杜绝盲跑；
+- **物理指纹头与异步同步**: 单测绿灯后拦截全量上传，下发 5 行 `[WORKSPACE STATE UPDATE]` 极简状态头，异步触发 `sp-sync-engine.ps1` 单文件推送；
+- **跨代递增快照**: Handoff 时单调递增生成下一版本快照（`workspace-v2.txt`）。
+
+#### 5. Tri-Agent 提示词、Dev 兼容基线与专有 Skills 重构 (`cph-*-agent-prompt.txt`, `skills/subagent`, `skills/handoff`, `scripts/package-agent-bundle.ts`)
+- **提示词正向重塑**: 全面消除“严禁”、“切勿”等负面禁止词，严格遵循黑盒抽象与操作者视角；Main Agent 强化首轮立桩与 DAG 四大因果时序屏障；Researcher 强化只读审查与单点微切片证据链；Coder 强化局部小步精准补丁与单测闭环；Dev 提示词同步对齐全景快照与正向工程交付标准（解决 P10 孤儿提示词）；
+- **专有 Skills 重构**: `skills/subagent` 废除无序斥候摸黑探查，升级为工单微切片与阶段屏障指南；`skills/handoff` 注入接力智能体防失忆契约与递增快照对齐；
+- **打包流水线对齐**: `package-agent-bundle.ts` 完整将 4 大提示词、skills 与文档同步打包至 `dist/copilot-agent-bundle.zip` 与 `package/agent-bundle/`。
+
+---
+
 ## [2026-10-19] 长战役连续自主接力跃迁与集群并发容量感知架构升级 (Autonomous Multi-Hop Handoff & Swarm Concurrency)
 
 ### 概述

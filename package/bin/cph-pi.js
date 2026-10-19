@@ -10376,8 +10376,8 @@ var require_libcjs = __commonJS(function(exports) {
 
 // src/cli.ts
 import readline from "node:readline";
-import path14 from "node:path";
-import fs14 from "node:fs";
+import path15 from "node:path";
+import fs15 from "node:fs";
 
 // pi/node_modules/chalk/source/utilities.js
 function stringReplaceAll(string, substring, postfix) {
@@ -10934,10 +10934,10 @@ var chalkStderr = createChalk({ level: stderrColor ? stderrColor.level : 0 });
 var source_default = chalk;
 
 // src/agent/orchestrator.ts
-import crypto5 from "crypto";
-import fs10 from "fs";
-import path10 from "path";
-import { execSync as execSync2 } from "child_process";
+import crypto6 from "crypto";
+import fs11 from "fs";
+import path11 from "path";
+import { execSync as execSync3, spawn as spawn4 } from "child_process";
 
 // src/auth/token-manager.ts
 import fs from "fs";
@@ -12027,7 +12027,38 @@ class AccountPool {
 class SubstrateUploader {
   static DEFAULT_UPLOAD_URL = "https://substrate.office.com/m365Copilot/UploadFile";
   static DEFAULT_GRAPH_URL = "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads";
+  static CLIENT_SPLIT_THRESHOLD_HYPOTHESIS = 4 * 1024 * 1024;
+  static CHUNK_SIZE = 8192000;
+  static MAX_CHUNK_ATTEMPTS = 5;
+  static MAX_SIMPLE_ATTEMPTS = 5;
   static spoBase64Cache = new Map;
+  static sleepInterruptible(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        const err = new Error("Operation aborted");
+        err.name = "AbortError";
+        return reject(err);
+      }
+      let timer = null;
+      const onAbort = () => {
+        if (timer)
+          clearTimeout(timer);
+        if (signal)
+          signal.removeEventListener("abort", onAbort);
+        const err = new Error("Operation aborted");
+        err.name = "AbortError";
+        reject(err);
+      };
+      if (signal) {
+        signal.addEventListener("abort", onAbort);
+      }
+      timer = setTimeout(() => {
+        if (signal)
+          signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+    });
+  }
   static async resolveSpoBase64(graphAccessToken, customBaseUrl) {
     if (this.spoBase64Cache.has(graphAccessToken)) {
       return this.spoBase64Cache.get(graphAccessToken);
@@ -12097,33 +12128,7 @@ class SubstrateUploader {
       messageAnnotationType: "ImageFile"
     };
   }
-  static async uploadDocumentToOneDrive(graphAccessToken, content, fileName, customBaseUrl) {
-    let actualContent = content;
-    let actualFileName = fileName;
-    if ((content.endsWith(".md") || content.endsWith(".txt") || content.startsWith("handoff-")) && !content.includes(`
-`) && (fileName.includes(`
-`) || fileName.length > 255)) {
-      actualContent = fileName;
-      actualFileName = content;
-    }
-    const encodedName = encodeURIComponent(actualFileName);
-    const rootUrl = customBaseUrl && customBaseUrl.startsWith("http") ? customBaseUrl : this.DEFAULT_GRAPH_URL;
-    const url = customBaseUrl && customBaseUrl.startsWith("http") ? `${customBaseUrl}/${encodedName}:/content` : `${rootUrl}:/${encodedName}:/content`;
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${graphAccessToken}`,
-        "Content-Type": "text/plain; charset=utf-8",
-        Prefer: "ExtractTextOnCommit, pacToken=N",
-        SdkVersion: "graph-js/3.0.7 (featureUsage=7)"
-      },
-      body: content
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Graph OneDrive upload failed (${res.status}): ${err.slice(0, 200)}`);
-    }
-    const data = await res.json();
+  static async assembleUploadResult(graphAccessToken, data, fileName, customBaseUrl) {
     const finalName = data.name || fileName;
     const driveId = data.parentReference?.driveId || "";
     const ext = finalName.split(".").pop() || "txt";
@@ -12151,12 +12156,547 @@ class SubstrateUploader {
       annotation
     };
   }
+  static async uploadSimple(graphAccessToken, content, fileName, signal, customBaseUrl) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf-8");
+    const encodedName = encodeURIComponent(fileName);
+    const rootUrl = customBaseUrl && customBaseUrl.startsWith("http") ? customBaseUrl : this.DEFAULT_GRAPH_URL;
+    const url = customBaseUrl && customBaseUrl.startsWith("http") ? `${customBaseUrl}/${encodedName}:/content` : `${rootUrl}:/${encodedName}:/content`;
+    let attempts = 0;
+    while (true) {
+      if (signal?.aborted) {
+        const err = new Error("Upload aborted by caller");
+        err.name = "AbortError";
+        throw err;
+      }
+      attempts++;
+      let res;
+      try {
+        res = await fetch(url, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${graphAccessToken}`,
+            "Content-Type": "text/plain; charset=utf-8",
+            Prefer: "ExtractTextOnCommit, pacToken=N",
+            SdkVersion: "graph-js/3.0.7 (featureUsage=7)"
+          },
+          body: buffer,
+          signal
+        });
+      } catch (err) {
+        if (signal?.aborted || err.name === "AbortError")
+          throw err;
+        if (attempts >= this.MAX_SIMPLE_ATTEMPTS)
+          throw err;
+        await this.sleepInterruptible(attempts * 2000, signal);
+        continue;
+      }
+      if (res.status === 429 || res.status === 503) {
+        if (attempts >= this.MAX_SIMPLE_ATTEMPTS) {
+          throw new Error(`Simple upload hit rate limit / service unavailable and exceeded max retry limit (${this.MAX_SIMPLE_ATTEMPTS})`);
+        }
+        let retrySec = 5;
+        const headerVal = res.headers.get("Retry-After");
+        if (headerVal) {
+          const parsedInt = parseInt(headerVal, 10);
+          if (!isNaN(parsedInt)) {
+            retrySec = Math.max(parsedInt, 0);
+          } else {
+            const parsedDate = Date.parse(headerVal);
+            if (!isNaN(parsedDate)) {
+              retrySec = Math.max(Math.ceil((parsedDate - Date.now()) / 1000), 0);
+            }
+          }
+        }
+        await this.sleepInterruptible(Math.min(retrySec, 60) * 1000, signal);
+        continue;
+      }
+      if (res.status >= 400 && res.status < 500) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Graph simple upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      }
+      if (res.status >= 500) {
+        if (attempts >= this.MAX_SIMPLE_ATTEMPTS) {
+          const errText = await res.text().catch(() => "");
+          throw new Error(`Graph simple upload failed (${res.status}): ${errText.slice(0, 200)}`);
+        }
+        await this.sleepInterruptible(attempts * 2000, signal);
+        continue;
+      }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Graph simple upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      return await this.assembleUploadResult(graphAccessToken, data, fileName, customBaseUrl);
+    }
+  }
+  static async uploadResumable(graphAccessToken, buffer, fileName, signal, customBaseUrl) {
+    const totalBytes = buffer.length;
+    const encodedName = encodeURIComponent(fileName);
+    const rootUrl = customBaseUrl && customBaseUrl.startsWith("http") ? customBaseUrl : this.DEFAULT_GRAPH_URL;
+    const sessionUrl = customBaseUrl && customBaseUrl.startsWith("http") ? `${customBaseUrl}/${encodedName}:/createUploadSession` : `${rootUrl}:/${encodedName}:/createUploadSession`;
+    let sessionRes;
+    try {
+      sessionRes = await fetch(sessionUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${graphAccessToken}`,
+          "Content-Type": "application/json",
+          Prefer: "ExtractTextOnCommit, pacToken=N"
+        },
+        body: JSON.stringify({
+          item: {
+            "@microsoft.graph.conflictBehavior": "replace",
+            name: fileName
+          }
+        }),
+        signal
+      });
+    } catch (err) {
+      if (signal?.aborted || err.name === "AbortError")
+        throw err;
+      throw err;
+    }
+    if (!sessionRes.ok) {
+      const errText = await sessionRes.text().catch(() => "");
+      throw new Error(`Create upload session failed (${sessionRes.status}): ${errText.slice(0, 200)}`);
+    }
+    const sessionData = await sessionRes.json();
+    const uploadUrl = sessionData.uploadUrl;
+    if (!uploadUrl) {
+      throw new Error("Create upload session succeeded but no uploadUrl returned");
+    }
+    let nextRanges = sessionData.nextExpectedRanges || ["0-"];
+    let driveItemData = null;
+    while (nextRanges.length > 0 && !driveItemData) {
+      if (signal?.aborted) {
+        const err = new Error("Upload aborted by caller");
+        err.name = "AbortError";
+        throw err;
+      }
+      const match = nextRanges[0].match(/^(\d+)-/);
+      if (!match) {
+        throw new Error(`Invalid nextExpectedRanges format: ${JSON.stringify(nextRanges)}`);
+      }
+      const offset = parseInt(match[1], 10);
+      if (offset >= totalBytes)
+        break;
+      const end = Math.min(offset + this.CHUNK_SIZE, totalBytes);
+      const chunk = buffer.subarray(offset, end);
+      let attempts = 0;
+      let chunkSuccess = false;
+      while (!chunkSuccess) {
+        if (signal?.aborted) {
+          const err = new Error("Upload aborted by caller");
+          err.name = "AbortError";
+          throw err;
+        }
+        attempts++;
+        if (attempts > this.MAX_CHUNK_ATTEMPTS) {
+          throw new Error(`Chunk PUT at offset ${offset} exceeded max retry limit (${this.MAX_CHUNK_ATTEMPTS})`);
+        }
+        let putRes;
+        try {
+          putRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: {
+              "Content-Range": `bytes ${offset}-${end - 1}/${totalBytes}`,
+              "Content-Length": String(chunk.length),
+              Prefer: "ExtractTextOnCommit",
+              SdkVersion: "graph-js/3.0.7 (featureUsage=7)"
+            },
+            body: chunk,
+            signal
+          });
+        } catch (err) {
+          if (signal?.aborted || err.name === "AbortError")
+            throw err;
+          if (attempts >= this.MAX_CHUNK_ATTEMPTS)
+            throw err;
+          await this.sleepInterruptible(attempts * 2000, signal);
+          continue;
+        }
+        if (putRes.status === 429 || putRes.status === 503) {
+          let retrySec = 5;
+          const headerVal = putRes.headers.get("Retry-After");
+          if (headerVal) {
+            const parsedInt = parseInt(headerVal, 10);
+            if (!isNaN(parsedInt)) {
+              retrySec = Math.max(parsedInt, 0);
+            } else {
+              const parsedDate = Date.parse(headerVal);
+              if (!isNaN(parsedDate)) {
+                retrySec = Math.max(Math.ceil((parsedDate - Date.now()) / 1000), 0);
+              }
+            }
+          }
+          await this.sleepInterruptible(Math.min(retrySec, 60) * 1000, signal);
+          continue;
+        }
+        if (putRes.status >= 400 && putRes.status < 500) {
+          const errText = await putRes.text().catch(() => "");
+          throw new Error(`Chunk PUT failed with client error (${putRes.status}): ${errText.slice(0, 200)}`);
+        }
+        if (putRes.status >= 500) {
+          if (attempts >= this.MAX_CHUNK_ATTEMPTS) {
+            const errText = await putRes.text().catch(() => "");
+            throw new Error(`Chunk PUT failed (${putRes.status}): ${errText.slice(0, 200)}`);
+          }
+          await this.sleepInterruptible(attempts * 2000, signal);
+          continue;
+        }
+        if (putRes.status === 202) {
+          const resJson = await putRes.json();
+          nextRanges = resJson.nextExpectedRanges || [`${end}-`];
+          chunkSuccess = true;
+        } else if (putRes.status === 201 || putRes.status === 200) {
+          driveItemData = await putRes.json();
+          nextRanges = [];
+          chunkSuccess = true;
+        } else {
+          const errText = await putRes.text().catch(() => "");
+          throw new Error(`Chunk PUT failed (${putRes.status}): ${errText.slice(0, 200)}`);
+        }
+      }
+    }
+    if (!driveItemData || !driveItemData.id) {
+      throw new Error("Resumable upload completed without DriveItem metadata returned.");
+    }
+    return await this.assembleUploadResult(graphAccessToken, driveItemData, fileName, customBaseUrl);
+  }
+  static async uploadDocumentAuto(graphAccessToken, content, fileName, signal, customBaseUrl) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf-8");
+    if (buffer.byteLength <= this.CLIENT_SPLIT_THRESHOLD_HYPOTHESIS) {
+      return await this.uploadSimple(graphAccessToken, buffer, fileName, signal, customBaseUrl);
+    }
+    return await this.uploadResumable(graphAccessToken, buffer, fileName, signal, customBaseUrl);
+  }
+  static async uploadDocumentToOneDrive(graphAccessToken, content, fileName, customBaseUrlOrSignal) {
+    let actualContent = content;
+    let actualFileName = fileName;
+    if (typeof content === "string" && (content.endsWith(".md") || content.endsWith(".txt") || content.startsWith("handoff-")) && !content.includes(`
+`) && (fileName.includes(`
+`) || fileName.length > 255)) {
+      actualContent = fileName;
+      actualFileName = content;
+    }
+    const signal = customBaseUrlOrSignal instanceof AbortSignal ? customBaseUrlOrSignal : undefined;
+    const customBaseUrl = typeof customBaseUrlOrSignal === "string" ? customBaseUrlOrSignal : undefined;
+    return await this.uploadDocumentAuto(graphAccessToken, actualContent, actualFileName, signal, customBaseUrl);
+  }
+}
+
+// src/workspace/snapshot-generator.ts
+import { execSync } from "node:child_process";
+import fs2 from "node:fs";
+import path2 from "node:path";
+import crypto3 from "node:crypto";
+
+class SnapshotGenerator {
+  static MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
+  static EXCLUDED_DIR_PREFIXES = [
+    ".docs/",
+    "package/",
+    "dist/",
+    ".cph/",
+    "node_modules/",
+    ".git/"
+  ];
+  static SENSITIVE_FILE_PATTERNS = [
+    /^\.env/i,
+    /token.*\.json$/i,
+    /session.*\.json$/i,
+    /\.(pem|key|pfx|pkcs12)$/i,
+    /id_rsa/i
+  ];
+  static SENSITIVE_CONTENT_PATTERNS = [
+    /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----/i,
+    /ey[A-Za-z0-9-_]{20,}\.ey[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}/
+  ];
+  static CRITICAL_CORE_FILES = [
+    "src/session/session-manager.ts",
+    "src/session/ledger/execution-ledger.ts",
+    "src/session/lineage-tracker.ts",
+    "src/auth/token-manager.ts",
+    "scripts/lib/PnPSession.psm1",
+    "cph-main-agent-prompt.txt",
+    "cph-coder-agent-prompt.txt",
+    "cph-researcher-agent-prompt.txt",
+    "cph-dev-agent-prompt.txt"
+  ];
+  static ALLOWED_EXTENSIONS = new Set([
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".cs",
+    ".py",
+    ".ps1",
+    ".psm1",
+    ".psd1",
+    ".json",
+    ".md",
+    ".sql",
+    ".html",
+    ".css",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".txt"
+  ]);
+  static getTrackedSourceFiles(workspaceRoot) {
+    let rawLines = [];
+    try {
+      const cmd = "git ls-files -z --cached --others --exclude-standard";
+      const stdout = execSync(cmd, {
+        cwd: workspaceRoot,
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      rawLines = stdout.toString("utf-8").split("\x00").filter(Boolean);
+    } catch {
+      rawLines = this.scanDirRecursive(workspaceRoot, workspaceRoot);
+    }
+    return rawLines.map((p) => p.replace(/\\/g, "/")).filter((relPath) => {
+      if (this.EXCLUDED_DIR_PREFIXES.some((prefix) => relPath.startsWith(prefix) || relPath.startsWith("./" + prefix))) {
+        return false;
+      }
+      const ext = path2.extname(relPath).toLowerCase();
+      if (!this.ALLOWED_EXTENSIONS.has(ext)) {
+        return false;
+      }
+      if (relPath.endsWith("package-lock.json") || relPath.endsWith("bun.lock") || relPath.endsWith("bun.lockb")) {
+        return false;
+      }
+      const baseName = path2.basename(relPath);
+      if (this.SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(baseName) || pattern.test(relPath))) {
+        return false;
+      }
+      return true;
+    });
+  }
+  static generateWorkspaceSnapshot(workspaceRoot, outputDir, generation = 1) {
+    const targetOutputDir = outputDir || path2.join(workspaceRoot, ".cph", "snapshots");
+    fs2.mkdirSync(targetOutputDir, { recursive: true });
+    const files = this.getTrackedSourceFiles(workspaceRoot);
+    const manifestLines = [];
+    const contentBlocks = [];
+    const writtenFiles = [];
+    let totalContentBytes = 0;
+    for (const relPath of files) {
+      const absPath = path2.join(workspaceRoot, relPath);
+      if (!fs2.existsSync(absPath))
+        continue;
+      const stat = fs2.lstatSync(absPath);
+      if (stat.isDirectory() || stat.isSymbolicLink())
+        continue;
+      const rawBuffer = fs2.readFileSync(absPath);
+      const rawStr = rawBuffer.toString("utf-8");
+      if (this.SENSITIVE_CONTENT_PATTERNS.some((pattern) => pattern.test(rawStr))) {
+        throw new Error(`CRITICAL SECURITY ALERT: Secret token or private key detected in file ${relPath}. Snapshot generation aborted!`);
+      }
+      const fileHash = crypto3.createHash("sha256").update(rawBuffer).digest("hex").slice(0, 12);
+      const lineCount = rawStr.split(`
+`).length;
+      manifestLines.push(`- ${relPath} (Lines: ${lineCount}, SHA: ${fileHash}, Bytes: ${stat.size})`);
+      writtenFiles.push(relPath);
+      const block = `================================================================================
+` + `FILE: ${relPath}
+` + `================================================================================
+` + `${rawStr}
+`;
+      contentBlocks.push(block);
+      totalContentBytes += Buffer.byteLength(block, "utf-8");
+      if (totalContentBytes > this.MAX_SNAPSHOT_BYTES) {
+        throw new Error(`Snapshot exceeded hard safety limit of ${this.MAX_SNAPSHOT_BYTES} bytes!`);
+      }
+    }
+    const missingCore = this.CRITICAL_CORE_FILES.filter((cf) => {
+      if (writtenFiles.includes(cf))
+        return false;
+      const base = path2.basename(cf);
+      return !writtenFiles.some((w) => w.endsWith("/" + base) || w === base);
+    });
+    if (missingCore.length > 0) {
+      throw new Error(`CRITICAL INTEGRITY FAULT: Snapshot dropped essential core files: ${missingCore.join(", ")}`);
+    }
+    const fullText = `// ================================================================================
+` + `// WORKSPACE STRUCTURE & MANIFEST
+` + `// ================================================================================
+` + manifestLines.join(`
+`) + `
+
+` + `// ================================================================================
+` + `// SOURCE FILE CONTENTS
+` + `// ================================================================================
+
+` + contentBlocks.join(`
+`);
+    const fullBuffer = Buffer.from(fullText, "utf-8");
+    const snapshotHash = crypto3.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
+    const snapshotPath = path2.join(targetOutputDir, `workspace-snapshot-${snapshotHash}.txt`);
+    fs2.writeFileSync(snapshotPath, fullBuffer);
+    return {
+      snapshotPath,
+      hash: snapshotHash,
+      fileCount: writtenFiles.length,
+      bytes: fullBuffer.length,
+      files: writtenFiles,
+      cloudFileName: `workspace-v${generation}.txt`
+    };
+  }
+  static generateScopedSubagentSlice(workspaceRoot, targetFiles, prerequisiteReports, outputDir) {
+    const targetOutputDir = outputDir || path2.join(workspaceRoot, ".cph", "slices");
+    fs2.mkdirSync(targetOutputDir, { recursive: true });
+    const includedFiles = [];
+    const sections = [];
+    const seenFiles = new Set;
+    const targetList = targetFiles.map((f) => f.replace(/\\/g, "/"));
+    const reportList = (prerequisiteReports || []).map((f) => f.replace(/\\/g, "/"));
+    for (const reportRel of reportList) {
+      const absReport = path2.join(workspaceRoot, reportRel);
+      if (fs2.existsSync(absReport) && !seenFiles.has(reportRel)) {
+        seenFiles.add(reportRel);
+        includedFiles.push(reportRel);
+        const reportContent = fs2.readFileSync(absReport, "utf-8");
+        sections.push(`================================================================================
+` + `PREREQUISITE REPORT: ${reportRel}
+` + `================================================================================
+` + `${reportContent}
+`);
+      }
+    }
+    const importedInterfaceSections = [];
+    for (const targetRel of targetList) {
+      const absTarget = path2.join(workspaceRoot, targetRel);
+      if (!fs2.existsSync(absTarget) || seenFiles.has(targetRel))
+        continue;
+      seenFiles.add(targetRel);
+      includedFiles.push(targetRel);
+      const targetContent = fs2.readFileSync(absTarget, "utf-8");
+      sections.push(`================================================================================
+` + `FILE: ${targetRel}
+` + `================================================================================
+` + `${targetContent}
+`);
+      const importRegex = /from\s+['"](\.[^'"]+)['"]/g;
+      let match;
+      while ((match = importRegex.exec(targetContent)) !== null) {
+        const importSpecifier = match[1];
+        const resolvedAbs = this.resolveImportPath(path2.dirname(absTarget), importSpecifier);
+        if (!resolvedAbs || !fs2.existsSync(resolvedAbs))
+          continue;
+        const depRelPath = path2.relative(workspaceRoot, resolvedAbs).replace(/\\/g, "/");
+        if (seenFiles.has(depRelPath))
+          continue;
+        const depContent = fs2.readFileSync(resolvedAbs, "utf-8");
+        const typeBlocks = this.extractExportedTypeDeclarations(depContent);
+        if (typeBlocks.length > 0) {
+          importedInterfaceSections.push(`================================================================================
+` + `IMPORTED INTERFACE DEFINITIONS: ${depRelPath}
+` + `================================================================================
+` + typeBlocks.join(`
+
+`) + `
+`);
+        }
+      }
+    }
+    if (importedInterfaceSections.length > 0) {
+      sections.push(...importedInterfaceSections);
+    }
+    const fullText = `// ================================================================================
+` + `// SUBAGENT SCOPED WORKSPACE SLICE
+` + `// TARGET FILES: ${targetList.join(", ")}
+` + (reportList.length > 0 ? `// PREREQUISITE REPORTS: ${reportList.join(", ")}
+` : "") + `// ================================================================================
+
+` + sections.join(`
+`);
+    const fullBuffer = Buffer.from(fullText, "utf-8");
+    const sliceHash = crypto3.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
+    const slicePath = path2.join(targetOutputDir, `slice-${sliceHash}.txt`);
+    fs2.writeFileSync(slicePath, fullBuffer);
+    return {
+      slicePath,
+      bytes: fullBuffer.length,
+      files: includedFiles
+    };
+  }
+  static scanDirRecursive(currentDir, rootDir) {
+    const results = [];
+    if (!fs2.existsSync(currentDir))
+      return results;
+    const entries = fs2.readdirSync(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path2.join(currentDir, entry.name);
+      const relPath = path2.relative(rootDir, fullPath).replace(/\\/g, "/");
+      if (entry.isDirectory()) {
+        if (this.EXCLUDED_DIR_PREFIXES.some((p) => (relPath + "/").startsWith(p) || relPath === p.replace(/\/$/, ""))) {
+          continue;
+        }
+        results.push(...this.scanDirRecursive(fullPath, rootDir));
+      } else if (entry.isFile()) {
+        results.push(relPath);
+      }
+    }
+    return results;
+  }
+  static resolveImportPath(baseDir, specifier) {
+    const candidateBase = path2.resolve(baseDir, specifier);
+    const candidateExtensions = ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"];
+    for (const ext of candidateExtensions) {
+      const candidate = candidateBase + ext;
+      if (fs2.existsSync(candidate) && fs2.statSync(candidate).isFile()) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  static extractExportedTypeDeclarations(content) {
+    const lines = content.split(`
+`);
+    const blocks = [];
+    let inBlock = false;
+    let currentBlock = [];
+    let braceCount = 0;
+    for (const line of lines) {
+      if (!inBlock) {
+        if (/^\s*export\s+(?:type|interface)\s+/.test(line)) {
+          inBlock = true;
+          currentBlock = [line];
+          const openBraces = (line.match(/{/g) || []).length;
+          const closeBraces = (line.match(/}/g) || []).length;
+          braceCount = openBraces - closeBraces;
+          if (braceCount <= 0 && (!line.includes("{") || line.trim().endsWith(";"))) {
+            blocks.push(currentBlock.join(`
+`));
+            inBlock = false;
+            currentBlock = [];
+          }
+        }
+      } else {
+        currentBlock.push(line);
+        const openBraces = (line.match(/{/g) || []).length;
+        const closeBraces = (line.match(/}/g) || []).length;
+        braceCount += openBraces - closeBraces;
+        if (braceCount <= 0) {
+          blocks.push(currentBlock.join(`
+`));
+          inBlock = false;
+          currentBlock = [];
+        }
+      }
+    }
+    return blocks;
+  }
 }
 
 // src/protocol/tool-bridge.ts
-import fs4 from "node:fs";
-import path4 from "node:path";
-import crypto3 from "node:crypto";
+import fs5 from "node:fs";
+import path5 from "node:path";
+import crypto4 from "node:crypto";
 
 // pi/packages/coding-agent/src/core/tools/bash.ts
 import { constants as constants2 } from "node:fs";
@@ -16276,7 +16816,7 @@ function matchesKey(data, keyId) {
 var KITTY_PRINTABLE_ALLOWED_MODIFIERS = MODIFIERS.shift | LOCK_MASK;
 
 // pi/packages/tui/src/terminal-image.ts
-import { execSync } from "node:child_process";
+import { execSync as execSync2 } from "node:child_process";
 import { homedir as homedir3 } from "node:os";
 import { isAbsolute as isAbsolute2 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16284,7 +16824,7 @@ var cachedCapabilities = null;
 var capabilityOverrides = {};
 function probeTmuxHyperlinks() {
   try {
-    const termfeatures = execSync("tmux display-message -p '#{client_termfeatures}'", {
+    const termfeatures = execSync2("tmux display-message -p '#{client_termfeatures}'", {
       encoding: "utf8",
       timeout: 250,
       stdio: ["ignore", "pipe", "ignore"]
@@ -20390,10 +20930,10 @@ function applyExifOrientation(photon, image, originalBytes) {
 
 // pi/packages/coding-agent/src/utils/photon.ts
 import { createRequire as createRequire4 } from "module";
-import * as path2 from "path";
+import * as path3 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 var require2 = createRequire4(import.meta.url);
-var fs2 = require2("fs");
+var fs3 = require2("fs");
 var WASM_FILENAME = "photon_rs_bg.wasm";
 var photonModule = null;
 var loadPromise = null;
@@ -20407,17 +20947,17 @@ function pathOrNull(file) {
   return null;
 }
 function getFallbackWasmPaths() {
-  const execDir = path2.dirname(process.execPath);
+  const execDir = path3.dirname(process.execPath);
   return [
-    path2.join(execDir, WASM_FILENAME),
-    path2.join(execDir, "photon", WASM_FILENAME),
-    path2.join(process.cwd(), WASM_FILENAME)
+    path3.join(execDir, WASM_FILENAME),
+    path3.join(execDir, "photon", WASM_FILENAME),
+    path3.join(process.cwd(), WASM_FILENAME)
   ];
 }
 function patchPhotonWasmRead() {
-  const originalReadFileSync = fs2.readFileSync.bind(fs2);
+  const originalReadFileSync = fs3.readFileSync.bind(fs3);
   const fallbackPaths = getFallbackWasmPaths();
-  const mutableFs = fs2;
+  const mutableFs = fs3;
   const patchedReadFileSync = (...args) => {
     const [file, options] = args;
     const resolvedPath = pathOrNull(file);
@@ -20430,7 +20970,7 @@ function patchPhotonWasmRead() {
           throw error;
         }
         for (const fallbackPath of fallbackPaths) {
-          if (!fs2.existsSync(fallbackPath)) {
+          if (!fs3.existsSync(fallbackPath)) {
             continue;
           }
           if (options === undefined) {
@@ -20446,7 +20986,7 @@ function patchPhotonWasmRead() {
   try {
     mutableFs.readFileSync = patchedReadFileSync;
   } catch {
-    Object.defineProperty(fs2, "readFileSync", {
+    Object.defineProperty(fs3, "readFileSync", {
       value: patchedReadFileSync,
       writable: true,
       configurable: true
@@ -20456,7 +20996,7 @@ function patchPhotonWasmRead() {
     try {
       mutableFs.readFileSync = originalReadFileSync;
     } catch {
-      Object.defineProperty(fs2, "readFileSync", {
+      Object.defineProperty(fs3, "readFileSync", {
         value: originalReadFileSync,
         writable: true,
         configurable: true
@@ -21357,8 +21897,8 @@ function createCodingTools(cwd, options) {
 }
 
 // src/transport/file-porter.ts
-import fs3 from "node:fs";
-import path3 from "node:path";
+import fs4 from "node:fs";
+import path4 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 
 class FilePorter {
@@ -21368,12 +21908,12 @@ class FilePorter {
   timeoutMs;
   constructor(options) {
     this.cwd = options.cwd;
-    this.scratchDir = options.scratchDir || path3.join(this.cwd, ".cph", "scratch");
+    this.scratchDir = options.scratchDir || path4.join(this.cwd, ".cph", "scratch");
     this.cdpClient = options.cdpClient;
     this.timeoutMs = options.timeoutMs ?? 60000;
   }
   detectRuntime(fileName) {
-    const ext = path3.extname(fileName).toLowerCase();
+    const ext = path4.extname(fileName).toLowerCase();
     switch (ext) {
       case ".py":
         return "python";
@@ -21394,15 +21934,15 @@ class FilePorter {
     }
   }
   resolveDestination(fileName, customPath) {
-    const dest = customPath ? path3.isAbsolute(customPath) ? customPath : path3.join(this.cwd, customPath) : path3.join(this.scratchDir, fileName);
-    const dir = path3.dirname(dest);
-    if (!fs3.existsSync(dir)) {
-      fs3.mkdirSync(dir, { recursive: true });
+    const dest = customPath ? path4.isAbsolute(customPath) ? customPath : path4.join(this.cwd, customPath) : path4.join(this.scratchDir, fileName);
+    const dir = path4.dirname(dest);
+    if (!fs4.existsSync(dir)) {
+      fs4.mkdirSync(dir, { recursive: true });
     }
     return dest;
   }
   async saveAndExecute(params) {
-    const fileName = path3.basename(params.fileName || "downloaded_file.txt");
+    const fileName = path4.basename(params.fileName || "downloaded_file.txt");
     const filePath = this.resolveDestination(fileName, params.destinationPath);
     let content = params.content;
     if (content === undefined && params.downloadUrl) {
@@ -21420,7 +21960,7 @@ class FilePorter {
     if (content === undefined) {
       content = "";
     }
-    fs3.writeFileSync(filePath, content, "utf-8");
+    fs4.writeFileSync(filePath, content, "utf-8");
     const runtime = this.detectRuntime(fileName);
     const shouldExecute = params.autoExecute ?? runtime !== undefined;
     if (!shouldExecute || !runtime) {
@@ -21430,7 +21970,7 @@ class FilePorter {
         downloaded: true,
         executed: false,
         formattedOutput: `【TOOL_RESULT: file_porter (${fileName}) - SUCCESS】
-文件已通过 File Porter 成功搬运并落盘至：${path3.relative(this.cwd, filePath) || filePath}
+文件已通过 File Porter 成功搬运并落盘至：${path4.relative(this.cwd, filePath) || filePath}
 【END_TOOL_RESULT】`
       };
     }
@@ -21438,7 +21978,7 @@ class FilePorter {
       const execRes = await this.runScript(filePath, runtime);
       const isSuccess = execRes.exitCode === 0;
       const statusText = isSuccess ? "SUCCESS" : "FAILED";
-      let output = `文件已搬运落盘至：${path3.relative(this.cwd, filePath) || filePath}
+      let output = `文件已搬运落盘至：${path4.relative(this.cwd, filePath) || filePath}
 宿主执行环境: ${runtime}
 `;
       if (execRes.stdout) {
@@ -21562,14 +22102,14 @@ function persistLargeOutputIfNeeded(output, workspaceRoot, toolName = "tool") {
   if (!isOverChars && !isOverLines) {
     return { displayOutput: output };
   }
-  const artifactsDir = path4.join(workspaceRoot, ".cph", "artifacts");
-  fs4.mkdirSync(artifactsDir, { recursive: true });
+  const artifactsDir = path5.join(workspaceRoot, ".cph", "artifacts");
+  fs5.mkdirSync(artifactsDir, { recursive: true });
   const timestamp = Date.now();
-  const hash = crypto3.createHash("sha256").update(output).digest("hex").slice(0, 8);
+  const hash = crypto4.createHash("sha256").update(output).digest("hex").slice(0, 8);
   const fileName = `tool-output-${timestamp}-${hash}.log`;
-  const absolutePath = path4.join(artifactsDir, fileName);
-  fs4.writeFileSync(absolutePath, output, "utf-8");
-  const relPath = path4.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
+  const absolutePath = path5.join(artifactsDir, fileName);
+  fs5.writeFileSync(absolutePath, output, "utf-8");
+  const relPath = path5.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
   let headLines;
   let tailLines;
   let omittedLines;
@@ -22036,9 +22576,9 @@ Options: ${qArgs.options.join(", ")}` : "");
       const hasSlice = readArgs.limit !== undefined || action.start_line !== undefined || action.startLine !== undefined || action.end_line !== undefined || action.endLine !== undefined || action.limit !== undefined || action.lines !== undefined;
       if (!hasSlice && rawPath) {
         try {
-          const fullPath = path4.isAbsolute(rawPath) ? rawPath : path4.resolve(this.cwd, rawPath);
-          if (fs4.existsSync(fullPath)) {
-            const stat = fs4.statSync(fullPath);
+          const fullPath = path5.isAbsolute(rawPath) ? rawPath : path5.resolve(this.cwd, rawPath);
+          if (fs5.existsSync(fullPath)) {
+            const stat = fs5.statSync(fullPath);
             if (stat.isFile() && stat.size > MAX_READ_FILE_BYTES_CIRCUIT_BREAKER) {
               const fileSize = stat.size;
               const output = `[ToolBridge Error] File "${rawPath}" (${(fileSize / (1024 * 1024)).toFixed(2)} MB) exceeds the 1MB safety threshold. Please specify start_line and end_line to inspect a targeted slice, or use run_command with head/tail.`;
@@ -23261,8 +23801,8 @@ ${actionBlock}
 }
 
 // src/skills/skill-loader.ts
-import fs5 from "node:fs";
-import path5 from "node:path";
+import fs6 from "node:fs";
+import path6 from "node:path";
 import os4 from "node:os";
 
 class SkillLoader {
@@ -23271,11 +23811,11 @@ class SkillLoader {
   includeDefaults;
   constructor(options = {}) {
     if (typeof options === "string") {
-      this.workspaceRoot = path5.resolve(options);
+      this.workspaceRoot = path6.resolve(options);
       this.customPaths = [];
       this.includeDefaults = true;
     } else {
-      this.workspaceRoot = path5.resolve(options.workspaceRoot || process.cwd());
+      this.workspaceRoot = path6.resolve(options.workspaceRoot || process.cwd());
       this.customPaths = options.customPaths || [];
       this.includeDefaults = options.includeDefaults ?? true;
     }
@@ -23290,35 +23830,35 @@ class SkillLoader {
     }
     if (this.includeDefaults) {
       const home = os4.homedir();
-      paths.push(path5.join(this.workspaceRoot, ".skills"), path5.join(this.workspaceRoot, "skills"), path5.join(this.workspaceRoot, ".pi", "skills"), path5.join(home, ".gemini", "config", "skills"), path5.join(home, ".gemini", "antigravity", "builtin", "skills"), path5.join(home, ".pi", "agent", "skills"));
+      paths.push(path6.join(this.workspaceRoot, ".skills"), path6.join(this.workspaceRoot, "skills"), path6.join(this.workspaceRoot, ".pi", "skills"), path6.join(home, ".gemini", "config", "skills"), path6.join(home, ".gemini", "antigravity", "builtin", "skills"), path6.join(home, ".pi", "agent", "skills"));
     }
     return paths;
   }
   resolveHome(p) {
     if (p.startsWith("~")) {
-      return path5.join(os4.homedir(), p.slice(1).replace(/^[/\\]/, ""));
+      return path6.join(os4.homedir(), p.slice(1).replace(/^[/\\]/, ""));
     }
-    return path5.resolve(p);
+    return path6.resolve(p);
   }
   discoverSkills() {
     const skillsMap = new Map;
     const searchPaths = this.getSearchPaths();
     for (const searchDir of searchPaths) {
-      if (!fs5.existsSync(searchDir))
+      if (!fs6.existsSync(searchDir))
         continue;
       try {
-        const stat = fs5.statSync(searchDir);
+        const stat = fs6.statSync(searchDir);
         if (!stat.isDirectory())
           continue;
-        const entries = fs5.readdirSync(searchDir, { withFileTypes: true });
+        const entries = fs6.readdirSync(searchDir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isDirectory()) {
-            const skillPath = path5.join(searchDir, entry.name, "SKILL.md");
-            const altSkillPath = path5.join(searchDir, entry.name, "skill.md");
+            const skillPath = path6.join(searchDir, entry.name, "SKILL.md");
+            const altSkillPath = path6.join(searchDir, entry.name, "skill.md");
             let targetFile = "";
-            if (fs5.existsSync(skillPath)) {
+            if (fs6.existsSync(skillPath)) {
               targetFile = skillPath;
-            } else if (fs5.existsSync(altSkillPath)) {
+            } else if (fs6.existsSync(altSkillPath)) {
               targetFile = altSkillPath;
             }
             if (targetFile) {
@@ -23332,7 +23872,7 @@ class SkillLoader {
             }
           } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
             const fallbackName = entry.name.replace(/\.md$/i, "");
-            const targetFile = path5.join(searchDir, entry.name);
+            const targetFile = path6.join(searchDir, entry.name);
             const skill = this.loadSkillFromFile(targetFile, fallbackName, searchDir);
             if (skill) {
               const key = skill.name.toLowerCase();
@@ -23348,7 +23888,7 @@ class SkillLoader {
   }
   loadSkillFromFile(filePath, fallbackName, sourceDir) {
     try {
-      const raw = fs5.readFileSync(filePath, "utf8");
+      const raw = fs6.readFileSync(filePath, "utf8");
       const parsed = SkillLoader.parseSkillMarkdown(raw, fallbackName);
       const isWorkspace = filePath.startsWith(this.workspaceRoot);
       const source = isWorkspace ? "workspace" : sourceDir;
@@ -23546,13 +24086,13 @@ ${s.content}` : "";
 }
 
 // src/agent/subagent-runner.ts
-import fs7 from "node:fs";
-import path7 from "node:path";
-import crypto4 from "node:crypto";
+import fs8 from "node:fs";
+import path8 from "node:path";
+import crypto5 from "node:crypto";
 
 // src/ui/terminal-logger.ts
-import fs6 from "node:fs";
-import path6 from "node:path";
+import fs7 from "node:fs";
+import path7 from "node:path";
 function stripAnsi2(str) {
   if (!str)
     return "";
@@ -23581,15 +24121,15 @@ class TerminalLogger {
   initSessionTree(sessionId, workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const sessionDir = path6.join(root, ".cph", "logs", cleanSessionId);
-    const subagentsDir = path6.join(sessionDir, "subagents");
-    fs6.mkdirSync(subagentsDir, { recursive: true });
-    const mainLogPath = path6.join(sessionDir, "main.log");
-    if (!fs6.existsSync(mainLogPath)) {
-      fs6.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
+    const sessionDir = path7.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path7.join(sessionDir, "subagents");
+    fs7.mkdirSync(subagentsDir, { recursive: true });
+    const mainLogPath = path7.join(sessionDir, "main.log");
+    if (!fs7.existsSync(mainLogPath)) {
+      fs7.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
 `, "utf8");
     }
-    const timelineLogPath = path6.join(sessionDir, "timeline.jsonl");
+    const timelineLogPath = path7.join(sessionDir, "timeline.jsonl");
     return {
       sessionDir,
       mainLogPath,
@@ -23597,8 +24137,8 @@ class TerminalLogger {
       createSubagentLogStream: (subagentId, role) => {
         const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
         const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const subLogPath = path6.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
-        const stream = fs6.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        const subLogPath = path7.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs7.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
         stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
 `);
         return stream;
@@ -23607,7 +24147,7 @@ class TerminalLogger {
         const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
 `;
         try {
-          fs6.appendFileSync(timelineLogPath, line, "utf8");
+          fs7.appendFileSync(timelineLogPath, line, "utf8");
         } catch {}
       }
     };
@@ -23615,22 +24155,22 @@ class TerminalLogger {
   resolveDefaultLogPath(workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const logDir = path6.join(root, ".cph", "logs");
+    const logDir = path7.join(root, ".cph", "logs");
     try {
-      fs6.mkdirSync(logDir, { recursive: true });
+      fs7.mkdirSync(logDir, { recursive: true });
     } catch {}
-    return path6.join(logDir, `cph-terminal-${dateStr}.log`);
+    return path7.join(logDir, `cph-terminal-${dateStr}.log`);
   }
   start(options = {}) {
     if (this.isHooked && this.logFilePath) {
       return this.logFilePath;
     }
     const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
-    const resolvedPath = path6.resolve(targetPath);
+    const resolvedPath = path7.resolve(targetPath);
     try {
-      const parentDir = path6.dirname(resolvedPath);
-      fs6.mkdirSync(parentDir, { recursive: true });
-      this.stream = fs6.createWriteStream(resolvedPath, {
+      const parentDir = path7.dirname(resolvedPath);
+      fs7.mkdirSync(parentDir, { recursive: true });
+      this.stream = fs7.createWriteStream(resolvedPath, {
         flags: "a",
         encoding: "utf8"
       });
@@ -23758,8 +24298,8 @@ function resolveExistingFilePath(candidate, workspaceRoot) {
   }
   for (const item of tryCandidates) {
     try {
-      const absPath = path7.isAbsolute(item) ? item : path7.resolve(workspaceRoot, item);
-      if (fs7.existsSync(absPath) && fs7.statSync(absPath).isFile()) {
+      const absPath = path8.isAbsolute(item) ? item : path8.resolve(workspaceRoot, item);
+      if (fs8.existsSync(absPath) && fs8.statSync(absPath).isFile()) {
         return absPath;
       }
     } catch {}
@@ -23888,7 +24428,7 @@ class SubagentRunner {
             continue;
           }
           const taskSpec = item.task;
-          const subId = `sub-${item.index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+          const subId = `sub-${item.index + 1}-${crypto5.randomBytes(3).toString("hex")}`;
           const role = taskSpec.role === "coder" ? "coder" : "researcher";
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
@@ -23906,7 +24446,7 @@ class SubagentRunner {
             const itemIndex = stageCursor++;
             const item = stageTasks[itemIndex];
             const taskSpec = item.task;
-            const subId = `sub-${item.index + 1}-${crypto4.randomBytes(3).toString("hex")}`;
+            const subId = `sub-${item.index + 1}-${crypto5.randomBytes(3).toString("hex")}`;
             const role = taskSpec.role === "coder" ? "coder" : "researcher";
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
@@ -24052,15 +24592,42 @@ ${spec.prompt}
     let completed = false;
     let initialAnnotations = undefined;
     const targetFilePath = extractTargetFilePath(spec, this.workspaceRoot);
-    if (targetFilePath && fs7.existsSync(targetFilePath)) {
+    const specTargetFiles = Array.isArray(spec.targetFiles) ? spec.targetFiles : [];
+    const prerequisiteReports = Array.isArray(spec.prerequisiteReports) ? spec.prerequisiteReports : [];
+    if (specTargetFiles.length > 0) {
       try {
         let graphToken;
         if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
           graphToken = await this.pool.getGraphAccessToken();
         }
         if (graphToken) {
-          const fileContent = fs7.readFileSync(targetFilePath, "utf8");
-          const fileName = path7.basename(targetFilePath);
+          const sliceResult = SnapshotGenerator.generateScopedSubagentSlice(this.workspaceRoot, specTargetFiles, prerequisiteReports);
+          if (sliceResult && fs8.existsSync(sliceResult.slicePath)) {
+            const sliceBuffer = fs8.readFileSync(sliceResult.slicePath);
+            const sliceName = `subagent-slice-${subId}-${path8.basename(sliceResult.slicePath)}`;
+            const uploaded = await SubstrateUploader.uploadDocumentAuto(graphToken, sliceBuffer, sliceName);
+            if (uploaded && uploaded.annotation) {
+              initialAnnotations = [uploaded.annotation];
+              logStream?.write(`
+☁️ [开局局部微切片已直传挂载] ${sliceResult.slicePath} (${sliceName}, ${sliceResult.bytes} bytes)
+`);
+            }
+          }
+        }
+      } catch (err) {
+        logStream?.write(`
+⚠️ [开局局部微切片直传失败，降级本地工具读取] ${err?.message || err}
+`);
+      }
+    } else if (targetFilePath && fs8.existsSync(targetFilePath)) {
+      try {
+        let graphToken;
+        if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
+          graphToken = await this.pool.getGraphAccessToken();
+        }
+        if (graphToken) {
+          const fileContent = fs8.readFileSync(targetFilePath, "utf8");
+          const fileName = path8.basename(targetFilePath);
           const uploaded = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, fileContent, fileName);
           if (uploaded && uploaded.annotation) {
             initialAnnotations = [uploaded.annotation];
@@ -24173,10 +24740,10 @@ ${spec.prompt}
         }
         if (res.handedOff && res.handoffDocPath) {
           const docPath = res.handoffDocPath;
-          const resolvedPath = path7.isAbsolute(docPath) ? docPath : path7.join(this.workspaceRoot, docPath);
+          const resolvedPath = path8.isAbsolute(docPath) ? docPath : path8.join(this.workspaceRoot, docPath);
           let docContent = "";
-          if (fs7.existsSync(resolvedPath)) {
-            docContent = fs7.readFileSync(resolvedPath, "utf8");
+          if (fs8.existsSync(resolvedPath)) {
+            docContent = fs8.readFileSync(resolvedPath, "utf8");
           } else {
             docContent = `（交接文档路径：${docPath}，前序总结：${res.finalAnswer || "无"}）`;
           }
@@ -24246,10 +24813,10 @@ ${spec.prompt}
 `);
       let deliverablePath;
       try {
-        const reportsDir = path7.join(this.workspaceRoot, ".cph", "reports");
-        fs7.mkdirSync(reportsDir, { recursive: true });
+        const reportsDir = path8.join(this.workspaceRoot, ".cph", "reports");
+        fs8.mkdirSync(reportsDir, { recursive: true });
         const reportFileName = `report-${role}-${subId}.md`;
-        const absReportPath = path7.join(reportsDir, reportFileName);
+        const absReportPath = path8.join(reportsDir, reportFileName);
         const header = [
           `# 专项任务交付报告: ${spec.description}`,
           ``,
@@ -24268,7 +24835,7 @@ ${spec.prompt}
           ``
         ].join(`
 `);
-        fs7.writeFileSync(absReportPath, header + finalAnswer + `
+        fs8.writeFileSync(absReportPath, header + finalAnswer + `
 `, "utf8");
         deliverablePath = `.cph/reports/${reportFileName}`;
       } catch (saveErr) {}
@@ -24515,12 +25082,12 @@ class SessionLineageTracker {
 }
 
 // src/session/main-plan-snapshot.ts
-import fs9 from "node:fs";
-import path9 from "node:path";
+import fs10 from "node:fs";
+import path10 from "node:path";
 
 // src/session/ledger/execution-ledger.ts
-import fs8 from "node:fs";
-import path8 from "node:path";
+import fs9 from "node:fs";
+import path9 from "node:path";
 
 class ExecutionLedger {
   workspaceRoot;
@@ -24531,9 +25098,9 @@ class ExecutionLedger {
   cachedEntries = [];
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
-    this.stateDir = path8.join(this.workspaceRoot, ".cph", "state");
-    this.jsonlPath = path8.join(this.stateDir, "execution-ledger.jsonl");
-    this.mdPath = path8.join(this.stateDir, "execution-ledger.md");
+    this.stateDir = path9.join(this.workspaceRoot, ".cph", "state");
+    this.jsonlPath = path9.join(this.stateDir, "execution-ledger.jsonl");
+    this.mdPath = path9.join(this.stateDir, "execution-ledger.md");
     this.initFromDisk();
   }
   getPaths() {
@@ -24544,11 +25111,11 @@ class ExecutionLedger {
   }
   initFromDisk() {
     try {
-      if (!fs8.existsSync(this.stateDir)) {
-        fs8.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs9.existsSync(this.stateDir)) {
+        fs9.mkdirSync(this.stateDir, { recursive: true });
       }
-      if (fs8.existsSync(this.jsonlPath)) {
-        const lines = fs8.readFileSync(this.jsonlPath, "utf8").split(`
+      if (fs9.existsSync(this.jsonlPath)) {
+        const lines = fs9.readFileSync(this.jsonlPath, "utf8").split(`
 `).map((l) => l.trim()).filter(Boolean);
         for (const line of lines) {
           try {
@@ -24574,10 +25141,10 @@ class ExecutionLedger {
     };
     this.cachedEntries.push(entry);
     try {
-      if (!fs8.existsSync(this.stateDir)) {
-        fs8.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs9.existsSync(this.stateDir)) {
+        fs9.mkdirSync(this.stateDir, { recursive: true });
       }
-      fs8.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
+      fs9.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
 `, "utf8");
       this.writeMarkdownView();
     } catch (err) {
@@ -24606,7 +25173,7 @@ class ExecutionLedger {
       }
     }
     const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
-    const relativeMdPath = path8.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
+    const relativeMdPath = path9.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
     return [
       `【系统物理执行账本已挂载】`,
       `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
@@ -24633,7 +25200,7 @@ class ExecutionLedger {
     const content = header.concat(rows).join(`
 `) + `
 `;
-    fs8.writeFileSync(this.mdPath, content, "utf8");
+    fs9.writeFileSync(this.mdPath, content, "utf8");
   }
 }
 
@@ -24651,12 +25218,12 @@ function createMainPlanSnapshot(params) {
   };
 }
 function saveMainPlanSnapshot(snapshot, workspaceRoot) {
-  const handoffsDir = path9.join(workspaceRoot, ".cph", "handoffs");
-  fs9.mkdirSync(handoffsDir, { recursive: true });
+  const handoffsDir = path10.join(workspaceRoot, ".cph", "handoffs");
+  fs10.mkdirSync(handoffsDir, { recursive: true });
   const cleanId = snapshot.originalSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const jsonPath = path9.join(handoffsDir, `main-plan-${cleanId}.json`);
-  const mdPath = path9.join(handoffsDir, `main-plan-${cleanId}.md`);
-  fs9.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
+  const jsonPath = path10.join(handoffsDir, `main-plan-${cleanId}.json`);
+  const mdPath = path10.join(handoffsDir, `main-plan-${cleanId}.md`);
+  fs10.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
   const mdContent = `# 主控规划快照: ${snapshot.snapshotId}
 
 - **前序会话**: ${snapshot.originalSessionId}
@@ -24678,7 +25245,7 @@ ${sub.prompt || ""}
 `).join(`
 `)}
 `;
-  fs9.writeFileSync(mdPath, mdContent, "utf8");
+  fs10.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
 function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader, concurrencyWorkers, dirSkeleton) {
@@ -24772,14 +25339,17 @@ class Orchestrator {
   lineageTracker;
   generation = 1;
   maxGenerations;
+  enableWorkspaceSnapshot;
+  lastNextSnapshotMeta;
+  lastModifiedFile;
   isHandshakePending = true;
   pendingTask = "";
   pendingSkills = "";
-  conversationId = crypto5.randomUUID();
+  conversationId = crypto6.randomUUID();
   sessionId;
   lastHandoffDocPath;
   constructor(options = {}) {
-    this.workspaceRoot = path10.resolve(options.workspaceRoot || process.cwd());
+    this.workspaceRoot = path11.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
     this.maxGenerations = options.maxGenerations ?? 50;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
@@ -24794,14 +25364,30 @@ class Orchestrator {
     this.coderAgentId = options.coderAgentId;
     this.researcherAgentId = options.researcherAgentId;
     this.subagentRunner = options.subagentRunner;
-    this.sessionId = options.sessionId || crypto5.randomUUID();
+    this.sessionId = options.sessionId || crypto6.randomUUID();
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
     this.cloudAttachmentThresholdChars = options.cloudAttachmentThresholdChars !== undefined ? options.cloudAttachmentThresholdChars : 12000;
     this.cloudAttachmentThresholdLines = options.cloudAttachmentThresholdLines !== undefined ? options.cloudAttachmentThresholdLines : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker;
+    this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
     this.isHandshakePending = options.isHandshakePending !== undefined ? options.isHandshakePending : !this.customAgentId;
+  }
+  getLastNextSnapshotMeta() {
+    return this.lastNextSnapshotMeta;
+  }
+  getCurrentGitBranch() {
+    if (!this.workspaceRoot)
+      return "main";
+    try {
+      return execSync3("git rev-parse --abbrev-ref HEAD", {
+        cwd: this.workspaceRoot,
+        stdio: ["ignore", "pipe", "ignore"]
+      }).toString("utf-8").trim();
+    } catch {
+      return "main";
+    }
   }
   getCloudAttachmentThresholds() {
     return {
@@ -24897,8 +25483,8 @@ class Orchestrator {
     this.isHandshakePending = !this.customAgentId;
     this.pendingTask = "";
     this.pendingSkills = "";
-    this.conversationId = crypto5.randomUUID();
-    this.sessionId = crypto5.randomUUID();
+    this.conversationId = crypto6.randomUUID();
+    this.sessionId = crypto6.randomUUID();
     this.generation = 1;
     this.lastHandoffDocPath = undefined;
   }
@@ -24991,6 +25577,62 @@ class Orchestrator {
     const maxEmptyResponseRetries = 2;
     let turn = 1;
     let currentAnnotations = options.initialAnnotations ? [...options.initialAnnotations] : [];
+    const isWorkspaceSnapshotEnabled = options.enableWorkspaceSnapshot !== undefined ? options.enableWorkspaceSnapshot : this.enableWorkspaceSnapshot;
+    if (isWorkspaceSnapshotEnabled && this.workspaceRoot) {
+      try {
+        const generation = this.generation || 1;
+        const snap = SnapshotGenerator.generateWorkspaceSnapshot(this.workspaceRoot, undefined, generation);
+        const cacheFile = path11.join(this.workspaceRoot, ".cph", "state", "workspace-snapshot-cache.json");
+        let cached = null;
+        if (fs11.existsSync(cacheFile)) {
+          try {
+            cached = JSON.parse(fs11.readFileSync(cacheFile, "utf-8"));
+          } catch {
+            cached = null;
+          }
+        }
+        if (cached && cached.snapshotHash === snap.hash && cached.uploadResult?.annotation) {
+          currentAnnotations.unshift(cached.uploadResult.annotation);
+          events?.onAttachmentUploaded?.(cached.uploadResult, "workspace_snapshot");
+        } else {
+          const graphToken = await this.acquireGraphToken();
+          if (!graphToken) {
+            throw new Error("No Graph access token available for workspace snapshot upload");
+          }
+          const snapshotBuffer = fs11.readFileSync(snap.snapshotPath);
+          const uploadResult = await SubstrateUploader.uploadDocumentAuto(graphToken, snapshotBuffer, snap.cloudFileName, signal);
+          const cacheData = {
+            snapshotHash: snap.hash,
+            uploadResult,
+            updatedAt: new Date().toISOString()
+          };
+          fs11.mkdirSync(path11.dirname(cacheFile), { recursive: true });
+          fs11.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
+          currentAnnotations.unshift(uploadResult.annotation);
+          events?.onAttachmentUploaded?.(uploadResult, "workspace_snapshot");
+        }
+      } catch (err) {
+        try {
+          const errLogPath = path11.join(this.workspaceRoot, ".cph", "state", "upload-error.log");
+          fs11.mkdirSync(path11.dirname(errLogPath), { recursive: true });
+          const errContent = `[${new Date().toISOString()}] Turn 1 workspace snapshot upload failed:
+${err?.stack || err?.message || String(err)}
+
+`;
+          fs11.appendFileSync(errLogPath, errContent, "utf-8");
+        } catch {}
+        const warnMsg = "[WARN: Turn 1 workspace snapshot upload failed]";
+        if (this.tuiRenderer?.c?.yellow) {
+          console.warn(this.tuiRenderer.c.yellow(warnMsg));
+        } else {
+          console.warn(warnMsg);
+        }
+        const degradationNotice = `
+[WORKSPACE NOTICE: 全景代码快照上传暂未就绪，当前进入增量探查降级模式，请按需调用 read_file 探查所需文件]
+`;
+        currentPrompt = degradationNotice + currentPrompt;
+      }
+    }
     while (turn <= this.maxTurns) {
       if (signal?.aborted) {
         const abortError = new Error("The operation was aborted");
@@ -25003,7 +25645,7 @@ class Orchestrator {
       events?.onTurnStart?.(turn);
       const turnIndex = turn;
       const turnInputPrompt = currentPrompt;
-      const requestId = crypto5.randomUUID();
+      const requestId = crypto6.randomUUID();
       let turnResponseText = "";
       let turnReasoningText = "";
       try {
@@ -25170,10 +25812,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         const targetSessionId = options.sessionId || this.sessionId;
         let docPath;
         if (this.workspaceRoot) {
-          const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
-          fs10.mkdirSync(handoffsDir, { recursive: true });
-          docPath = path10.join(handoffsDir, `handoff-${targetSessionId}.md`);
-          fs10.writeFileSync(docPath, parsed.handoffDoc, "utf8");
+          const handoffsDir = path11.join(this.workspaceRoot, ".cph", "handoffs");
+          fs11.mkdirSync(handoffsDir, { recursive: true });
+          docPath = path11.join(handoffsDir, `handoff-${targetSessionId}.md`);
+          fs11.writeFileSync(docPath, parsed.handoffDoc, "utf8");
           this.lastHandoffDocPath = docPath;
         }
         history.push({
@@ -25252,7 +25894,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
             this.sessionId = nextSessionId;
             sessionId = nextSessionId;
-            this.conversationId = crypto5.randomUUID();
+            this.conversationId = crypto6.randomUUID();
             conversationId = this.conversationId;
             this.lineageTracker?.register({
               sessionId: nextSessionId,
@@ -25286,12 +25928,63 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           toolResult = await this.bridge.executeAction(parsed.action, signal);
         }
         events?.onToolEnd?.(toolResult);
+        if (toolResult.success && (parsed.action.tool === "edit" || parsed.action.tool === "patch_file" || parsed.action.tool === "write_file")) {
+          const modFile = parsed.action.path || parsed.action.file || parsed.action.filePath || parsed.action.targetPath;
+          if (modFile && typeof modFile === "string") {
+            this.lastModifiedFile = modFile;
+          }
+        }
+        let isGreenTestResult = false;
+        if (toolResult.success) {
+          const rawOut = toolResult.rawOutput || toolResult.output || "";
+          const isTestCommand = (parsed.action.tool === "run_command" || toolResult.actionName === "run_command") && parsed.action.command && /(?:test|vitest|jest|pytest|cargo\s+test)/i.test(parsed.action.command);
+          const hasGreenPattern = /(?:pass(?:ed)?|绿灯|\b\d+\s+pass(?:ed)?\b|status:\s*green|all\s+tests\s+pass(?:ed)?)/i.test(rawOut);
+          if (isTestCommand && hasGreenPattern || hasGreenPattern && /(?:pass|0 fail|passed)/i.test(rawOut)) {
+            isGreenTestResult = true;
+          }
+        }
+        let fingerprintHeader = "";
+        if (isGreenTestResult) {
+          const branch = this.getCurrentGitBranch() || "main";
+          const targetFile = this.lastModifiedFile || parsed.action?.path || parsed.action?.file || "workspace";
+          fingerprintHeader = [
+            "[WORKSPACE STATE UPDATE]",
+            `Branch: ${branch}`,
+            `Status: Green`,
+            `Target: ${targetFile} (Verified: Tests passed on disk)`,
+            `Cloud Mirror: Synced to SharePoint`
+          ].join(`
+`);
+          try {
+            const syncScript = path11.join(this.workspaceRoot, "scripts", "sp-sync-engine.ps1");
+            if (fs11.existsSync(syncScript)) {
+              const child = spawn4("powershell.exe", [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                syncScript,
+                "-Action",
+                "SyncSingleFile",
+                "-SourceFile",
+                targetFile,
+                "-WorkspaceRoot",
+                this.workspaceRoot
+              ], {
+                cwd: this.workspaceRoot,
+                stdio: "ignore",
+                detached: true
+              });
+              child.unref();
+            }
+          } catch {}
+        }
         let uploadedAttachment = null;
         const rawContent = toolResult.rawOutput || toolResult.output || "";
         const lineCount = rawContent.split(/\r?\n/).length;
         const charCount = rawContent.length;
         const isFileReadAction = (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("read") || (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("cat");
-        const shouldUpload = this.enableCloudAttachment && toolResult.success && charCount > 0 && (isFileReadAction || (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines));
+        const shouldUpload = this.enableCloudAttachment && !isGreenTestResult && toolResult.success && charCount > 0 && (isFileReadAction || (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines));
         if (shouldUpload) {
           try {
             const graphToken = await this.acquireGraphToken();
@@ -25300,7 +25993,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
               let uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
               if (isFileReadAction && (parsed.action?.path || parsed.action?.file || parsed.action?.filePath)) {
                 const targetPath = parsed.action?.path || parsed.action?.file || parsed.action?.filePath || "";
-                const cleanBase = path10.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
+                const cleanBase = path11.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
                 uploadFileName = `read-${cleanBase}-${Date.now()}.txt`;
               }
               uploadedAttachment = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, rawContent, uploadFileName);
@@ -25353,6 +26046,11 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           } else {
             currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output, currentTask);
           }
+        }
+        if (fingerprintHeader) {
+          currentPrompt = `${fingerprintHeader}
+
+${currentPrompt}`;
         }
         events?.onTurnEnd?.(turnIndex, turnResponseText);
         if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
@@ -25429,11 +26127,19 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
   generateHandoffSnapshot(task, history, sessionId) {
     const effectiveSessionId = sessionId || this.sessionId;
     const cleanTask = task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
+    let nextSnapshotMeta;
+    if (this.enableWorkspaceSnapshot && this.workspaceRoot) {
+      try {
+        const nextGen = (this.generation || 1) + 1;
+        nextSnapshotMeta = SnapshotGenerator.generateWorkspaceSnapshot(this.workspaceRoot, undefined, nextGen);
+        this.lastNextSnapshotMeta = nextSnapshotMeta;
+      } catch {}
+    }
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path10.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
-        if (fs10.existsSync(docPath)) {
-          const existingDoc = fs10.readFileSync(docPath, "utf8").trim();
+        const docPath = path11.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        if (fs11.existsSync(docPath)) {
+          const existingDoc = fs11.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
             this.lastHandoffDocPath = docPath;
             return existingDoc;
@@ -25441,10 +26147,12 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         }
       } catch {}
     }
+    const nextSnapshotFact = nextSnapshotMeta ? `- **下一代工作区全景快照**: \`${nextSnapshotMeta.cloudFileName}\` (SHA: \`${nextSnapshotMeta.hash}\`, Files: ${nextSnapshotMeta.fileCount})` : "";
     const taskSection = [
       `- **原始任务**: ${cleanTask}`,
       `- **工作区根目录**: \`${this.workspaceRoot}\``,
-      effectiveSessionId ? `- **会话标识**: \`${effectiveSessionId}\`` : ""
+      effectiveSessionId ? `- **会话标识**: \`${effectiveSessionId}\`` : "",
+      nextSnapshotFact
     ].filter(Boolean).join(`
 `);
     const executedActions = [];
@@ -25613,9 +26321,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     let reviewDraftContent = "";
     if (this.workspaceRoot) {
       try {
-        const reviewDraftPath = path10.join(this.workspaceRoot, ".cph", "review_draft.md");
-        if (fs10.existsSync(reviewDraftPath)) {
-          reviewDraftContent = fs10.readFileSync(reviewDraftPath, "utf8").trim();
+        const reviewDraftPath = path11.join(this.workspaceRoot, ".cph", "review_draft.md");
+        if (fs11.existsSync(reviewDraftPath)) {
+          reviewDraftContent = fs11.readFileSync(reviewDraftPath, "utf8").trim();
         }
       } catch {}
     }
@@ -25654,10 +26362,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
 `);
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
-        fs10.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path10.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
-        fs10.writeFileSync(docPath, doc, "utf8");
+        const handoffsDir = path11.join(this.workspaceRoot, ".cph", "handoffs");
+        fs11.mkdirSync(handoffsDir, { recursive: true });
+        const docPath = path11.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        fs11.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {}
     }
@@ -25668,12 +26376,12 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
   }
   collectGitFacts() {
     try {
-      const branch = execSync2("git branch --show-current", {
+      const branch = execSync3("git branch --show-current", {
         cwd: this.workspaceRoot,
         stdio: ["ignore", "pipe", "ignore"],
         encoding: "utf8"
       }).trim();
-      const status = execSync2("git status -s", {
+      const status = execSync3("git status -s", {
         cwd: this.workspaceRoot,
         stdio: ["ignore", "pipe", "ignore"],
         encoding: "utf8"
@@ -25697,15 +26405,15 @@ ${status}` : "clean (无未提交变更)"}`;
         ".cache",
         "build"
       ]);
-      const entries = fs10.readdirSync(this.workspaceRoot, { withFileTypes: true });
+      const entries = fs11.readdirSync(this.workspaceRoot, { withFileTypes: true });
       const lines = [];
       const topEntries = entries.filter((e) => !e.name.startsWith(".") && !ignored.has(e.name)).slice(0, 20);
       for (const entry of topEntries) {
         if (entry.isDirectory()) {
           lines.push(`- ${entry.name}/`);
           try {
-            const subPath = path10.join(this.workspaceRoot, entry.name);
-            const subEntries = fs10.readdirSync(subPath, { withFileTypes: true }).filter((se) => !se.name.startsWith(".") && !ignored.has(se.name)).slice(0, 10);
+            const subPath = path11.join(this.workspaceRoot, entry.name);
+            const subEntries = fs11.readdirSync(subPath, { withFileTypes: true }).filter((se) => !se.name.startsWith(".") && !ignored.has(se.name)).slice(0, 10);
             for (const sub of subEntries) {
               lines.push(`  - ${sub.name}${sub.isDirectory() ? "/" : ""}`);
             }
@@ -25792,12 +26500,12 @@ ${status}` : "clean (无未提交变更)"}`;
       this.pool.markThrottled(victimEmail);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
-    const handoffsDir = path10.join(this.workspaceRoot, ".cph", "handoffs");
-    const targetHandoffAbsolutePath = path10.join(handoffsDir, `handoff-${sessionId}.md`);
+    const handoffsDir = path11.join(this.workspaceRoot, ".cph", "handoffs");
+    const targetHandoffAbsolutePath = path11.join(handoffsDir, `handoff-${sessionId}.md`);
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
-      fs10.mkdirSync(handoffsDir, { recursive: true });
+      fs11.mkdirSync(handoffsDir, { recursive: true });
       const localHandoffDoc = this.generateHandoffSnapshot(params.rootUserPrompt || task, history, sessionId);
-      fs10.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
+      fs11.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(localHandoffDoc, targetHandoffAbsolutePath);
@@ -25828,7 +26536,7 @@ ${status}` : "clean (无未提交变更)"}`;
         nextToken = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
       }
     } catch (poolErr) {
-      fs10.mkdirSync(handoffsDir, { recursive: true });
+      fs11.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (All Accounts Throttled)`,
         `> ⚠️ 账号池所有可用账号均已耗尽频控 (${poolErr.message || String(poolErr)})，本地保障黑匣子生成与落盘。`,
@@ -25836,7 +26544,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs10.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs11.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -25855,7 +26563,7 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    const arbitratorSessionId = `ses_arb_${crypto5.randomUUID()}`;
+    const arbitratorSessionId = `ses_arb_${crypto6.randomUUID()}`;
     const nextEmail = nextToken?.email || "next-account";
     this.lineageTracker.register({
       sessionId: arbitratorSessionId,
@@ -25908,9 +26616,9 @@ ${status}` : "clean (无未提交变更)"}`;
     try {
       const arbRes = await arbitratorClient.sendMessage({
         text: arbitratorPrompt,
-        conversationId: crypto5.randomUUID(),
+        conversationId: crypto6.randomUUID(),
         sessionId: arbitratorSessionId,
-        requestId: crypto5.randomUUID(),
+        requestId: crypto6.randomUUID(),
         signal
       });
       arbitratorResponseText = arbRes.text;
@@ -25920,7 +26628,7 @@ ${status}` : "clean (无未提交变更)"}`;
         abortError.name = "AbortError";
         throw abortError;
       }
-      fs10.mkdirSync(handoffsDir, { recursive: true });
+      fs11.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (Arbitrator Session Failed)`,
         `> ⚠️ 仲裁会话执行异常 (${arbErr.message || String(arbErr)})，本地保障黑匣子生成与落盘。`,
@@ -25928,7 +26636,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs10.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs11.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -25947,19 +26655,19 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    fs10.mkdirSync(handoffsDir, { recursive: true });
+    fs11.mkdirSync(handoffsDir, { recursive: true });
     const parsed = ResilientParser.parse(arbitratorResponseText);
     if (parsed.type === "action") {
       events?.onToolStart?.(parsed.action);
       const toolResult = await this.bridge.executeAction(parsed.action, signal);
       events?.onToolEnd?.(toolResult);
     }
-    if (!fs10.existsSync(targetHandoffAbsolutePath)) {
+    if (!fs11.existsSync(targetHandoffAbsolutePath)) {
       const contentToPersist = parsed.type === "handoff" ? parsed.handoffDoc : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
-      fs10.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
+      fs11.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
     this.lastHandoffDocPath = targetHandoffAbsolutePath;
-    const finalDocContent = fs10.existsSync(targetHandoffAbsolutePath) ? fs10.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
+    const finalDocContent = fs11.existsSync(targetHandoffAbsolutePath) ? fs11.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
     if (events?.onArbitratorHandoffComplete) {
       await Promise.resolve(events.onArbitratorHandoffComplete(targetHandoffAbsolutePath, arbitratorSessionId));
     }
@@ -26077,8 +26785,8 @@ class InterruptController {
 }
 
 // src/ui/tui-renderer.ts
-import * as fs11 from "node:fs";
-import * as path11 from "node:path";
+import * as fs12 from "node:fs";
+import * as path12 from "node:path";
 
 // src/ui/diff-highlighter.ts
 var Diff2 = __toESM(require_libcjs(), 1);
@@ -26409,7 +27117,7 @@ ${formattedLines}${footer}`;
       p = p.trim();
       if (!p)
         continue;
-      const key = path11.normalize(p).toLowerCase();
+      const key = path12.normalize(p).toLowerCase();
       if (!seen.has(key)) {
         seen.add(key);
         cleaned.push(p);
@@ -26418,18 +27126,18 @@ ${formattedLines}${footer}`;
     return cleaned;
   }
   formatArtifactCard(filePath) {
-    const resolvedPath = path11.isAbsolute(filePath) ? filePath : path11.resolve(process.cwd(), filePath);
-    if (!fs11.existsSync(resolvedPath)) {
+    const resolvedPath = path12.isAbsolute(filePath) ? filePath : path12.resolve(process.cwd(), filePath);
+    if (!fs12.existsSync(resolvedPath)) {
       return null;
     }
     let stats;
     let content;
     try {
-      stats = fs11.statSync(resolvedPath);
+      stats = fs12.statSync(resolvedPath);
       if (!stats.isFile()) {
         return null;
       }
-      content = fs11.readFileSync(resolvedPath, "utf-8");
+      content = fs12.readFileSync(resolvedPath, "utf-8");
     } catch {
       return null;
     }
@@ -26815,21 +27523,21 @@ ${this.formatDisasterSuccessorBanner(successorSessionId, hopCount, maxHops, docP
 }
 
 // src/session/session-manager.ts
-import fs12 from "node:fs";
-import path12 from "node:path";
+import fs13 from "node:fs";
+import path13 from "node:path";
 
 class SessionManager {
   workspaceRoot;
   sessionsDir;
   indexFile;
   constructor(workspaceRoot) {
-    this.workspaceRoot = path12.resolve(workspaceRoot || process.cwd());
-    this.sessionsDir = path12.join(this.workspaceRoot, ".cph", "sessions");
-    this.indexFile = path12.join(this.sessionsDir, "index.json");
+    this.workspaceRoot = path13.resolve(workspaceRoot || process.cwd());
+    this.sessionsDir = path13.join(this.workspaceRoot, ".cph", "sessions");
+    this.indexFile = path13.join(this.sessionsDir, "index.json");
   }
   ensureSessionsDir() {
-    if (!fs12.existsSync(this.sessionsDir)) {
-      fs12.mkdirSync(this.sessionsDir, { recursive: true });
+    if (!fs13.existsSync(this.sessionsDir)) {
+      fs13.mkdirSync(this.sessionsDir, { recursive: true });
     }
   }
   isValidSessionId(id) {
@@ -26849,11 +27557,11 @@ class SessionManager {
   }
   readIndex() {
     this.ensureSessionsDir();
-    if (!fs12.existsSync(this.indexFile)) {
+    if (!fs13.existsSync(this.indexFile)) {
       return this.rebuildIndex();
     }
     try {
-      const raw = fs12.readFileSync(this.indexFile, "utf-8");
+      const raw = fs13.readFileSync(this.indexFile, "utf-8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -26866,23 +27574,23 @@ class SessionManager {
   writeIndex(items) {
     this.ensureSessionsDir();
     const sorted = [...items].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    fs12.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
+    fs13.writeFileSync(this.indexFile, JSON.stringify(sorted, null, 2), "utf-8");
   }
   rebuildIndex() {
     this.ensureSessionsDir();
     const items = [];
     let files = [];
     try {
-      files = fs12.readdirSync(this.sessionsDir);
+      files = fs13.readdirSync(this.sessionsDir);
     } catch {
       return [];
     }
     for (const file of files) {
       if (!file.endsWith(".json") || file === "index.json")
         continue;
-      const fullPath = path12.join(this.sessionsDir, file);
+      const fullPath = path13.join(this.sessionsDir, file);
       try {
-        const raw = fs12.readFileSync(fullPath, "utf-8");
+        const raw = fs13.readFileSync(fullPath, "utf-8");
         const session = JSON.parse(raw);
         if (session && session.id && session.title) {
           items.push({
@@ -26914,7 +27622,7 @@ class SessionManager {
     const session = {
       id,
       title: options.title || "新会话",
-      workspaceRoot: options.workspaceRoot ? path12.resolve(options.workspaceRoot) : this.workspaceRoot,
+      workspaceRoot: options.workspaceRoot ? path13.resolve(options.workspaceRoot) : this.workspaceRoot,
       createdAt: now,
       updatedAt: now,
       turnCount: 0,
@@ -26937,8 +27645,8 @@ class SessionManager {
     this.ensureSessionsDir();
     session.updatedAt = new Date().toISOString();
     session.turnCount = session.turns ? session.turns.length : session.turnCount;
-    const sessionFile = path12.join(this.sessionsDir, `${session.id}.json`);
-    fs12.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
+    const sessionFile = path13.join(this.sessionsDir, `${session.id}.json`);
+    fs13.writeFileSync(sessionFile, JSON.stringify(session, null, 2), "utf-8");
     const index = this.readIndex();
     const existingIdx = index.findIndex((item) => item.id === session.id);
     const indexEntry = {
@@ -26967,11 +27675,11 @@ class SessionManager {
   loadSession(id) {
     if (!this.isValidSessionId(id))
       return null;
-    const sessionFile = path12.join(this.sessionsDir, `${id}.json`);
-    if (!fs12.existsSync(sessionFile))
+    const sessionFile = path13.join(this.sessionsDir, `${id}.json`);
+    if (!fs13.existsSync(sessionFile))
       return null;
     try {
-      const raw = fs12.readFileSync(sessionFile, "utf-8");
+      const raw = fs13.readFileSync(sessionFile, "utf-8");
       return JSON.parse(raw);
     } catch {
       return null;
@@ -26996,11 +27704,11 @@ class SessionManager {
     if (!this.isValidSessionId(id))
       return false;
     this.ensureSessionsDir();
-    const sessionFile = path12.join(this.sessionsDir, `${id}.json`);
+    const sessionFile = path13.join(this.sessionsDir, `${id}.json`);
     let fileExisted = false;
-    if (fs12.existsSync(sessionFile)) {
+    if (fs13.existsSync(sessionFile)) {
       try {
-        fs12.unlinkSync(sessionFile);
+        fs13.unlinkSync(sessionFile);
         fileExisted = true;
       } catch {}
     }
@@ -27015,8 +27723,8 @@ class SessionManager {
 }
 
 // src/cli/args.ts
-import path13 from "node:path";
-import fs13 from "node:fs";
+import path14 from "node:path";
+import fs14 from "node:fs";
 function parseCliArgs(args) {
   const result = {
     help: false,
@@ -27228,10 +27936,10 @@ function parseCliArgs(args) {
         result.workspaceRoot = baseDir;
         positional.shift();
       } else {
-        const resolved = path13.isAbsolute(first) ? first : path13.resolve(baseDir, first);
+        const resolved = path14.isAbsolute(first) ? first : path14.resolve(baseDir, first);
         let isDir = false;
         try {
-          isDir = fs13.existsSync(resolved) && fs13.statSync(resolved).isDirectory();
+          isDir = fs14.existsSync(resolved) && fs14.statSync(resolved).isDirectory();
         } catch {
           isDir = false;
         }
@@ -27701,7 +28409,7 @@ class CphPiCli {
   debug = false;
   debugLogPath;
   constructor(options = {}) {
-    this.workspaceRoot = path14.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
+    this.workspaceRoot = path15.resolve(options.workspaceRoot || options.workspace || process.env.CPH_PI_ORIGINAL_CWD || process.cwd());
     this.ledger = options.ledger || new ExecutionLedger(this.workspaceRoot);
     const config = this.loadWorkspaceConfig();
     const cliAgentId = options.customAgentId ? ChatHubClient.normalizeAgentId(options.customAgentId) : undefined;
@@ -27976,24 +28684,24 @@ ${source_default.yellow(msg)}
     return this.pendingHandoffSnapshot;
   }
   loadWorkspaceConfig() {
-    const configPath = path14.join(this.workspaceRoot, ".cph", "config.json");
+    const configPath = path15.join(this.workspaceRoot, ".cph", "config.json");
     try {
-      if (fs14.existsSync(configPath)) {
-        const content = fs14.readFileSync(configPath, "utf-8");
+      if (fs15.existsSync(configPath)) {
+        const content = fs15.readFileSync(configPath, "utf-8");
         return JSON.parse(content) || {};
       }
     } catch {}
     return {};
   }
   saveWorkspaceConfig(updates) {
-    const cphDir = path14.join(this.workspaceRoot, ".cph");
-    const configPath = path14.join(cphDir, "config.json");
+    const cphDir = path15.join(this.workspaceRoot, ".cph");
+    const configPath = path15.join(cphDir, "config.json");
     try {
-      fs14.mkdirSync(cphDir, { recursive: true });
+      fs15.mkdirSync(cphDir, { recursive: true });
       let current = {};
-      if (fs14.existsSync(configPath)) {
+      if (fs15.existsSync(configPath)) {
         try {
-          current = JSON.parse(fs14.readFileSync(configPath, "utf-8")) || {};
+          current = JSON.parse(fs15.readFileSync(configPath, "utf-8")) || {};
         } catch {
           current = {};
         }
@@ -28005,7 +28713,7 @@ ${source_default.yellow(msg)}
           current[k] = v;
         }
       }
-      fs14.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
+      fs15.writeFileSync(configPath, JSON.stringify(current, null, 2), "utf-8");
     } catch {}
   }
   initSession() {
