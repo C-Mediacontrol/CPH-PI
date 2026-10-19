@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 建立基于 Microsoft Graph 原生分块协议与自适应路由的双通道直传引擎，实现对 4MB 客户端假说的弹性覆盖与无上限传输；落地 Windows PowerShell 5.1 受控 PnP 物理镜像与离线 CI 录放通道；实现基于 `git ls-files -z`、正则敏感过滤、9 项核心系统断言与幂等防膨胀的全景快照生成器（`WorkspaceSnapshot`）；重构 Tri-Agent 提示词与专有 Skills，形成首轮全局全景洞察、单点攻坚 TDD 绿灯增量同步与微切片认知隔离的高韧性开发流水线。
+**Goal:** 建立基于 Microsoft Graph 原生分块协议与自适应路由的双通道直传引擎，实现对 4MB 客户端假说的弹性覆盖，并支撑至 Graph 协议 250 GB 上限的分块续传能力；落地 Windows PowerShell 5.1 受控 PnP 物理镜像与离线 CI 录放通道；实现基于 `git ls-files -z`、正则敏感过滤、9 项核心系统断言与幂等防膨胀的全景快照生成器（`WorkspaceSnapshot`）；重构 Tri-Agent 提示词、单智能体自主开发提示词与专有 Skills，形成首轮全局全景洞察、单点攻坚 TDD 绿灯增量同步与微切片认知隔离的高韧性开发流水线。
 
 **Architecture:** 
 1. **传输自适应路由**: `SubstrateUploader` 实现 `uploadDocumentAuto`，≤4MB 走加固的简易直传（带 429/503 重试、4xx 立即熔断上抛与退避中断），>4MB 走 `createUploadSession` + 8,000 KB 分块续传状态机；`uploadDocumentToOneDrive` 作为完全向后兼容别名保留历史启发式互换容错；
-2. **SharePoint 物理镜像**: `scripts/sp-sync-engine.ps1` 强制断言 Windows PowerShell 5.1 运行，依赖受控 `scripts/lib/PnPSession.psm1` 实现严格命名空间化与 Windows ACL 权限隔离，基于 `.cph/state/sync-manifest.json` 状态基线实现单文件与变更文件精准增量推送，彻底移除遗留跨项目共享回退，配套 CI 离线 Mock 适配层；
-3. **全景快照与微切片**: `SnapshotGenerator` 产出源码全景快照交付件（`WorkspaceSnapshot`），落盘强制限定于 `.cph/snapshots/` 严防递归收录膨胀；内置密钥扫描阻断与 9 项核心系统源码断言门禁，支持按工单提取 10~30KB 闭包微切片，并与既有记录任务规划/执行账本的 `MainPlanSnapshot`（`.cph/handoffs/`）保持正交分工与生命周期协同；
-4. **流水线闭环与提示词重塑**: `Orchestrator` 串联首轮全景投递（显式告警与降级兜底，严禁静默吞错）、未变更哈希复用（消除 Turn 1 重复开销）、单点攻坚指纹头下发与 Handoff 递增快照；重塑 Main/Researcher/Coder 提示词与 `subagent`/`handoff` 技能。
+2. **SharePoint 物理镜像**: `scripts/sp-sync-engine.ps1` 强制断言 Windows PowerShell 5.1 运行，依赖受控 `scripts/lib/PnPSession.psm1`（单一入口 `~/.cph\pnp-session.json`、写后 Windows ACL 隔离加固、保留显式 opt-in 迁移开关），基于 `.cph/state/sync-manifest.json` 状态基线实现单文件与变更文件精准增量推送，以本地工作区为单一真实数据源 (SSOT)，配套 CI 离线 Mock 适配层；
+3. **全景快照与微切片**: `SnapshotGenerator` 产出源码全景快照交付件（`WorkspaceSnapshot`），落盘强制创建并限定于 `.cph/snapshots/` 严防递归收录膨胀（物理存储按哈希寻址 `workspace-snapshot-<sha256>.txt`，云端展示与元数据映射为代际语义 `workspace-v<generation>.txt`）；内置密钥扫描阻断与 9 项核心系统源码断言门禁，支持按工单提取 10~30KB 闭包微切片，并与既有记录任务规划/执行账本的 `MainPlanSnapshot`（`.cph/handoffs/`）保持正交分工与生命周期协同；
+4. **流水线闭环与提示词重塑**: `Orchestrator` 串联首轮全景投递、未变更哈希完整注解复用（缓存整个 `UploadDocumentResult` 至 `.cph/state/workspace-snapshot-cache.json`，消除 Turn 1 重复开销）、首轮上传失败显式降级（TUI 黄色告警 + 堆栈落盘 + Turn 1 提示词注入无快照探查通知，严禁带病盲跑）、单点攻坚指纹头下发与 Handoff 递增快照；重塑 Main/Researcher/Coder 及 Dev 提示词与 `subagent`/`handoff` 技能。
 
 **Tech Stack:** TypeScript, Bun (`bun test`), Windows PowerShell 5.1, Node.js `fs`/`crypto`, Microsoft Graph API, PnP.PowerShell 1.12.0, SignalR WebSocket.
 
@@ -19,9 +19,10 @@
 - **纯协议与零 CDP 边界**: 生产环境全链路走 Node/Bun 原生 `fetch` 与 Chathub SignalR 原生 WebSocket，零 CDP / 零浏览器依赖；
 - **离线研究实验豁免**: 仅在离线边界探索脚本（`scripts/test-upload-boundary.ts`）中，允许复用 `evidence/run-rag-boundary-test.ts` 的 CDP 范式模拟真实 UI 附件卡片以观测云端阈值行为；生产运行时与持续会话链路（`src/`）严禁引入任何 CDP 依赖；
 - **运行环境强锁定**: PnP 脚本必须且仅能在 `powershell.exe` (Windows PowerShell 5.1) 下运行，严禁使用 `pwsh` (PS7+)；
-- **凭据物理卫生与严格隔离**: 敏感 Cookie 严格存储于 `~/.cph/pnp-session.json` 并配置 Windows ACL 仅当前用户访问；证据件与日志严禁明文凭据入库；彻底废除跨项目遗留缓存回退；
+- **凭据物理卫生与严格隔离**: 敏感 Cookie 严格存储于 `~/.cph/pnp-session.json` 并在写文件后自动配置 Windows ACL 仅当前用户访问；证据件与日志严禁明文凭据入库；
 - **正向建设性引导**: 系统提示词与 Skills 全面采用正向行为规范，遵循《AGENTS.md》规则 3；
-- **真实数据口径与动态断言**: 151 个源文件原始字节总和为 1,324,834 字节 (1.26 MB)，生成的最终快照交付件 `workspace-v1.txt` 为 1,365,870 字节 (1.30 MiB / 1.37 MB)；测试断言采用“核心 9 项必在快照内”硬门禁 + 动态文件范围断言，杜绝自指失效。
+- **本地唯一真源 (SSOT)**: 本地工作区为代码的单一真实源，SharePoint 镜像定位为只读物理投影（Read-Only Projection），任何云端分叉以本地为准强制覆盖；
+- **双层快照命名与真实口径**: 151 个源文件原始字节总和为 1,324,834 字节 (1.26 MB)，生成的最终快照交付件为 1,365,870 字节 (1.30 MiB / 1.37 MB)。磁盘物理存储采用内容寻址 `workspace-snapshot-<sha256>.txt`，云端展示与会话元数据统一使用单调代际语义 `workspace-v1.txt`（首轮）与 `workspace-v2.txt`（Handoff）；测试断言采用“核心 9 项必在快照内”硬门禁 + 动态文件范围断言，杜绝自指失效。
 
 ---
 
@@ -30,10 +31,10 @@
 | 制品类型 | ⬆️ 上游（生产方） | ⬇️ 下游（消费方） | 冲击处理与对账方案 |
 |---|---|---|---|
 | **函数/接口** | `SubstrateUploader.uploadDocumentAuto` | `Orchestrator`, `SubagentRunner` | 移除无调用关系的 `FilePorter`；保留 `uploadDocumentToOneDrive` 4 参兼容别名与参数错序启发式，旧调用点零破坏性平移 |
-| **配置文件** | `PnPSession.psm1` 写入 `~/.cph/pnp-session.json` | `sp-sync-engine.ps1` 消费 Cookie 缓存 | 写入时自动施加 Windows ACL (`FileSystemAccessRule`)，彻底废除跨项目遗留回退，建立独立命名空间 |
-| **数据/存储** | `SnapshotGenerator` 生成全景源码快照 (`WorkspaceSnapshot`) | `SubstrateUploader` 接收 Buffer 上传至 OneDrive | 输出锁定于 `.cph/snapshots/` 防递归膨胀；与存量规划/账本快照 `MainPlanSnapshot` (`.cph/handoffs/`) 职责与目录严格正交 |
+| **配置文件** | `PnPSession.psm1` 写入 `~/.cph/pnp-session.json` | `sp-sync-engine.ps1` 消费 Cookie 缓存 | 写文件后应用 Windows ACL (`FileSystemAccessRule`)，带 `try/catch` 跨平台平滑降级，头注释记录本地化差异台账 |
+| **数据/存储** | `SnapshotGenerator` 生成全景源码快照 (`WorkspaceSnapshot`) | `SubstrateUploader` 接收 Buffer 上传至 OneDrive | 自动递归创建并锁定于 `.cph/snapshots/` 防膨胀；物理文件名带哈希，云端显示为 `workspace-vN.txt`；与存量 `MainPlanSnapshot` (`.cph/handoffs/`) 严格正交 |
 | **执行进程** | `Orchestrator` 触发 `powershell.exe 5.1` | `sp-sync-engine.ps1` 基于 `sync-manifest.json` 增量同步 | 异步解耦，维护 `.cph/state/sync-manifest.json` 基线，未变更文件不推，失败追加至 `.cph/state/dirty-sync.jsonl` |
-| **提示词与技能**| `package-agent-bundle.ts` 装配提示词文本并打包 | `package/agent-bundle/` 部署至 Copilot Agent | 明确 `prompt-builder.ts` 仅负责运行时动态装配，四类 `.txt` 由打包脚本统一装配并发布，重塑为具备上帝视野与 DAG 因果感知的 Tri-Agent 矩阵 |
+| **提示词与技能**| `package-agent-bundle.ts` 装配提示词文本并打包 | `package/agent-bundle/` 部署至 Copilot Agent | 明确 `prompt-builder.ts` 仅负责运行时动态装配，Main/Coder/Researcher 及兼容单智能体 Dev 提示词均纳入重构与打包流水线 |
 
 ---
 
@@ -151,18 +152,26 @@
   增量状态基线清单：
   `.cph/state/sync-manifest.json` (记录 relativePath -> { sha256, lastSyncedAt })
 
-- [ ] **Step 1.1.1: 加固 `PnPSession.psm1` 凭据隔离与命名空间规范**
-  - 彻底移除 `PnPSession.psm1` 中的跨项目遗留回退（清退 `~/.ltk-shipschedule-session.json`），强绑定单一入口 `~/.cph/pnp-session.json`；
-  - 完善 `Write-DpsSessionCache` 中的 Windows ACL 权限加固：
+- [ ] **Step 1.1.1: 验收对账 `PnPSession.psm1` 既有加固实现，修正模块头注释与差异清单 (Verify & Harden Baseline)**
+  - 核验现有模块已完成单一命名空间绑定（`Get-DpsSessionCacheFile` 默认 `~/.cph\pnp-session.json`）；
+  - 核验现有 `Write-DpsSessionCache` 在写文件**之后**应用 Windows ACL，且包含 `try/catch` 平滑降级（在非 NTFS / 跨平台环境不抛异常）：
     ```powershell
-    $acl = New-Object System.Security.AccessControl.FileSecurity
-    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'Allow')
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.AddAccessRule($rule)
-    $fileInfo = New-Object System.IO.FileInfo($CacheFile)
-    $fileInfo.SetAccessControl($acl)
+    [System.IO.File]::WriteAllText($CacheFile, $json, [System.Text.UTF8Encoding]::new($false))
+    try {
+        $acl = New-Object System.Security.AccessControl.FileSecurity
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'Allow')
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule($rule)
+        $fileInfo = New-Object System.IO.FileInfo($CacheFile)
+        $fileInfo.SetAccessControl($acl)
+    } catch {
+        # 在非 NTFS 文件系统或受限权限环境中平滑保持
+    }
     ```
+  - 保留 `Read-DpsSessionCache` 的 `[switch]$AllowLegacyFallback` opt-in 开关，保持对历史凭据的显式平滑迁移能力（默认不激活，杜绝隐式跨项目污染）；
+  - 修正 `scripts/lib/PnPSession.psm1` 模块头部过期的 `~/.dps-session.json` 注释，更新为 `~/.cph/pnp-session.json`；
+  - 在模块头部追加 `# LOCAL DIVERGENCE FROM Library/LTK/PnPSession.psm1:` 差异台账，记录本地化改造内容（解决 B16）。
 - [ ] **Step 1.1.2: 编写 `sp-sync-engine.ps1` 执行环境、增量基线比对与参数解析**
   - 落地 PowerShell 5.1 版本硬断言：
     ```powershell
@@ -170,7 +179,7 @@
       throw "FATAL: sp-sync-engine.ps1 必须使用 powershell.exe (Windows PowerShell 5.1) 运行！严禁使用 pwsh (PS7+)。"
     }
     ```
-  - 引入增量状态清单机制：维护 `.cph/state/sync-manifest.json`；推送前比对本地文件 SHA256，未变更文件直接跳过（解决 M4 增量退化全量问题）；
+  - 引入增量状态清单机制：维护 `.cph/state/sync-manifest.json`，遵循本地 SSOT 契约；推送前比对本地文件 SHA256，未变更文件直接跳过（解决 M4 增量退化全量问题）；
   - 实现 `SyncSingleFile`（单文件更新）与 `SyncWorkspace`（基于 `git ls-files` + `sync-manifest.json` 增量推送）；
   - 异常状态处理：同步失败追加至 `.cph/state/dirty-sync.jsonl`，不阻塞主流程。
 - [ ] **Step 1.1.3: 编写 CI 离线 Mock 传输层与单元测试**
@@ -178,7 +187,7 @@
   - 构造 `MockSharePointSyncClient`，模拟网络抖动、重试 3 次与失败写入 `.cph/state/dirty-sync.jsonl`；
   - 断言 PS5.1 启动命令与参数格式；
   - 断言 `sync-manifest.json` 增量判定：未修改文件跳过推送，新修改文件触发推送并刷新清单；
-  - 断言 Windows ACL 权限加固调用与禁用跨项目 `.ltk-*` 遗留回退。
+  - 断言 Windows ACL 权限加固生效：在 Windows 平台读回 `Get-Acl` 断言 `AreAccessRulesProtected == $true`，在非 Windows 平台断言安全平滑降级（解决 M9）。
 - [ ] **Step 1.1.4: 运行测试并验证通过 (GREEN)**
   运行 `bun test tests/scripts/sp-sync-engine.test.ts`。
 - [ ] **Step 1.1.5: 提交 Phase 1 代码变更**
@@ -222,7 +231,8 @@
 - [ ] **Step 2.1.2: 实现 `SnapshotGenerator` 全景生成与密钥扫描**
   在 `src/workspace/snapshot-generator.ts` 中实现：
   - 基于 `git ls-files -z` 跨平台安全枚举；
-  - 默认输出目录强制锁定为 `path.join(workspaceRoot, '.cph', 'snapshots')`，产物命名为 `workspace-snapshot-<sha256>.txt`；
+  - 默认输出目录强制锁定为 `path.join(workspaceRoot, '.cph', 'snapshots')`，并在写入前显式执行 `fs.mkdirSync(outputDir, { recursive: true })`（解决 M7 目录不存在抛 ENOENT 隐患）；
+  - 物理产物严格按内容哈希命名为 `workspace-snapshot-<sha256>.txt`，云端元数据及会话呈现映射为代际语义 `workspace-v1.txt`（首轮）与 `workspace-v<generation>.txt`（Handoff，统一解决 P9 命名分歧）；
   - 原始二进制 Buffer SHA256 哈希计算与 manifest 记录；
   - 内容级敏感模式扫描与 9 项核心源码存在性硬门禁。
 - [ ] **Step 2.1.3: 实现子代理局部微切片组装逻辑 (`generateScopedSubagentSlice`)**
@@ -250,51 +260,57 @@
 **Interfaces:**
 - Consumes: `SnapshotGenerator.generateWorkspaceSnapshot`, `SubstrateUploader.uploadDocumentAuto`, `MainPlanSnapshot`
 - Produces:
-  - Turn 1 会话启动时检测代码树哈希，若有变更上传挂载 `workspace-snapshot-<hash>.txt`；若无变更复用上次缓存 `webUrl`（解决 I13 避免重复 20s 延迟）；
-  - **首轮上传显式容错（解决 M2 杜绝静默吞错）**：若上传失败，不得静默 catch 吞没，必须在 TUI 显式输出黄色告警 `[WARN: Turn 1 workspace snapshot upload failed]`、记录详细堆栈至 `.cph/state/upload-error.log`，并激活内联降级兜底；
+  - Turn 1 会话启动时比对当前工作区快照哈希；若与 `.cph/state/workspace-snapshot-cache.json` 中记录的 `snapshotHash` 一致且缓存有效，**直接复用持久化的完整 `UploadDocumentResult`（含 `annotation` 对象的 `id`、`driveId` 等关键字段，解决 P8 仅存 webUrl 无法组装注解问题）**，消除 Turn 1 重复上传开销；
+  - **首轮上传显式容错与模型可见感知（解决 M2/I20，杜绝静默失败与无快照盲跑）**：
+    1. 若上传失败，不得静默 catch 吞没，在 TUI 显式输出黄色告警 `[WARN: Turn 1 workspace snapshot upload failed]`；
+    2. 详细错误堆栈记录至 `.cph/state/upload-error.log`；
+    3. **严禁尝试将 1.3MB 快照直接内联进 Prompt**（杜绝打爆 12000 字符阈值与触发 WAF 审查拦截）；
+    4. **向 Turn 1 注入显式降级感知通知**：`[WORKSPACE NOTICE: 全景代码快照上传暂未就绪，当前进入增量探查降级模式，请按需调用 read_file 探查所需文件]`，使大模型明确感知自身处于降级状态，杜绝带病盲跑；
   - 单点测试绿灯后，下发极简物理指纹头 `[WORKSPACE STATE UPDATE]` 并异步触发 PnP 单文件增量同步；
-  - Handoff 时单调递增生成并投递下一版本快照。
+  - Handoff 时单调递增生成并投递下一代快照（物理名带新哈希，云端展示与元数据映射为 `workspace-v2.txt`）。
 
 - [ ] **Step 3.1.1: 编写双层流生命周期端到端对账测试**
   在 `tests/agent/dual-layer-lifecycle.test.ts` 中：
   - 模拟 Turn 1 首次注入全景附件注解；
-  - 模拟 Turn 1 代码未变更时复用已有 `webUrl` 缓存，跳过重复上传；
-  - 模拟 Turn 1 上传失败时触发显式告警与降级逻辑，断言错误被完整记录且不导致进程崩溃（杜绝盲跑）；
+  - 模拟 Turn 1 代码未变更时复用 `.cph/state/workspace-snapshot-cache.json` 的完整 `annotation` 缓存，跳过重复上传；
+  - 模拟 Turn 1 上传失败时触发显式告警与降级逻辑，断言错误被完整记录至 `upload-error.log`，断言 Turn 1 注入了模型可见的降级通知，且未内联倾倒大文本；
   - 模拟 Turn 2 编码完成且单测绿灯，拦截全量上传，下发 5 行物理指纹头；
   - 模拟 Handoff 生成递增版本快照；
   - 确认现有 `uploadDocumentToOneDrive` 调用无损兼容。
 - [ ] **Step 3.1.2: 在 `Orchestrator` 与 `SubagentRunner` 中集成双层流逻辑**
-  - 首轮会话检测、代码哈希比对与快照挂载/复用；
-  - 改造 `orchestrator.ts` 中的异常捕获：上传失败输出 TUI 告警并安全降级，禁止静默吞错；
+  - 首轮会话检测、代码哈希比对与完整注解缓存持久化/复用；
+  - 改造 `orchestrator.ts` 中的异常捕获：上传失败输出 TUI 告警并安全降级，注入模型可见提示，禁止静默吞错；
   - 局部编码门禁通过后调用 `sp-sync-engine.ps1` 异步增量同步；
   - 平滑平移调用点至 `SubstrateUploader.uploadDocumentAuto`。
 - [ ] **Step 3.1.3: 运行生命周期测试与存量虚拟化/快照回归测试 (GREEN)**
   同时运行新双层流测试与存量 `MainPlanSnapshot` / `virtualization` 既有测试套件：
   `bun test tests/agent/dual-layer-lifecycle.test.ts tests/session/snapshot-static-import.test.ts tests/agent/orchestrator-virtualization.test.ts tests/agent/smart-handoff.test.ts tests/integration/virtualization-relay.test.ts`。
 - [ ] **Step 3.1.4: 提交 Phase 3 代码变更**
-  执行 `git commit -m "feat(agent): integrate dual-layer snapshot lifecycle with explicit error handling and hash reuse in Orchestrator"`。
+  执行 `git commit -m "feat(agent): integrate dual-layer snapshot lifecycle with full annotation cache and model-visible degradation in Orchestrator"`。
 
 ---
 
 ### Phase 4: Tri-Agent 系统提示词与专有 Skills 重构 (Prompts & Skills Overhaul)
 
-#### Task 4.1: 重写三大 Agent 提示词与装配流水线
+#### Task 4.1: 重写三大 Agent 与单智能体提示词及装配流水线
 **Files:**
 - Modify: `CPH-PI/cph-main-agent-prompt.txt`
 - Modify: `CPH-PI/cph-researcher-agent-prompt.txt`
 - Modify: `CPH-PI/cph-coder-agent-prompt.txt`
+- Modify: `CPH-PI/cph-dev-agent-prompt.txt`
 - Modify: `CPH-PI/scripts/package-agent-bundle.ts`
 - Create: `CPH-PI/tests/skills/tri-agent-governance.test.ts`
 
-- [ ] **Step 4.1.1: 编写提示词治理测试（DAG 结构契约 + 行为边界）**
-  - 断言 `cph-main-agent-prompt.txt` 包含全景快照认知输入契约与 DAG 因果时序屏障（解决 I15，由单纯禁词检查升级为行为契约断言）；
+- [ ] **Step 4.1.1: 编写提示词结构契约与行为边界检查 (Structural Contract & Behavioral Guardrails Check)**
+  - 断言 `cph-main-agent-prompt.txt` 包含全景快照认知输入契约与 DAG 因果时序屏障；
   - 断言 `cph-researcher-agent-prompt.txt` 专注于单点局部微切片审查与只读证据链；
   - 断言 `cph-coder-agent-prompt.txt` 专注于局部补丁与测试绿灯闭环，符合正向建设性规范；
+  - 断言 `cph-dev-agent-prompt.txt` 同步具备全景快照认知与正向工程执行契约（解决 P10 孤儿提示词隐患）；
   - 断言提示词全文无破坏性指令与底层 Harness 管道泄露，保持纯粹黑盒。
-- [ ] **Step 4.1.2: 重构三大提示词文本**
-  依据规范 §7 重写三个提示词文件，确立上帝视野与职责边界。
+- [ ] **Step 4.1.2: 重构三大提示词与 Dev 兼容提示词文本**
+  依据规范 §7 重写 Main、Coder、Researcher 三个提示词；同时将单智能体自主开发提示词 `cph-dev-agent-prompt.txt` 同步升级为符合全量快照挂载与正向工程引导的兼容基线，确立清晰的上帝视野与职责边界。
 - [ ] **Step 4.1.3: 更新并运行打包脚本同步至 agent-bundle**
-  执行 `bun run package` 触发 `scripts/package-agent-bundle.ts`，确保修改后的四个提示词与 skills 完整打包至 `package/agent-bundle/`（解决 P6，确保投递端与源端同步）。
+  执行 `bun run package` 触发 `scripts/package-agent-bundle.ts`，确保修改后的四个提示词与 skills 完整打包至 `package/agent-bundle/`（主智能体同步至 Instructions，Dev 提示词同步至兼容系统提示词，源端与投递端严格对齐）。
 - [ ] **Step 4.1.4: 运行治理测试验证通过 (GREEN)**
   运行 `bun test tests/skills/tri-agent-governance.test.ts`。
 
@@ -311,7 +327,7 @@
 - [ ] **Step 4.2.3: 运行治理测试验证通过 (GREEN)**
   运行 `bun test tests/skills/tri-agent-governance.test.ts`。
 - [ ] **Step 4.2.4: 提交 Phase 4 代码变更**
-  执行 `git commit -m "feat(prompts): overhaul Tri-Agent prompts, agent bundle packaging, and subagent/handoff skills"`。
+  执行 `git commit -m "feat(prompts): overhaul Tri-Agent prompts, dev prompt, agent bundle packaging, and subagent/handoff skills"`。
 
 ---
 
@@ -322,17 +338,17 @@
 - Modify: `CPH-PI/.docs/CHANGE-REQUEST.md` (标记为实施完成)
 - Modify: `CPH-PI/CHANGELOG.md` (记录实施增量与新测试基线)
 
-- [ ] **Step 5.1.1: 执行全量单元测试与集成测试（以当前实测 655/2847 为绝对底线）**
+- [ ] **Step 5.1.1: 执行全量单元测试与集成测试（以实时增量峰值为不可逾越门禁）**
   运行 `bun test`，确保全仓测试用例 100% 绿灯：
-  - **测试用例总数硬门禁**：用例数 ≥ 655（当前全仓现状为 655 pass / 0 fail / 86 files，新增测试后预计 ≥ 670）；
-  - **断言总数硬门禁**：断言数 ≥ 2847（当前全仓现状为 2847 expect calls，新增后预计 ≥ 2900）；
-  - **零失败门禁**：fail == 0，严禁带病推进；
-  - 彻底废除已过期的旧指标（520/2300），确保门禁具备真实拦截能力（解决 P1）。
+  - **测试用例总数硬门禁**：用例数 ≥ 680（全仓现有起点为 655 pass / 86 files，新增 4 个测试套件后预计达 680~690 项，严禁删测试降门槛绕过，解决 I19）；
+  - **断言总数硬门禁**：断言数 ≥ 2900（全仓现有起点为 2847 expect calls，新增后预计 ≥ 2950）；
+  - **零失败门禁**：fail == 0，严禁带病推进。
 - [ ] **Step 5.1.2: 执行构建打包与制品产出**
   运行 `bun run package` 与 `bun run build:package`，确保分发制品 `package/` 与 `dist/` 编译通过无错误。
 - [ ] **Step 5.1.3: 更新 CHANGELOG 与变更请求台账**
   - 更新 `CHANGELOG.md`，记录本次 v1.3.0 统一架构实施增量与全新测试基线；
   - 更新 `CHANGE-REQUEST.md` 中的 `CR-2026-10-19-01` 状态为“实施完成 (Completed & Verified)”，提交并汇报用户。
-- [ ] **Step 5.1.4: 执行全链路离线 Mock 模拟集成对账**
-  运行集成测试脚本验证：首轮全景生成 -> 附件模拟挂载 -> 指纹头下发 -> 局部增量 PnP 同步 -> Handoff 快照递增全生命周期无阻塞跑通。
+- [ ] **Step 5.1.4: 执行全链路离线 Mock 模拟集成对账与端到端实操对账指南 (E2E Dry-Run & Live Playbook)**
+  - 运行集成测试脚本验证：首轮全景生成 -> 附件模拟挂载/复用 -> 指纹头下发 -> 局部增量 PnP 同步 -> Handoff 快照递增全生命周期无阻塞跑通；
+  - 沉淀端到端真机联调检验清单至 `.docs/evidence/e2e-live-verification-guide.md`，指导用户在真实 Copilot Agent 环境中验证附件卡片呈现（~20s 就绪）与 GPT-6.1 Sol 跨文件推演能力（解决 M8）。
 
