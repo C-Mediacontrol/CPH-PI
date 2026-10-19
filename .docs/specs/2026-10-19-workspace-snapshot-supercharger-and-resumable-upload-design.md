@@ -1,7 +1,7 @@
 # 全工作区源码快照增压、大文件分块上传与因果调度架构设计规范 (Workspace Snapshot Supercharger, Resumable Upload & Causality-Aware Pipeline Architecture)
 
 > **设计日期**: 2026-10-19  
-> **状态**: 批准待实施 (Approved - Ready for Implementation)  
+> **状态**: 【已废止 / SUPERSEDED】请参阅唯一终审规范：[2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md](./2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md)  
 > **实测证据**: 9222 端口 Edge 浏览器 100MB 实测抓包 (`upload-network-trace.json`)  
 > **核心原则**: 遵循《AGENTS.md》核心开发准则、Harness 纯粹中立性与正向认知塑形、摒弃负面禁止词
 

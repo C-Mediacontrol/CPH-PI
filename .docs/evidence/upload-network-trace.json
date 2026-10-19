@@ -1,0 +1,569 @@
+[
+  {
+    "type": "request",
+    "requestId": "45268.5137",
+    "url": "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/test-100mb.txt:/createUploadSession",
+    "method": "POST",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "SdkVersion": "graph-js/3.0.7 (featureUsage=7)",
+      "sec-ch-ua-mobile": "?0",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "client-request-id": "d274faae-2ac4-f08c-d717-c3a066b86e1e",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/json"
+    },
+    "hasPostData": true,
+    "postData": "{\"item\":{\"@microsoft.graph.conflictBehavior\":\"replace\",\"name\":\"test-100mb.txt\"}}",
+    "timestamp": 499636.040158
+  },
+  {
+    "type": "request",
+    "requestId": "562056E4D87D55075BA77DF1A4C6FB7A",
+    "url": "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/test-100mb.txt:/createUploadSession",
+    "method": "OPTIONS",
+    "headers": {
+      "Accept": "*/*",
+      "Access-Control-Request-Headers": "authorization,client-request-id,content-type,prefer,sdkversion",
+      "Access-Control-Request-Method": "POST",
+      "Origin": "https://m365.cloud.microsoft",
+      "Sec-Fetch-Mode": "cors",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+    },
+    "timestamp": 499636.042074
+  },
+  {
+    "type": "response",
+    "requestId": "562056E4D87D55075BA77DF1A4C6FB7A",
+    "status": 200,
+    "url": "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/test-100mb.txt:/createUploadSession"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5137",
+    "status": 200,
+    "url": "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/test-100mb.txt:/createUploadSession",
+    "body": "{\"@odata.context\":\"https://graph.microsoft.com/v1.0/$metadata#microsoft.graph.uploadSession\",\"expirationDateTime\":\"2026-10-19T10:37:35.184Z\",\"nextExpectedRanges\":[\"0-\"],\"uploadUrl\":\"https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid='203d6bf7-d201-4125-b628-d568f8a71dfa'&overwrite=True&rename=False&dc=0\"}"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5143",
+    "url": "https://browser.events.data.microsoft.com/OneCollector/1.0/?cors=true&content-type=application/x-json-stream&client-id=NO_AUTH&client-version=1DS-Web-JS-4.2.1&apikey=d634483c08244c1ca09af2b2d952c92e-ab2bba03-2ba3-49d8-a82c-ef6da750d8ab-7725&upload-time=1792405355717&time-delta-to-apply-millis=866&w=0&NoResponseBody=true",
+    "method": "POST",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Referer": "https://m365.cloud.microsoft/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "Content-Type": "text/plain;charset=UTF-8",
+      "sec-ch-ua-mobile": "?0"
+    },
+    "hasPostData": true,
+    "postData": "{\"name\":\"acquireTokenSilent\",\"time\":\"2026-10-19T10:22:35.717Z\",\"ver\":\"4.0\",\"iKey\":\"o:d634483c08244c1ca09af2b2d952c92e\",\"ext\":{\"sdk\":{\"ver\":\"1DS-Web-JS-4.2.1\",\"seq\":264,\"epoch\":\"2834278803\"},\"app\":{\"locale\":\"zh-hans\",\"sesId\":\"9sGYsAEPGQrUMwvVgChUrE\"},\"user\":{\"locale\":\"zh-CN\"},\"web\":{\"domain\":\"m365.cloud.microsoft\",\"screenRes\":\"2560X1440\",\"userConsent\":false,\"consentDetails\":\"{\\\"GPC_DataSharingOptIn\\\":false}\"},\"intweb\":{},\"utc\":{\"popSample\":100},\"loc\":{\"tz\":\"+08:00\"},\"metadata\":{\"f\":{\"status\":{\"t\":6},\"startTimeMs\":{\"t\":6},\"cacheLookupPolicy\":{\"t\":6},\"visibilityChangeCount\":{\"t\":6},\"onlineStatusChangeCount\":{\"t\":6},\"cacheRtExpiresOnSeconds\":{\"t\":6},\"rtOffsetSeconds\":{\"t\":6},\"refreshTokenSize\":{\"t\":6},\"cacheMatchedAccounts\":{\"t\":6},\"ntwkRtExpiresOnSeconds\":{\"t\":6},\"accessTokenSize\":{\"t\":6},\"idTokenSize\":{\"t\":6},\"durationMs\":{\"t\":6},\"networkRtt\":{\"t\":6},\"incompleteSubsCount\":{\"t\":6}}}},\"data\":{\"baseData\":{\"properties\":{\"version\":\"PostChannel=4.2.1;SystemPropertiesCollector=4.2.1\"}},\"eventId\":\"01a153af-393d-767d-b404-3c8c43ce5b58\",\"status\":2,\"authority\":\"https://login.microsoftonline.com/9d314297-75dc-4329-8f94-a66489b4b9bb\",\"libraryName\":\"@azure/msal-browser\",\"libraryVersion\":\"5.9.1\",\"clientId\":\"4765445b-32c6-49b0-83e6-1d93765276ca\",\"name\":\"acquireTokenSilent\",\"startTimeMs\":1792405354813,\"appName\":\"M365Web\",\"appVersion\":\"1.0.0\",\"cacheLookupPolicy\":4,\"deduped\":false,\"ext\":\"{\\\"acquireTokenSilentAsyncCallCount\\\":1,\\\"initializeSilentRequestCallCount\\\":1,\\\"initializeBaseRequestCallCount\\\":2,\\\"initializeBaseRequestDurationMs\\\":0,\\\"initializeSilentRequestDurationMs\\\":0,\\\"acquireTokenFromCacheCallCount\\\":1,\\\"acquireTokenFromCacheDurationMs\\\":0,\\\"acquireTokenByRefreshTokenCallCount\\\":1,\\\"silentRefreshClientAcquireTokenCallCount\\\":1,\\\"standardInteractionClientGetClientConfigurationCallCount\\\":1,\\\"standardInteractionClientGetDiscoveredAuthorityCallCount\\\":1,\\\"authorityFactoryCreateDiscoveredInstanceCallCount\\\":1,\\\"authorityResolveEndpointsAsyncCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataDurationMs\\\":0,\\\"authorityUpdateEndpointMetadataCallCount\\\":1,\\\"authorityUpdateEndpointMetadataDurationMs\\\":0,\\\"authorityResolveEndpointsAsyncDurationMs\\\":0,\\\"authorityFactoryCreateDiscoveredInstanceDurationMs\\\":0,\\\"standardInteractionClientGetDiscoveredAuthorityDurationMs\\\":0,\\\"standardInteractionClientGetClientConfigurationDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenByRefreshTokenCallCount\\\":1,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenCallCount\\\":1,\\\"refreshTokenClientExecuteTokenRequestCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyDurationMs\\\":0,\\\"refreshTokenClientExecutePostToTokenEndpointCallCount\\\":1,\\\"networkClientSendPostRequestAsyncCallCount\\\":1,\\\"networkClientSendPostRequestAsyncDurationMs\\\":899,\\\"refreshTokenClientExecutePostToTokenEndpointDurationMs\\\":899,\\\"refreshTokenClientExecuteTokenRequestDurationMs\\\":899,\\\"handleServerTokenResponseCallCount\\\":1,\\\"setUserDataCallCount\\\":2,\\\"encryptCallCount\\\":2,\\\"encryptDurationMs\\\":0,\\\"setUserDataDurationMs\\\":0,\\\"handleServerTokenResponseDurationMs\\\":1,\\\"refreshTokenClientAcquireTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenByRefreshTokenDurationMs\\\":900,\\\"silentRefreshClientAcquireTokenDurationMs\\\":901,\\\"acquireTokenByRefreshTokenDurationMs\\\":901,\\\"acquireTokenSilentAsyncDurationMs\\\":902}\",\"visibilityChangeCount\":0,\"onlineStatusChangeCount\":0,\"cloudDiscoverySource\":\"hardcoded_values\",\"authorityEndpointSource\":\"hardcoded_values\",\"cacheRtExpiresOnSeconds\":1792482975,\"rtOffsetSeconds\":300,\"embeddedClientId\":\"c0ab8ce9-e9a0-42e7-b064-33d422df41f1\",\"embeddedRedirectUri\":\"brk-multihub://outlook.office.com\",\"refreshTokenSize\":1669,\"accountCachedBy\":\"hydrateCache\",\"cacheMatchedAccounts\":1,\"ntwkRtExpiresOnSeconds\":1792482976,\"kmsi\":false,\"fromCache\":false,\"isNativeBroker\":false,\"success\":true,\"accessTokenSize\":2756,\"idTokenSize\":1512,\"startPageVisibility\":\"hidden\",\"startOnlineStatus\":true,\"endPageVisibility\":\"hidden\",\"durationMs\":903,\"networkEffectiveType\":\"4g\",\"networkRtt\":150,\"incompleteSubsCount\":0,\"accountType\":\"AAD\",\"synthetic\":false,\"profileTelemetryIdV2\":\"01a13b82-7741-7a4b-8f9c-ffa40fd23749\",\"sessionIdV2\":\"01a140b4-94aa-7d1f-bb7c-86cbe558be7b\",\"correlationIdV2\":\"4ccda424-6779-4023-9943-0ecd0e37c5f3\",\"requestIdV2\":\"2c23d1c4-17bc-4e5b-8db6-1dd032e5cf00\"}}",
+    "timestamp": 499638.617404
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5144",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 0-8191999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499638.621444
+  },
+  {
+    "type": "request",
+    "requestId": "60B12D78D4CC313186BEDAA79E10EF37",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "OPTIONS",
+    "headers": {
+      "Accept": "*/*",
+      "Access-Control-Request-Headers": "authorization,content-range,content-type,prefer",
+      "Access-Control-Request-Method": "PUT",
+      "Origin": "https://m365.cloud.microsoft",
+      "Sec-Fetch-Mode": "cors",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+    },
+    "timestamp": 499638.622068
+  },
+  {
+    "type": "response",
+    "requestId": "60B12D78D4CC313186BEDAA79E10EF37",
+    "status": 200,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5143",
+    "status": 204,
+    "url": "https://browser.events.data.microsoft.com/OneCollector/1.0/?cors=true&content-type=application/x-json-stream&client-id=NO_AUTH&client-version=1DS-Web-JS-4.2.1&apikey=d634483c08244c1ca09af2b2d952c92e-ab2bba03-2ba3-49d8-a82c-ef6da750d8ab-7725&upload-time=1792405355717&time-delta-to-apply-millis=866&w=0&NoResponseBody=true",
+    "body": ""
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5144",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5145",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 8192000-16383999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499641.872932
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5145",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5146",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 16384000-24575999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499643.588274
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5149",
+    "url": "https://substrate.office.com/search/api/v1/suggestions?setflight=disablePromptRerankPerClientLayout%2CEnableMtgSeriesSugg",
+    "method": "POST",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "X-AnchorMailbox": "Oid:[REDACTED_OID]@[REDACTED_TID]",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "X-Client-Localtime": "2026-10-19T18:22:41.701+08:00",
+      "Client-Request-Id": "b2f10453ed78bfe4d49da9b115b2a5ef",
+      "Client-Session-Id": "b2f10453ed78bfe4d49da9b115b2a5ef",
+      "X-Client-Flights": "enablePromptAutoSuggestProvider,enableeipa,ReGroupHistoryPromptOnTop,EnableMtgSeriesSuggClient,EnableCopilotNotebooksInCIQ,EnableCanvasBizChatCIQ",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-Client-Language": "zh-cn"
+    },
+    "hasPostData": true,
+    "postData": "{\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_QF\",\"Dimensions\":[{\"DimensionName\":\"Canvas\",\"DimensionValue\":\"Default\"},{\"DimensionName\":\"UserLicenseType\",\"DimensionValue\":\"Premium\"},{\"DimensionName\":\"UserExperience\",\"DimensionValue\":\"Work\"},{\"DimensionName\":\"ContextType\",\"DimensionValue\":\"EntityBased\"}]},\"EntityRequests\":[{\"EntityType\":\"Prompt\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"PropertySet\":\"ProvenanceOptimized\",\"Provenances\":[\"Exchange\"]},{\"EntityType\":\"People\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"Filter\":{\"And\":[{\"Or\":[{\"Term\":{\"PeopleType\":\"Person\"}},{\"Term\":{\"PeopleType\":\"Other\"}}]},{\"Or\":[{\"Term\":{\"PeopleSubtype\":\"OrganizationUser\"}},{\"Term\":{\"PeopleSubtype\":\"Guest\"}},{\"Term\":{\"PeopleSubtype\":\"OrganizationContact\"}}]}]},\"Provenances\":[\"Mailbox\",\"Directory\"],\"ServeNoEmailContacts\":true,\"From\":0},{\"EntityType\":\"File\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10},{\"EntityType\":\"Event\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10}],\"SearchContext\":{\"InputContext\":[{\"Name\":\"CopilotConversationId\",\"Value\":\"\"},{\"Name\":\"TurnCount\",\"Value\":\"0\"}]},\"TextDecorations\":\"Forward\",\"TimeZone\":\"UTC\",\"LogicalId\":\"0b2b6591-0bd2-4452-b2b9-fd7efd760207\",\"Cvid\":\"5ca9a423-1933-4481-a981-391f7d009f81\"}",
+    "timestamp": 499644.601302
+  },
+  {
+    "type": "request",
+    "requestId": "D6DBEBF9AB3B00380B2A03044433D74F",
+    "url": "https://substrate.office.com/search/api/v1/suggestions?setflight=disablePromptRerankPerClientLayout%2CEnableMtgSeriesSugg",
+    "method": "OPTIONS",
+    "headers": {
+      "Accept": "*/*",
+      "Access-Control-Request-Headers": "authorization,client-request-id,client-session-id,content-type,x-anchormailbox,x-client-flights,x-client-language,x-client-localtime",
+      "Access-Control-Request-Method": "POST",
+      "Origin": "https://m365.cloud.microsoft",
+      "Sec-Fetch-Mode": "cors",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+    },
+    "timestamp": 499644.602685
+  },
+  {
+    "type": "response",
+    "requestId": "D6DBEBF9AB3B00380B2A03044433D74F",
+    "status": 200,
+    "url": "https://substrate.office.com/search/api/v1/suggestions?setflight=disablePromptRerankPerClientLayout%2CEnableMtgSeriesSugg"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5149",
+    "status": 200,
+    "url": "https://substrate.office.com/search/api/v1/suggestions?setflight=disablePromptRerankPerClientLayout%2CEnableMtgSeriesSugg",
+    "body": "{\"Groups\":[],\"LayoutHints\":{\"BestMatchSuggestions\":[]},\"Instrumentation\":{\"TraceId\":\"be466dd8-d13c-e76b-7686-0a0333940b2a\"}}"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5146",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5150",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 24576000-32767999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499646.073183
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5150",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5151",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 32768000-40959999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499647.44522
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5151",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5153",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 40960000-49151999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499649.672831
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5153",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5154",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 49152000-57343999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499651.027265
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5154",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5155",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 57344000-65535999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499652.300881
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5155",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5156",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 65536000-73727999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499653.542061
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5156",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5157",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 73728000-81919999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499654.835038
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5157",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5158",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 81920000-90111999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499656.331006
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5158",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5159",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 90112000-98303999/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499657.590095
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5159",
+    "status": 202,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5160",
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "method": "PUT",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "Content-Range": "bytes 98304000-104857599/104857600",
+      "Prefer": "ExtractTextOnCommit, pacToken=N",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Content-Type": "application/octet-stream"
+    },
+    "hasPostData": true,
+    "timestamp": 499658.847852
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5160",
+    "status": 201,
+    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5164",
+    "url": "https://substrate.office.com/searchservice/api/v1/unfurl?domain=File",
+    "method": "POST",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "X-RoutingParameter-SessionKey": "Oid:[REDACTED_OID]@[REDACTED_TID]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "X-AnchorMailbox": "Oid:[REDACTED_OID]@[REDACTED_TID]",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0",
+      "X-Client-Localtime": "2026-10-19T18:22:57.560+08:00",
+      "Client-Request-Id": "a05c0eca-1638-438c-bee8-449a99b6a97d",
+      "Client-Session-Id": "7120804c-2678-477e-b5b5-b69a631addca",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-Client-Language": "zh-cn"
+    },
+    "hasPostData": true,
+    "postData": "{\"EntityRequests\":[{\"QueryAnnotations\":[{\"Id\":\"SPO_ZTc1ZjJhZjUtNGJiNy00ZDFmLTg5NDYtZGY1MjYzZGFkYmM0LGEwODY4ZWU3LTNhMzMtNGNhOS1iMWNiLTJiZWRmMGFhOTQ4NCwzN2Q5NzIwNy02ZTE5LTQxNzQtOGY5MC0xNTEyMjU4ODA0ZTA_01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7\",\"Type\":\"LocalFile\",\"Text\":\"test-100mb.txt\"}],\"PreferredResultSourceFormat\":\"EntityData\",\"SupportedResultSourceFormats\":[\"EntityData\"]}],\"LogicalId\":\"e636bec7-cecd-4851-abb7-4a982ca19a42\",\"Cvid\":\"09f24191-3fd5-4834-bb73-053ca5b0f60f\",\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_Drawer\",\"Dimensions\":[{\"DimensionName\":\"ScenarioDescription\",\"DimensionValue\":\"officeweb.prefetch.getdocumentsummary.fileupload\"},{\"DimensionName\":\"ScenarioType\",\"DimensionValue\":\"PO\"}]},\"CacheMode\":\"FireForget\"}",
+    "timestamp": 499660.459767
+  },
+  {
+    "type": "request",
+    "requestId": "45268.5165",
+    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel",
+    "method": "GET",
+    "headers": {
+      "sec-ch-ua-platform": "\"Windows\"",
+      "Authorization": "Bearer [REDACTED_ACCESS_TOKEN]",
+      "Referer": "https://m365.cloud.microsoft/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+      "sec-ch-ua": "\"Microsoft Edge\";v=\"155\", \"Chromium\";v=\"155\", \"Not(A:Brand\";v=\"24\"",
+      "sec-ch-ua-mobile": "?0"
+    },
+    "timestamp": 499660.461205
+  },
+  {
+    "type": "request",
+    "requestId": "0CBE08A92913463CED7E96DBFC636669",
+    "url": "https://substrate.office.com/searchservice/api/v1/unfurl?domain=File",
+    "method": "OPTIONS",
+    "headers": {
+      "Accept": "*/*",
+      "Access-Control-Request-Headers": "authorization,client-request-id,client-session-id,content-type,x-anchormailbox,x-client-language,x-client-localtime,x-routingparameter-sessionkey",
+      "Access-Control-Request-Method": "POST",
+      "Origin": "https://m365.cloud.microsoft",
+      "Sec-Fetch-Mode": "cors",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+    },
+    "timestamp": 499660.461765
+  },
+  {
+    "type": "request",
+    "requestId": "FCBE37BEFE90FEFC4E1A6B7A42C44A63",
+    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel",
+    "method": "OPTIONS",
+    "headers": {
+      "Accept": "*/*",
+      "Access-Control-Request-Headers": "authorization",
+      "Access-Control-Request-Method": "GET",
+      "Origin": "https://m365.cloud.microsoft",
+      "Sec-Fetch-Mode": "cors",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+    },
+    "timestamp": 499660.462964
+  },
+  {
+    "type": "response",
+    "requestId": "FCBE37BEFE90FEFC4E1A6B7A42C44A63",
+    "status": 200,
+    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel"
+  },
+  {
+    "type": "response",
+    "requestId": "0CBE08A92913463CED7E96DBFC636669",
+    "status": 200,
+    "url": "https://substrate.office.com/searchservice/api/v1/unfurl?domain=File"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5164",
+    "status": 200,
+    "url": "https://substrate.office.com/searchservice/api/v1/unfurl?domain=File",
+    "body": "{\"ApiVersion\":\"1.0\",\"Instrumentation\":{\"TraceId\":\"c422e5da-8291-44c7-953e-1dae263e7627\"}}"
+  },
+  {
+    "type": "response",
+    "requestId": "45268.5165",
+    "status": 200,
+    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel"
+  }
+]

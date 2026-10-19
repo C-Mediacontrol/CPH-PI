@@ -1,7 +1,7 @@
 # 全工作区无损源码快照增压与因果感知调度架构设计规范 (Workspace Snapshot Supercharger & Causality-Aware Pipeline Architecture)
 
 > **设计日期**: 2026-10-19  
-> **状态**: 批准待实施 (Approved - Pending Implementation)  
+> **状态**: 【已废止 / SUPERSEDED】请参阅唯一终审规范：[2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md](./2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md)  
 > **对应规范**: `AGENTS.md` 核心开发与治理准则、`CR-Snapshot-Pipeline`
 
 ---

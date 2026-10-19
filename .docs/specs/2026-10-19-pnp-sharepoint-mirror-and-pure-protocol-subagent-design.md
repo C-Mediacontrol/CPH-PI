@@ -1,7 +1,7 @@
 # 架构技术规范：SharePoint 物理镜像、纯协议会话投影与子代理微切片隔离体系
 
 > **版本**：v1.0.0  
-> **状态**：已批准 (Approved)  
+> **状态**：【已废止 / SUPERSEDED】请参阅唯一终审规范：[2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md](./2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md)  
 > **关联分支**：`feat/workspace-snapshot-supercharger`  
 > **实施基座**：CPH-PI (Bun + Windows PowerShell 5.1 + PnP 1.12.0)  
 

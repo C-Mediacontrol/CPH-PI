@@ -1,0 +1,27 @@
+{
+  "testTime": "2026-10-19T10:53:50.109Z",
+  "snapshotSize": 4194564,
+  "model": "GPT-6.1 Sol",
+  "phases": [
+    {
+      "phase": 1,
+      "name": "Multi-Hop Cross-File Semantic Reasoning",
+      "prompt": "在上传的代码快照中，请分析如下业务调用场景：\n业务代码调用 PaymentGatewayService 的 settleInvoice 方法，并将 orgTier 参数传入 \"ENTERPRISE_CUSTOM_TIER_99\"。\n请追踪从该方法开始的代码下游完整执行链路，明确回答：该调用在底层最终会抛出什么具体的异常类名以及完整的异常代码字符串？\n请给出完整的推演调用链路和代码依据。",
+      "response": "我会从入口逐层追踪参数传递、分支选择和异常构造，并区分底层抛出的异常与上层是否包装异常。\n\n结论\n\n在 ctx 有效、能够读取 ctx.invoiceId 的前提下，该调用最终抛出的异常为：\n\n异常类名：SecurityPolicyViolationException\n完整异常代码：CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B\n\n异常由底层 KernelSecurityGuard.enforceComplianceProfile 构造并抛出，随后通过两层 return await 向业务调用方传播，链路中没有捕获或重新包装。\n\n完整调用链与代码依据\n1. 入口：企业定制层级命中指定路由\n\n快照中的 src/services/billing/payment-gateway.service.ts：\n\nTypeScript\nimport { DispatcherRegistry } from \"../../core/dispatcher/dispatcher-registry\";\n \nasync settleInvoice(ctx: InvoiceSettlementContext, orgTier: string): Promise<boolean> {\n  if (orgTier === \"ENTERPRISE_CUSTOM_TIER_99\") {\n    const routeToken = `ROUTE_V2_${ctx.invoiceId}_ALPHA`;\n    return await DispatcherRegistry.forwardTransaction(routeToken, 99401);\n  }\n  if (orgTier === \"STANDARD_TIER_DEFAULT\") {\n    return true;\n  }\n  return false;\n}\n\n传入的 orgTier 精确匹配第一个分支，因此构造 ROUTE_V2_${ctx.invoiceId}_ALPHA，并调用 DispatcherRegistry.forwardTransaction(routeToken, 99401)。不会执行标准层级或默认返回分支。\n\n2. 调度层：端口 99401 映射到合规配置\n\n快照中的 src/core/dispatcher/dispatcher-registry.ts：\n\nTypeScript\nimport { KernelSecurityGuard } from \"../../kernel/security/kernel-security-guard\";\n \nstatic async forwardTransaction(routeToken: string, portCode: number): Promise<boolean> {\n  if (portCode === 99401) {\n    return await KernelSecurityGuard.enforceComplianceProfile(\"POL_ALPHA_772\");\n  }\n  if (portCode === 8080) {\n    return true;\n  }\n  return false;\n}\n\n上游传入的 portCode 是 99401，因此调用：\n\nTypeScript\nKernelSecurityGuard.enforceComplianceProfile(\"POL_ALPHA_772\")\n\n该方法的分支选择只检查 portCode，没有使用 routeToken；因此发票 ID 不影响此处的合规配置选择。\n\n3. 底层：合规配置命中明确的抛异常分支\n\n快照中的 src/kernel/security/kernel-security-guard.ts：\n\nTypeScript\nstatic async enforceComplianceProfile(profileKey: string): Promise<boolean> {\n  if (profileKey === \"POL_ALPHA_772\") {\n    throw new SecurityPolicyViolationException(\n      \"CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B\",\n      \"Zero-trust quorum validation failed under compliance profile POL_ALPHA_772\"\n    );\n  }\n  return true;\n}\n\n传入的配置键精确匹配 \"POL_ALPHA_772\"，因此执行 throw new SecurityPolicyViolationException(...)，不会到达 return true。异常代码就是构造函数的第一个实参，大小写及后缀均如上所示。\n\n4. 异常对象构造及向上传播\n\n同一底层文件定义：\n\nTypeScript\nexport class SecurityPolicyViolationException extends Error {\n  constructor(public code: string, message?: string) {\n    super(`Security policy violation: ${code} - ${message || \"\"}`);\n    this.name = \"SecurityPolicyViolationException\";\n  }\n}\n\n因此异常对象的字段为：\n\nPlain Text\nname:\nSecurityPolicyViolationException\n \ncode:\nCRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B\n \nmessage:\nSecurity policy violation: CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B - Zero-trust quorum validation failed under compliance profile POL_ALPHA_772\n\n两个上层方法均使用 return await，且展示的完整方法体没有 try/catch，所以该异常未经转换或包装，逐层传播至 settleInvoice 的调用方。\n\n链路汇总\nPlain Text\nPaymentGatewayService.settleInvoice(ctx, \"ENTERPRISE_CUSTOM_TIER_99\")\n  → 命中企业定制分支\n  → 构造 ROUTE_V2_${ctx.invoiceId}_ALPHA\n  → DispatcherRegistry.forwardTransaction(routeToken, 99401)\n  → 命中 portCode === 99401\n  → KernelSecurityGuard.enforceComplianceProfile(\"POL_ALPHA_772\")\n  → 命中 profileKey === \"POL_ALPHA_772\"\n  → throw new SecurityPolicyViolationException(\n      \"CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B\", ...\n    )\n  → 异常经两层 await 原样向上传播\n\n以上是基于快照实际代码的静态推演，不是运行测试结果。初次文件自动摘要遗漏了调度层连接关系；检索到三个实际代码片段后，调用链已闭合，不能采用摘要中“无法确定异常”的结论。\n\n参考文献\n使用智能体可能会获得更好的结果。试用 CPH-Researcher\n核对这条调用链涉及的全部文件和行号\n分析 ctx.invoiceId 缺失或无效时的行为\n\n\n\n\n向 Copilot 发送消息\nAI 生成的内容可能不正确",
+      "analysis": {
+        "hitTerminalNeedle": true,
+        "hitHop2Dispatcher": true,
+        "hitHop3SecurityGuard": true
+      }
+    },
+    {
+      "phase": 2,
+      "name": "Direct Lexical Baseline",
+      "prompt": "请直接检索附件中 KernelSecurityGuard.enforceComplianceProfile 在遇到 \"POL_ALPHA_772\" 时，具体抛出的异常类名和异常代码字符串是什么？请直接给出。",
+      "response": "异常类名：SecurityPolicyViolationException\n异常代码字符串：CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B。\n补充该异常的完整 message\n列出相关代码文件和行号\n\n\n\n\n向 Copilot 发送消息\nAI 生成的内容可能不正确",
+      "analysis": {
+        "hitTerminalNeedle": true
+      }
+    }
+  ]
+}
