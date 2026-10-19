@@ -1,19 +1,20 @@
-# 全工作区源码快照增压与大文件分块上传架构设计规范 (Workspace Snapshot Supercharger & Resumable Upload Architecture)
+# 全工作区源码快照增压、大文件分块上传与因果调度架构设计规范 (Workspace Snapshot Supercharger, Resumable Upload & Causality-Aware Pipeline Architecture)
 
 > **设计日期**: 2026-10-19  
 > **状态**: 批准待实施 (Approved - Ready for Implementation)  
 > **实测证据**: 9222 端口 Edge 浏览器 100MB 实测抓包 (`upload-network-trace.json`)  
-> **核心原则**: 遵循 `AGENTS.md` 核心开发准则、Harness 中立性与正向认知塑形
+> **核心原则**: 遵循《AGENTS.md》核心开发准则、Harness 纯粹中立性与正向认知塑形、摒弃负面禁止词
 
 ---
 
 ## 1. 背景与物理链路逆向发现 (Background & CDP Trace Verification)
 
-### 1.1 痛点与大文件传输物理瓶颈
-为彻底终结当前主协调智能体（Main Agent）在新项目中经历 5~10 轮盲目列目录、推测路径、调派斥候子代理（Scout）的冗长探查，系统决定采用**开局全景源码快照直传增压**方案。  
+### 1.1 现有模式痛点与传输瓶颈
+当前 CPH-PI 架构中，主协调智能体（Main Agent）在新项目中由于缺乏代码全景视野，必须经历 5~10 轮盲目列目录、推测路径、调派斥候子代理（Scout）的冗长探查，导致会话轮数消耗过快、注意力稀释甚至引发代际失忆。  
+为彻底解决此问题，系统采用**开局全景源码快照直传增压**方案。  
 然而，在分析底层传输链路时，发现现有实现 [`SubstrateUploader.uploadDocumentToOneDrive`](file:///E:/copilot-web%20proxy/CPH-PI/src/transport/substrate-uploader.ts#L128) 采用的是 Microsoft Graph 单次简易上传接口：
 `PUT https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/{fileName}:/content`  
-**根据微软官方规范与网络物理限制，该接口存在硬性阈值：仅支持 ≤ 4MB 的小文件**。一旦工作区源码快照（通常在 5MB ~ 30MB）超过 4MB，简易接口会直接报错（HTTP 413 或连接强行重置），导致上传中断。
+**根据微软官方规范与网络物理限制，该简易接口硬性限制仅支持 ≤ 4MB 的小文件**。一旦工作区源码快照（通常在 5MB ~ 30MB）超过 4MB，简易接口会直接报错（HTTP 413 或连接强行重置），导致上传中断。
 
 ### 1.2 9222 端口实测抓包与真实大文件传输协议还原
 通过连接宿主机 9222 端口的 Edge 浏览器，实测上传 **100MB 真实文本文件（104,857,600 字节）**，完整捕获并还原了微软云端的大文件分块传输状态机：
@@ -87,7 +88,7 @@ sequenceDiagram
 
 ### 3.1 物理生成机制与存储
 - **生成时机**: 主控启动期或任务初始化阶段在宿主本地物理层构建；
-- **物理路径**: `.cph/cache/workspace-snapshot-<sha256>.txt`（绝不在工作区根目录写入未受控文件）；
+- **物理路径**: `.cph/cache/workspace-snapshot-<sha256>.txt`（严禁在工作区根目录写入未受控文件）；
 - **缓存策略**: 基于文件元数据与内容 SHA-256 哈希，若工作区源码无改动直接命中缓存，零二次开销。
 
 ### 3.2 快照文件结构规范
@@ -180,7 +181,29 @@ FILE: tools/jsygt-ocr/Program.cs (Lines: 236)
 
 ---
 
-## 6. 实施路线与质量门禁 (Phased Implementation Roadmap)
+## 6. 专有专属 Skill 重构与认知对齐规范 (Dedicated Skills Overhaul)
+
+根据《AGENTS.md》准则 4 & 5（通用 Skill 绝对中立与定制隔离、工作区定制优先），对工作区内两个专有 Skill 进行深度演进：
+
+### 6.1 `skills/subagent/SKILL.md`：推倒重构为因果感知调度指南
+1. **彻底铲除“斥候角色 (Scout)”条目**：
+   - 全面删除 `isScout: true`、大纲斥候首轮提示词模板及相关说明；
+2. **重塑两大攻坚角色规范**：
+   - `researcher`：规范单点深度攻坚分析工单写法，聚焦热核级代码审查、漏洞分析与状态机验证；
+   - `coder`：规范外科手术级实施与单测验证（TDD）工单写法；
+3. **固化“派发时机与防盲目并发铁律”门禁 (Gate 5)**：
+   - 强化检查任务因果时序：严禁在依赖前序调研结论时直接并发派发编码工单，必须分阶段等待报告回传并经由主会话综合决策；
+   - 明确同阶段正交并发与跨阶段屏障调度的标准规范。
+
+### 6.2 `skills/handoff/SKILL.md`：后继防失忆与全景快照对齐微调
+1. **接力智能体正向认知契约强化**：
+   - 明确写入：**“接力智能体处于既定战役的攻坚推进期，天然继承工作区已有的 `plan.md` 物理清单与全景快照视野，直接依据 P0/P1 待办推进单点补缺或对账收敛，无需重新向用户确认初始工程目标”**；
+2. **剔除斥候大纲过渡性残留**：
+   - 确保交接文档（P0 现场恢复 / P1 战役推进）纯粹聚焦于深度分析成果与代码补丁断点，与快照增压体系保持 100% 连贯一致。
+
+---
+
+## 7. 实施路线与质量门禁 (Phased Implementation Roadmap)
 
 ### Phase 0: 大文件分块上传引擎实现 (Resumable Upload Engine)
 - 在 `src/transport/substrate-uploader.ts` 实现 `createUploadSession` 与 `8,192,000` 字节分块 PUT 状态机；
@@ -200,6 +223,11 @@ FILE: tools/jsygt-ocr/Program.cs (Lines: 236)
 - 严格遵循《AGENTS.md》正向引导铁律，无负面禁止词，确立因果时序与防盲目并发；
 - 编写并更新 `tests/skills/tri-agent-prompts.test.ts`。
 
-### Phase 4: 全量回归、构建打包与实战验证 (Verification & Bundle)
+### Phase 4: 工作区专有 Skills 重构与对齐 (Skills Overhaul)
+- 重构 `skills/subagent/SKILL.md`：废除 Scout 机制，写入因果时序与防盲目并发；
+- 微调 `skills/handoff/SKILL.md`：注入接力后继主控防失忆契约与快照对齐；
+- 编写 `tests/skills/subagent-skill-governance.test.ts`。
+
+### Phase 5: 全量回归、构建打包与实战验证 (Verification & Bundle)
 - 运行 `bun test` 确保 650+ 测试套件 100% 通过；
 - 运行 `bun run package; bun run build:package` 重新生成分发制品。
