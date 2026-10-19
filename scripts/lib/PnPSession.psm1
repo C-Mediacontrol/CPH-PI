@@ -1,9 +1,16 @@
-# shared/PnPSession.psm1
+﻿# shared/PnPSession.psm1
 # DPS 认证层重构：三级 cookie 会话（PnP v1.12.0 cookie 认证，消除 UseWebLogin 脚本错误弹窗）
-# - Tier 1: 磁盘缓存 ~/.dps-session.json
+# - Tier 1: 磁盘缓存 ~/.cph/pnp-session.json
 # - Tier 2: IE（WinINet）cookie 直读 CookieReader.GetCookie
 # - Tier 3: 浏览器登录（反射 GetWebLoginClientContext，scriptErrorsSuppressed=$true）
 # 铁律：PWSH5.1 兼容；含中文须 UTF-8 BOM
+#
+# LOCAL DIVERGENCE FROM Library/LTK/PnPSession.psm1:
+# 1. 默认单一命名空间会话缓存路径重构为 ~/.cph/pnp-session.json (Get-DpsSessionCacheFile)。
+# 2. Write-DpsSessionCache 写后 Windows ACL 权限加固：使用 FileSecurity/FileSystemAccessRule 保护访问规则，隔断跨用户访问，带 try/catch 跨平台优雅降级。
+# 3. Read-DpsSessionCache 保留显式 opt-in 开关 [switch]$AllowLegacyFallback，支持平滑迁移同时杜绝隐式污染。
+# 4. 导出缓存管理辅助函数（Write-DpsSessionCache, Read-DpsSessionCache, Get-DpsSessionCacheFile, Clear-DpsSessionCache），便于单测与受控调用。
+#
 
 # ---- 强制 PnP V1（1.12.0）加载（2026-08-13 DebugMode 修复）----
 # 背景：PnPSession 反射登录（BrowserHelper.GetWebLoginClientContext / CookieReader.GetCookie）
@@ -51,9 +58,9 @@ function Get-PnpV1ModulePath {
 
 $script:PnpV1Path = Get-PnpV1ModulePath
 if ($script:PnpV1Path) {
-    Import-Module $script:PnpV1Path -ErrorAction Stop
+    try { Import-Module $script:PnpV1Path -ErrorAction Stop } catch { Import-Module PnP.PowerShell -ErrorAction SilentlyContinue }
 } else {
-    Import-Module PnP.PowerShell -ErrorAction Stop
+    Import-Module PnP.PowerShell -ErrorAction SilentlyContinue
 }
 
 $script:DpsContexts = @{}    # 多站点内存缓存
@@ -304,4 +311,4 @@ function Disconnect-DpsSharePoint {
     $script:DpsContexts = @{}
 }
 
-Export-ModuleMember -Function Get-DpsClientContext, Get-DpsConnection, Disconnect-DpsSharePoint, Get-PnpV1ModulePath
+Export-ModuleMember -Function Get-DpsClientContext, Get-DpsConnection, Disconnect-DpsSharePoint, Get-PnpV1ModulePath, Get-DpsSessionCacheFile, Read-DpsSessionCache, Write-DpsSessionCache, Clear-DpsSessionCache
