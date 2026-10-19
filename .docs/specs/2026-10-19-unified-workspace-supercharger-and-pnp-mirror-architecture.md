@@ -1,13 +1,14 @@
 # 综合技术架构规范：全工作区源码快照增压、大文件分块直传、SharePoint 物理镜像与子代理微切片隔离体系 (Unified Workspace Supercharger, Resumable Upload, SharePoint Mirror & Scoped Subagent Architecture)
 
 > **设计日期**: 2026-10-19  
-> **文档版本**: v1.2.0 (终审强化版 / Fully Audited & Hardened)  
+> **文档版本**: v1.3.0 (对抗审计终审闭环版 / Fully Audited & Hardened v1.3.0)  
 > **文档地位**: 本分支下全工作区增压与持久化镜像的**唯一权威技术规范**（同日所有历史草稿均已标注废止）  
 > **关联分支**: `feat/workspace-snapshot-supercharger`  
 > **关联变更**: `CR-2026-10-19-01` (见 [`.docs/CHANGE-REQUEST.md`](../CHANGE-REQUEST.md))  
 > **对抗审计记录**:  
 > 1. 第一轮中立审计: [`.docs/audit/report-C-spec-neutral-review.md`](../audit/report-C-spec-neutral-review.md)  
 > 2. 第二轮中立复评: [`.docs/audit/report-D-spec-neutral-review-v1.1.md`](../audit/report-D-spec-neutral-review-v1.1.md)  
+> 3. 第三轮中立复评: [`.docs/audit/report-E-spec-neutral-review-v1.2.md`](../audit/report-E-spec-neutral-review-v1.2.md)  
 > **受控证据索引 (已安全脱敏)**:  
 > 1. 宿主 9222 端口 100MB 真实大文件分块抓包: [`.docs/evidence/upload-network-trace.json`](../evidence/upload-network-trace.json)  
 > 2. `GPT-6.1 Sol` 4MB 源码快照 3 跳跨文件因果推演原始记录: [`.docs/evidence/rag-boundary-experiment-results.json`](../evidence/rag-boundary-experiment-results.json)  
@@ -23,10 +24,10 @@
 
 ### 1.1 实测物理证据一：传输管道双轨分水岭与客户端策略
 通过 9222 端口对微软云端真实大文件传输的抓包对账（脱敏证据见 [`.docs/evidence/upload-network-trace.json`](../evidence/upload-network-trace.json)），确立了客户端传输行为与服务端状态机规律：
-* **简易直传通道 (≤ 4MB 客户端策略)**：
-  单次 `PUT https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/{fileName}:/content`，毫秒级快速落盘；
-* **断点分块直传通道 (> 4MB 客户端切换)**：
-  虽然 Microsoft Graph 服务端标准文档定义简易上传最大可支持 250MB，但在 100MB 实测抓包中观测到：**Copilot Web 客户端在文件较大时必定切入分块上传会话**。为与 Copilot 云端切片与前端状态机保持 100% 协议一致，Harness 遵循相同的 4MB 策略阈值：
+* **简易直传通道 (≤ 4MB 经验假说区间)**：
+  单次 `PUT https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/{fileName}:/content`，快速可靠落盘；
+* **断点分块直传通道 (> 4MB 经验假说区间)**：
+  虽然 Microsoft Graph 服务端标准文档定义简易上传最大可支持 250MB，但在 100MB 实测抓包中观测到：**Copilot Web 客户端在文件较大时必定切入分块上传会话**。为与 Copilot 云端切片与前端状态机保持严密协议对齐，Harness 将 4MB 作为经验假说阈值（并在 Phase 0 通过 3.9MB vs 4.1MB 边界实验正式验证）：
   1. 发起 `POST /me/drive/special/copilotuploads:/{name}:/createUploadSession` 获取专属 `uploadUrl`；
   2. 客户端以严格的 **`8,192,000` 字节 (8,000 KB)** 步长（严格符合微软要求的 320 KiB 整数倍）循环发起分块 `PUT` 请求；
   3. 服务端基于 `nextExpectedRanges` 驱动续传，中间分块返回 `202 Accepted`，末尾分块返回 `201 Created`（或 `200 OK`），返回持久化 `DriveItem` 元数据；
@@ -40,7 +41,7 @@
 
 ### 1.3 核心矛盾与架构破解
 1. **化解 SharePoint 爬虫延迟 (3~15 分钟)**：
-   若将 SharePoint 目录作为静态知识库绑定，后台 Search Crawler 需 3~15 分钟建立索引，无法支撑即时编码回路。本架构采用**“双层流体系”**：SharePoint 负责企业级 TB 容量的后台物理持久化归档；会话内认知全部走**会话级附件卡片 (Session Attachment)**，享受云端 5~10 秒专有即时切片优先级；
+   若将 SharePoint 目录作为静态知识库绑定，后台 Search Crawler 需 3~15 分钟建立索引，无法支撑即时编码回路。本架构采用**“双层流体系”**：SharePoint 负责企业级 TB 容量的后台物理持久化归档；会话内认知全部走**会话级附件卡片 (Session Attachment)**，享受云端秒级即时挂载（实测约 20~25s 附件卡片就绪），免去 3~15 分钟后台爬虫延迟；
 2. **根除快照时效性崩塌 (Stale Snapshot Paradox)**：
    首轮快照确立全局背景拓扑；单点编码轮次严禁重复上传全库快照，依赖本地 TDD 绿灯门禁、单文件 PnP 同步与极简物理指纹头进行状态更新；跨阶段 Handoff 单调递增产生新版本快照；
 3. **子代理认知纯度防御 (Subagent Scoped Slice)**：
@@ -74,7 +75,7 @@
                                                +------------------------------------+
                                                | 4. 原生 Chathub WebSocket 管道     |
                                                |    - 零浏览器 / 零 CDP / 纯网络流   |
-                                               |    - 5~10 秒完成 Substrate 会话切片 |
+                                               |    - 会话即时挂载 (卡片就绪约 20~25s) |
                                                +------------------------------------+
 ```
 
@@ -91,8 +92,9 @@ import type { AttachmentAnnotation, UploadDocumentResult } from "./types.ts";
 export class SubstrateUploader {
   public static DEFAULT_GRAPH_URL = "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads";
   public static CHUNK_SIZE = 8192000; // 8,000 KB (严格 320 KiB 整数倍)
-  public static CLIENT_SPLIT_THRESHOLD = 4 * 1024 * 1024; // 4MB 客户端策略阈值
+  public static CLIENT_SPLIT_THRESHOLD_HYPOTHESIS = 4 * 1024 * 1024; // 4MB 经验假说区间 (待 Phase 0 边界实验正式验证)
   public static MAX_CHUNK_ATTEMPTS = 5; // 单分块最大尝试次数
+  public static MAX_SIMPLE_ATTEMPTS = 5; // 简易上传最大尝试次数
 
   /**
    * 纯协议自适应上传：自动根据体积策略路由至简易直传或断点分块
@@ -104,14 +106,27 @@ export class SubstrateUploader {
     signal?: AbortSignal
   ): Promise<UploadDocumentResult> {
     const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf-8");
-    if (buffer.length <= this.CLIENT_SPLIT_THRESHOLD) {
+    if (buffer.length <= this.CLIENT_SPLIT_THRESHOLD_HYPOTHESIS) {
       return await this.uploadSimple(graphAccessToken, buffer, fileName, signal);
     }
     return await this.uploadResumable(graphAccessToken, buffer, fileName, signal);
   }
 
   /**
-   * 简易上传 (≤ 4MB)
+   * 向后兼容调用点别名 (无缝适配 orchestrator.ts 与 subagent-runner.ts 存量调用)
+   */
+  public static async uploadDocumentToOneDrive(
+    graphAccessToken: string,
+    content: string | Buffer,
+    fileName: string,
+    signal?: AbortSignal
+  ): Promise<UploadDocumentResult> {
+    return await this.uploadDocumentAuto(graphAccessToken, content, fileName, signal);
+  }
+
+  /**
+   * 简易上传 (≤ 4MB 经验假说区间)
+   * 加固 429 限流 / 503 暂时不可用重试、Retry-After 解析、指数退避与 AbortSignal 中断
    */
   private static async uploadSimple(
     graphAccessToken: string,
@@ -122,24 +137,58 @@ export class SubstrateUploader {
     const encodedName = encodeURIComponent(fileName);
     const url = `${this.DEFAULT_GRAPH_URL}:/${encodedName}:/content`;
 
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${graphAccessToken}`,
-        "Content-Type": "text/plain; charset=utf-8",
-        Prefer: "ExtractTextOnCommit, pacToken=N",
-        SdkVersion: "graph-js/3.0.7 (featureUsage=7)",
-      },
-      body: buffer,
-      signal,
-    });
+    let attempts = 0;
+    while (true) {
+      if (signal?.aborted) throw new Error("Upload aborted by caller");
+      attempts++;
 
-    if (!res.ok) {
-      throw new Error(`Graph simple upload failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+      try {
+        const res = await fetch(url, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${graphAccessToken}`,
+            "Content-Type": "text/plain; charset=utf-8",
+            Prefer: "ExtractTextOnCommit, pacToken=N",
+            SdkVersion: "graph-js/3.0.7 (featureUsage=7)",
+          },
+          body: buffer,
+          signal,
+        });
+
+        // 处理 429 限流 / 503 暂时不可用：解析秒数或 HTTP-Date
+        if (res.status === 429 || res.status === 503) {
+          if (attempts >= this.MAX_SIMPLE_ATTEMPTS) {
+            throw new Error(`Simple upload hit rate limit / service unavailable and exceeded max retry limit (${this.MAX_SIMPLE_ATTEMPTS})`);
+          }
+          let retrySec = 5;
+          const headerVal = res.headers.get("Retry-After");
+          if (headerVal) {
+            const parsedInt = parseInt(headerVal, 10);
+            if (!isNaN(parsedInt)) {
+              retrySec = Math.max(parsedInt, 1);
+            } else {
+              const parsedDate = Date.parse(headerVal);
+              if (!isNaN(parsedDate)) {
+                retrySec = Math.max(Math.ceil((parsedDate - Date.now()) / 1000), 1);
+              }
+            }
+          }
+          await new Promise((r) => setTimeout(r, Math.min(retrySec, 60) * 1000));
+          continue;
+        }
+
+        if (!res.ok) {
+          throw new Error(`Graph simple upload failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+        }
+
+        const data = await res.json();
+        return this.assembleUploadResult(graphAccessToken, data, fileName);
+      } catch (err: any) {
+        if (signal?.aborted || err.name === "AbortError") throw err;
+        if (attempts >= this.MAX_SIMPLE_ATTEMPTS) throw err;
+        await new Promise((r) => setTimeout(r, attempts * 2000));
+      }
     }
-
-    const data = await res.json();
-    return this.assembleUploadResult(graphAccessToken, data, fileName);
   }
 
   /**
@@ -302,8 +351,8 @@ export class SubstrateUploader {
      throw "FATAL: sp-sync-engine.ps1 必须使用 powershell.exe (Windows PowerShell 5.1) 运行！严禁使用 pwsh (PS7+)，否则 PnP 1.12.0 反射认证将整体失效。"
    }
    ```
-2. **受控模块引入**:
-   引入位于受控仓库路径的 `CPH-PI/scripts/lib/PnPSession.psm1`，优先读取 `~/.ltk-shipschedule-session.json` 磁盘缓存与 WinINet Cookie 存储文件。
+2. **受控模块引入与环境解耦**:
+   引入位于受控仓库路径的 `CPH-PI/scripts/lib/PnPSession.psm1`。该受控模块已彻底去租户化，动态探测本地用户配置目录（包括可能重定向至 OneDrive 的 Documents 目录）；Cookie 磁盘缓存严格命名空间化至当前项目专有的 `~/.cph/pnp-session.json`（支持仅当前 Windows 用户 ACL 权限），并作为 Tier 1 缓存配合 WinINet Cookie 存储文件无缝运转。
 
 ### 4.2 接口操作与单向增量推送
 ```powershell
@@ -332,6 +381,11 @@ if ($Action -eq "SyncSingleFile") {
   `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/sp-sync-engine.ps1 ...`
 * 同步失败自动重试 3 次（间隔 5s）；仍失败则记入本地 `.cph/state/dirty-sync.jsonl`，**绝不阻塞**前台推理对话；在下一轮测试绿灯时统一对账补推。
 
+### 4.4 CI 离线测试与 Mock 录放隔离 (CI Offline Mock Architecture)
+为确保测试用例在 GitHub Actions / 离线 CI 管道可复现且无需真实 SharePoint 租户与 IE Cookie 交互：
+1. **Mock 传输层注入**：在 Node/TS 单元测试中，为 PnP 子进程封装抽象调用适配器（`ISharePointSyncClient`）；测试环境自动注入 `MockSharePointSyncClient`，模拟网络延迟、429 报错与 200 成功响应；
+2. **离线 CSOM 状态验证**：单测重点断言“文件变更是按白名单过滤”、“失败自动追加到本地 dirty-sync.jsonl”、“重试 3 次后不阻塞前台”；真实租户 E2E 验证仅在带有 `--live-pnp` 标志的端到端集成测试中按需执行。
+
 ---
 
 ## 5. Git-Aware 快照与子代理微切片生成器规范 (Snapshot & Scoped Slice Generator)
@@ -339,7 +393,7 @@ if ($Action -eq "SyncSingleFile") {
 落地于 `src/workspace/snapshot-generator.ts`：
 
 ### 5.1 精准枚举算法：基于 `git ls-files -z` 的全景快照生成
-彻底排除构建产物与审计文档，同时确保纳入核心 Agent 提示词，实现约 1.25 MB 高信噪比快照：
+彻底排除构建产物与审计文档，同时确保纳入核心 Agent 提示词与会话底层源码，实现实测精准对账的 **151 文件 / 1.26 MB (1,324,834 字节)** 高信噪比快照：
 
 ```typescript
 import { execSync } from "node:child_process";
@@ -351,10 +405,32 @@ export class SnapshotGenerator {
   public static MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024; // 50MB 物理安全硬红线
   public static EXCLUDED_DIR_PREFIXES = ["package/", ".docs/", "dist/", ".cph/", "node_modules/"];
 
+  // 精确敏感文件正则模式：仅排除真正的凭据与私钥，坚决不误杀 session/token 源码
+  public static SENSITIVE_FILE_PATTERNS = [
+    /^\.env(\..+)?$/i,
+    /^.*tokens?\.json$/i,
+    /^.*-session\.json$/i,
+    /^id_[a-zA-Z0-9_]+$/i,
+    /\.(pem|key|pfx|p12)$/i
+  ];
+
+  // 核心源码断言清单：快照必须无损包含的 9 项核心系统文件与提示词
+  public static CRITICAL_CORE_FILES = [
+    "src/session/session-manager.ts",
+    "src/session/ledger/execution-ledger.ts",
+    "src/session/lineage-tracker.ts",
+    "src/auth/token-manager.ts",
+    "scripts/lib/PnPSession.psm1",
+    "cph-main-agent-prompt.txt",
+    "cph-coder-agent-prompt.txt",
+    "cph-dev-agent-prompt.txt",
+    "cph-researcher-agent-prompt.txt"
+  ];
+
   /**
    * 基于 git ls-files -z 提取真实源码文件列表
    * 自动将子模块 (submodule) 视为单一 gitlink 记录，天然规避 pi/ 等巨型库
-   * 排除构建与审计产物，确保包含核心 .txt 提示词
+   * 排除构建与审计产物，确保包含核心 .txt 提示词与会话核心
    */
   public static getTrackedSourceFiles(workspaceRoot: string): string[] {
     const cmd = "git ls-files -z --cached --others --exclude-standard";
@@ -374,16 +450,19 @@ export class SnapshotGenerator {
       const ext = path.extname(relPath).toLowerCase();
       if (!allowedExtensions.has(ext)) return false;
 
-      // 3. 敏感文件与大型锁文件过滤
+      // 3. 大型锁文件排除
       if (relPath.endsWith("package-lock.json") || relPath.endsWith("bun.lock") || relPath.endsWith("bun.lockb")) return false;
-      if (relPath.includes("token") || relPath.includes(".env") || relPath.includes("session")) return false;
+
+      // 4. 精确敏感文件模式排除 (防误杀)
+      const baseName = path.basename(relPath);
+      if (this.SENSITIVE_FILE_PATTERNS.some(pattern => pattern.test(baseName))) return false;
 
       return true;
     });
   }
 
   /**
-   * 生成全景快照 (实测本仓库规模精准落入 1.25 MB / 150 文件)
+   * 生成全景快照 (实测本仓库规模精准对账为 151 文件 / 1.26 MB)
    */
   public static generateWorkspaceSnapshot(workspaceRoot: string, outputDir: string): { snapshotPath: string; hash: string; fileCount: number; bytes: number } {
     const files = this.getTrackedSourceFiles(workspaceRoot);
@@ -391,6 +470,7 @@ export class SnapshotGenerator {
 
     const manifestLines: string[] = [];
     const contentChunks: string[] = ["\n// ======================================\n// SOURCE FILE CONTENTS\n// ======================================\n"];
+    const writtenFiles: string[] = [];
 
     let totalBytes = 0;
 
@@ -402,19 +482,32 @@ export class SnapshotGenerator {
 
       // 必须对原始 Buffer 二进制计算 SHA，避免 UTF-8 BOM 字符污染哈希
       const rawBuffer = fs.readFileSync(absPath);
+
+      // 内容级密钥扫描阻断 (Content Secret Scanning)
+      const rawStr = rawBuffer.toString("utf-8");
+      if (/Bearer\s+eyJ[a-zA-Z0-9_\-\.]+/i.test(rawStr) || rawStr.includes("-----BEGIN PRIVATE KEY-----")) {
+        throw new Error(`CRITICAL SECURITY ALERT: Secret token detected in file ${relPath}. Snapshot generation aborted!`);
+      }
+
       const fileHash = crypto.createHash("sha256").update(rawBuffer).digest("hex").slice(0, 12);
-      const content = rawBuffer.toString("utf-8");
-      const lineCount = content.split("\n").length;
+      const lineCount = rawStr.split("\n").length;
 
       manifestLines.push(`- ${relPath} (Lines: ${lineCount}, SHA: ${fileHash}, Bytes: ${stat.size})`);
+      writtenFiles.push(relPath);
 
-      const block = `\n// ##################################################\n// FILE: ${relPath} (Lines: ${lineCount}, SHA: ${fileHash})\n// ##################################################\n${content}\n`;
+      const block = `\n// ##################################################\n// FILE: ${relPath} (Lines: ${lineCount}, SHA: ${fileHash})\n// ##################################################\n${rawStr}\n`;
       contentChunks.push(block);
       totalBytes += Buffer.byteLength(block, "utf-8");
 
       if (totalBytes > this.MAX_SNAPSHOT_BYTES) {
         throw new Error(`Snapshot exceeded hard safety limit of ${this.MAX_SNAPSHOT_BYTES} bytes!`);
       }
+    }
+
+    // 核心源码断言硬门禁：确保无任何关键源码被误杀
+    const missingCore = this.CRITICAL_CORE_FILES.filter(cf => !writtenFiles.includes(cf));
+    if (missingCore.length > 0) {
+      throw new Error(`CRITICAL INTEGRITY FAULT: Snapshot dropped essential core files: ${missingCore.join(", ")}`);
     }
 
     chunks.push(manifestLines.join("\n"));
@@ -429,7 +522,7 @@ export class SnapshotGenerator {
     return {
       snapshotPath,
       hash: snapshotHash,
-      fileCount: files.length,
+      fileCount: writtenFiles.length,
       bytes: Buffer.byteLength(fullText, "utf-8")
     };
   }
@@ -449,9 +542,9 @@ export class SnapshotGenerator {
 
 ```
 【阶段一：全局开局】Turn 1
-本地磁盘 ───> SnapshotGenerator (git-aware) ───> workspace-v1.txt (~1.25MB)
+本地磁盘 ───> SnapshotGenerator (git-aware) ───> workspace-v1.txt (实测 151 文件 / 1.26MB)
                    │
-                   ├──> SubstrateUploader (纯协议分块直传) ──> AttachmentAnnotation
+                   ├──> SubstrateUploader (纯协议自适应直传) ──> AttachmentAnnotation
                    │                                                  │
                    │                                                  v
                    │                              Chathub WebSocket (纯 SignalR 帧)
@@ -469,7 +562,7 @@ export class SnapshotGenerator {
          └── 本地 Harness 下发极简物理指纹头给 Copilot：
              ```markdown
              [WORKSPACE STATE UPDATE]
-             - Head: Commit 9c42b1 (v2)
+             - Snapshot: sha256:7f4a8b... (151 files, 1.26MB)
              - Target: src/billing/tax.ts (Tests: 15/15 PASSED)
              - Cloud Mirror: Synced to SharePoint (Eventual Consistent)
              - Next Action: 推进下一个 DAG 任务
@@ -533,7 +626,7 @@ export class SnapshotGenerator {
 |---|---|---|
 | **PnP 网络抖动** | SharePoint CSOM 上传超时 | 重试 3 次 (间隔 5s)；仍失败则记入本地 Dirty Ledger，绝不阻塞当前会话，下一轮测试绿灯时自动补推 |
 | **Cookie 凭据过期** | SharePoint 报 401/403 | 触发 `PnPSession` 三级 Cookie 自动降级读取 (磁盘 ➔ WinINet 文件存储)；无法静默恢复时提示操作者 |
-| **凭据安全保护** | Cookie 缓存文件泄露风险 | 针对 `~/.ltk-shipschedule-session.json` 实施 Windows ACL 仅限当前用户读写；CI/CD 与代码提交严格排除 |
+| **凭据安全保护** | Cookie 缓存文件泄露风险 | 针对 `~/.cph/pnp-session.json` 实施 Windows ACL 仅限当前用户读写；CI/CD 与代码提交严格排除 |
 | **预授权 URL 脱敏** | `uploadUrl` 泄露风险 | Harness 日志格式化时对 `createUploadSession` 返回的预授权 URL 查询参数自动脱敏打码 |
 | **大文件分块中断** | HTTP 传输在某一分块断开 | 依据服务端返回的 `nextExpectedRanges`，自动执行 HTTP Range 增量断点续传 |
 | **单测死循环 / 挂起** | `bun test` 超时 | 依据项目基线自适应设定超时（默认 `baseline * 3`，即 90 秒），Windows 下通过 `taskkill.exe /F /T` 强杀整棵进程树 |
@@ -545,19 +638,23 @@ export class SnapshotGenerator {
 
 ### Phase 0: 纯协议大文件分块直传模块 (Resumable Upload Engine)
 - 在 `src/transport/substrate-uploader.ts` 实现 `createUploadSession` 与 8,000 KB 分块 PUT 状态机（支持 `nextExpectedRanges`、HTTP-Date 解析、Abort 立即上抛与防无限重试熔断）；
-- 编写 `tests/transport/resumable-uploader.test.ts`，覆盖断流后续传、429 退避、异常上抛与取消流转；
+- 同步加固 `uploadSimple`（支持 429/503 重试、Retry-After 解析、指数退避与 AbortSignal）；
+- 导出 `uploadDocumentToOneDrive` 作为向后兼容别名，无缝适配存量调用；
+- 编写 `tests/transport/resumable-uploader.test.ts`，同时覆盖简易上传与分块断流后续传、429 退避、异常上抛与取消流转；
 - **边界实验**：实测 3.9MB 与 4.1MB 边界，核对 Copilot 云端切片与 `unfurl` 的真实触发机制。
 
 ### Phase 1: SharePoint 物理同步引擎与受控依赖 (`sp-sync-engine.ps1`)
 - 在 `scripts/sp-sync-engine.ps1` 中集成 Windows PowerShell 5.1 版本断言、`PnP 1.12.0` 与受控 Vendored 模块 `scripts/lib/PnPSession.psm1`；
-- 编写集成测试验证本地与 SharePoint 目录树的增量镜像与单文件推送（秒级吞吐）。
+- 支持 `~/.cph/pnp-session.json` 命名空间缓存与动态用户目录探测；
+- 编写集成测试验证本地与 SharePoint 目录树的增量镜像与单文件推送（秒级吞吐），并配套 CI 离线 Mock 传输层。
 
 ### Phase 2: Git-Aware 全景快照与子代理微切片生成器 (Snapshot & Slice Generators)
-- 在 `src/workspace/snapshot-generator.ts` 实现基于 `git ls-files -z` 的全景快照（实测本仓库收敛至 1.25 MB / 150 文件，完整包含 4 个提示词）与局部微切片组装逻辑；
-- 编写 `tests/workspace/snapshot-generator.test.ts` 验证白名单过滤、子模块隔离与安全上限。
+- 在 `src/workspace/snapshot-generator.ts` 实现基于 `git ls-files -z` 的全景快照（实测本仓库收敛至 151 文件 / 1.26 MB，包含 9 项核心源码与提示词断言）与局部微切片组装逻辑；
+- 编写 `tests/workspace/snapshot-generator.test.ts` 验证正则敏感过滤、子模块隔离、密钥扫描阻断与核心断言门禁。
 
 ### Phase 3: Orchestrator 挂载通道与生命周期闭环集成 (Pipeline Integration)
 - 在 `Orchestrator` 中串联首轮全景投递、单点攻坚 TDD 红绿门禁、指纹头下发与 Handoff 快照递增；
+- 平滑迁移调用点，确保存量 `uploadDocumentToOneDrive` 调用零破坏性平移；
 - 编写端到端对账测试 `tests/agent/dual-layer-lifecycle.test.ts`。
 
 ### Phase 4: Tri-Agent 系统提示词与专有 Skills 重构 (Prompts & Skills Overhaul)

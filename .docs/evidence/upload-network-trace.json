@@ -46,7 +46,7 @@
     "requestId": "45268.5137",
     "status": 200,
     "url": "https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/test-100mb.txt:/createUploadSession",
-    "body": "{\"@odata.context\":\"https://graph.microsoft.com/v1.0/$metadata#microsoft.graph.uploadSession\",\"expirationDateTime\":\"2026-10-19T10:37:35.184Z\",\"nextExpectedRanges\":[\"0-\"],\"uploadUrl\":\"https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid='203d6bf7-d201-4125-b628-d568f8a71dfa'&overwrite=True&rename=False&dc=0\"}"
+    "body": "{\"@odata.context\":\"https://graph.microsoft.com/v1.0/$metadata#microsoft.graph.uploadSession\",\"expirationDateTime\":\"2026-10-19T10:37:35.184Z\",\"nextExpectedRanges\":[\"0-\"],\"uploadUrl\":\"https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid='203d6bf7-d201-4125-b628-d568f8a71dfa'&overwrite=True&rename=False&dc=0\"}"
   },
   {
     "type": "request",
@@ -62,13 +62,13 @@
       "sec-ch-ua-mobile": "?0"
     },
     "hasPostData": true,
-    "postData": "{\"name\":\"acquireTokenSilent\",\"time\":\"2026-10-19T10:22:35.717Z\",\"ver\":\"4.0\",\"iKey\":\"o:d634483c08244c1ca09af2b2d952c92e\",\"ext\":{\"sdk\":{\"ver\":\"1DS-Web-JS-4.2.1\",\"seq\":264,\"epoch\":\"2834278803\"},\"app\":{\"locale\":\"zh-hans\",\"sesId\":\"9sGYsAEPGQrUMwvVgChUrE\"},\"user\":{\"locale\":\"zh-CN\"},\"web\":{\"domain\":\"m365.cloud.microsoft\",\"screenRes\":\"2560X1440\",\"userConsent\":false,\"consentDetails\":\"{\\\"GPC_DataSharingOptIn\\\":false}\"},\"intweb\":{},\"utc\":{\"popSample\":100},\"loc\":{\"tz\":\"+08:00\"},\"metadata\":{\"f\":{\"status\":{\"t\":6},\"startTimeMs\":{\"t\":6},\"cacheLookupPolicy\":{\"t\":6},\"visibilityChangeCount\":{\"t\":6},\"onlineStatusChangeCount\":{\"t\":6},\"cacheRtExpiresOnSeconds\":{\"t\":6},\"rtOffsetSeconds\":{\"t\":6},\"refreshTokenSize\":{\"t\":6},\"cacheMatchedAccounts\":{\"t\":6},\"ntwkRtExpiresOnSeconds\":{\"t\":6},\"accessTokenSize\":{\"t\":6},\"idTokenSize\":{\"t\":6},\"durationMs\":{\"t\":6},\"networkRtt\":{\"t\":6},\"incompleteSubsCount\":{\"t\":6}}}},\"data\":{\"baseData\":{\"properties\":{\"version\":\"PostChannel=4.2.1;SystemPropertiesCollector=4.2.1\"}},\"eventId\":\"01a153af-393d-767d-b404-3c8c43ce5b58\",\"status\":2,\"authority\":\"https://login.microsoftonline.com/9d314297-75dc-4329-8f94-a66489b4b9bb\",\"libraryName\":\"@azure/msal-browser\",\"libraryVersion\":\"5.9.1\",\"clientId\":\"4765445b-32c6-49b0-83e6-1d93765276ca\",\"name\":\"acquireTokenSilent\",\"startTimeMs\":1792405354813,\"appName\":\"M365Web\",\"appVersion\":\"1.0.0\",\"cacheLookupPolicy\":4,\"deduped\":false,\"ext\":\"{\\\"acquireTokenSilentAsyncCallCount\\\":1,\\\"initializeSilentRequestCallCount\\\":1,\\\"initializeBaseRequestCallCount\\\":2,\\\"initializeBaseRequestDurationMs\\\":0,\\\"initializeSilentRequestDurationMs\\\":0,\\\"acquireTokenFromCacheCallCount\\\":1,\\\"acquireTokenFromCacheDurationMs\\\":0,\\\"acquireTokenByRefreshTokenCallCount\\\":1,\\\"silentRefreshClientAcquireTokenCallCount\\\":1,\\\"standardInteractionClientGetClientConfigurationCallCount\\\":1,\\\"standardInteractionClientGetDiscoveredAuthorityCallCount\\\":1,\\\"authorityFactoryCreateDiscoveredInstanceCallCount\\\":1,\\\"authorityResolveEndpointsAsyncCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataDurationMs\\\":0,\\\"authorityUpdateEndpointMetadataCallCount\\\":1,\\\"authorityUpdateEndpointMetadataDurationMs\\\":0,\\\"authorityResolveEndpointsAsyncDurationMs\\\":0,\\\"authorityFactoryCreateDiscoveredInstanceDurationMs\\\":0,\\\"standardInteractionClientGetDiscoveredAuthorityDurationMs\\\":0,\\\"standardInteractionClientGetClientConfigurationDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenByRefreshTokenCallCount\\\":1,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenCallCount\\\":1,\\\"refreshTokenClientExecuteTokenRequestCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyDurationMs\\\":0,\\\"refreshTokenClientExecutePostToTokenEndpointCallCount\\\":1,\\\"networkClientSendPostRequestAsyncCallCount\\\":1,\\\"networkClientSendPostRequestAsyncDurationMs\\\":899,\\\"refreshTokenClientExecutePostToTokenEndpointDurationMs\\\":899,\\\"refreshTokenClientExecuteTokenRequestDurationMs\\\":899,\\\"handleServerTokenResponseCallCount\\\":1,\\\"setUserDataCallCount\\\":2,\\\"encryptCallCount\\\":2,\\\"encryptDurationMs\\\":0,\\\"setUserDataDurationMs\\\":0,\\\"handleServerTokenResponseDurationMs\\\":1,\\\"refreshTokenClientAcquireTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenByRefreshTokenDurationMs\\\":900,\\\"silentRefreshClientAcquireTokenDurationMs\\\":901,\\\"acquireTokenByRefreshTokenDurationMs\\\":901,\\\"acquireTokenSilentAsyncDurationMs\\\":902}\",\"visibilityChangeCount\":0,\"onlineStatusChangeCount\":0,\"cloudDiscoverySource\":\"hardcoded_values\",\"authorityEndpointSource\":\"hardcoded_values\",\"cacheRtExpiresOnSeconds\":1792482975,\"rtOffsetSeconds\":300,\"embeddedClientId\":\"c0ab8ce9-e9a0-42e7-b064-33d422df41f1\",\"embeddedRedirectUri\":\"brk-multihub://outlook.office.com\",\"refreshTokenSize\":1669,\"accountCachedBy\":\"hydrateCache\",\"cacheMatchedAccounts\":1,\"ntwkRtExpiresOnSeconds\":1792482976,\"kmsi\":false,\"fromCache\":false,\"isNativeBroker\":false,\"success\":true,\"accessTokenSize\":2756,\"idTokenSize\":1512,\"startPageVisibility\":\"hidden\",\"startOnlineStatus\":true,\"endPageVisibility\":\"hidden\",\"durationMs\":903,\"networkEffectiveType\":\"4g\",\"networkRtt\":150,\"incompleteSubsCount\":0,\"accountType\":\"AAD\",\"synthetic\":false,\"profileTelemetryIdV2\":\"01a13b82-7741-7a4b-8f9c-ffa40fd23749\",\"sessionIdV2\":\"01a140b4-94aa-7d1f-bb7c-86cbe558be7b\",\"correlationIdV2\":\"4ccda424-6779-4023-9943-0ecd0e37c5f3\",\"requestIdV2\":\"2c23d1c4-17bc-4e5b-8db6-1dd032e5cf00\"}}",
+    "postData": "{\"name\":\"acquireTokenSilent\",\"time\":\"2026-10-19T10:22:35.717Z\",\"ver\":\"4.0\",\"iKey\":\"o:d634483c08244c1ca09af2b2d952c92e\",\"ext\":{\"sdk\":{\"ver\":\"1DS-Web-JS-4.2.1\",\"seq\":264,\"epoch\":\"2834278803\"},\"app\":{\"locale\":\"zh-hans\",\"sesId\":\"9sGYsAEPGQrUMwvVgChUrE\"},\"user\":{\"locale\":\"zh-CN\"},\"web\":{\"domain\":\"m365.cloud.microsoft\",\"screenRes\":\"2560X1440\",\"userConsent\":false,\"consentDetails\":\"{\\\"GPC_DataSharingOptIn\\\":false}\"},\"intweb\":{},\"utc\":{\"popSample\":100},\"loc\":{\"tz\":\"+08:00\"},\"metadata\":{\"f\":{\"status\":{\"t\":6},\"startTimeMs\":{\"t\":6},\"cacheLookupPolicy\":{\"t\":6},\"visibilityChangeCount\":{\"t\":6},\"onlineStatusChangeCount\":{\"t\":6},\"cacheRtExpiresOnSeconds\":{\"t\":6},\"rtOffsetSeconds\":{\"t\":6},\"refreshTokenSize\":{\"t\":6},\"cacheMatchedAccounts\":{\"t\":6},\"ntwkRtExpiresOnSeconds\":{\"t\":6},\"accessTokenSize\":{\"t\":6},\"idTokenSize\":{\"t\":6},\"durationMs\":{\"t\":6},\"networkRtt\":{\"t\":6},\"incompleteSubsCount\":{\"t\":6}}}},\"data\":{\"baseData\":{\"properties\":{\"version\":\"PostChannel=4.2.1;SystemPropertiesCollector=4.2.1\"}},\"eventId\":\"01REDACTED_ITEM_ID_PLACEHOLDER\",\"status\":2,\"authority\":\"https://login.microsoftonline.com/9d314297-75dc-4329-8f94-a66489b4b9bb\",\"libraryName\":\"@azure/msal-browser\",\"libraryVersion\":\"5.9.1\",\"clientId\":\"4765445b-32c6-49b0-83e6-1d93765276ca\",\"name\":\"acquireTokenSilent\",\"startTimeMs\":1792405354813,\"appName\":\"M365Web\",\"appVersion\":\"1.0.0\",\"cacheLookupPolicy\":4,\"deduped\":false,\"ext\":\"{\\\"acquireTokenSilentAsyncCallCount\\\":1,\\\"initializeSilentRequestCallCount\\\":1,\\\"initializeBaseRequestCallCount\\\":2,\\\"initializeBaseRequestDurationMs\\\":0,\\\"initializeSilentRequestDurationMs\\\":0,\\\"acquireTokenFromCacheCallCount\\\":1,\\\"acquireTokenFromCacheDurationMs\\\":0,\\\"acquireTokenByRefreshTokenCallCount\\\":1,\\\"silentRefreshClientAcquireTokenCallCount\\\":1,\\\"standardInteractionClientGetClientConfigurationCallCount\\\":1,\\\"standardInteractionClientGetDiscoveredAuthorityCallCount\\\":1,\\\"authorityFactoryCreateDiscoveredInstanceCallCount\\\":1,\\\"authorityResolveEndpointsAsyncCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataCallCount\\\":1,\\\"authorityUpdateCloudDiscoveryMetadataDurationMs\\\":0,\\\"authorityUpdateEndpointMetadataCallCount\\\":1,\\\"authorityUpdateEndpointMetadataDurationMs\\\":0,\\\"authorityResolveEndpointsAsyncDurationMs\\\":0,\\\"authorityFactoryCreateDiscoveredInstanceDurationMs\\\":0,\\\"standardInteractionClientGetDiscoveredAuthorityDurationMs\\\":0,\\\"standardInteractionClientGetClientConfigurationDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenByRefreshTokenCallCount\\\":1,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenCallCount\\\":1,\\\"cacheManagerGetRefreshTokenDurationMs\\\":0,\\\"refreshTokenClientAcquireTokenCallCount\\\":1,\\\"refreshTokenClientExecuteTokenRequestCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyCallCount\\\":1,\\\"refreshTokenClientCreateTokenRequestBodyDurationMs\\\":0,\\\"refreshTokenClientExecutePostToTokenEndpointCallCount\\\":1,\\\"networkClientSendPostRequestAsyncCallCount\\\":1,\\\"networkClientSendPostRequestAsyncDurationMs\\\":899,\\\"refreshTokenClientExecutePostToTokenEndpointDurationMs\\\":899,\\\"refreshTokenClientExecuteTokenRequestDurationMs\\\":899,\\\"handleServerTokenResponseCallCount\\\":1,\\\"setUserDataCallCount\\\":2,\\\"encryptCallCount\\\":2,\\\"encryptDurationMs\\\":0,\\\"setUserDataDurationMs\\\":0,\\\"handleServerTokenResponseDurationMs\\\":1,\\\"refreshTokenClientAcquireTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenWithCachedRefreshTokenDurationMs\\\":900,\\\"refreshTokenClientAcquireTokenByRefreshTokenDurationMs\\\":900,\\\"silentRefreshClientAcquireTokenDurationMs\\\":901,\\\"acquireTokenByRefreshTokenDurationMs\\\":901,\\\"acquireTokenSilentAsyncDurationMs\\\":902}\",\"visibilityChangeCount\":0,\"onlineStatusChangeCount\":0,\"cloudDiscoverySource\":\"hardcoded_values\",\"authorityEndpointSource\":\"hardcoded_values\",\"cacheRtExpiresOnSeconds\":1792482975,\"rtOffsetSeconds\":300,\"embeddedClientId\":\"c0ab8ce9-e9a0-42e7-b064-33d422df41f1\",\"embeddedRedirectUri\":\"brk-multihub://outlook.office.com\",\"refreshTokenSize\":1669,\"accountCachedBy\":\"hydrateCache\",\"cacheMatchedAccounts\":1,\"ntwkRtExpiresOnSeconds\":1792482976,\"kmsi\":false,\"fromCache\":false,\"isNativeBroker\":false,\"success\":true,\"accessTokenSize\":2756,\"idTokenSize\":1512,\"startPageVisibility\":\"hidden\",\"startOnlineStatus\":true,\"endPageVisibility\":\"hidden\",\"durationMs\":903,\"networkEffectiveType\":\"4g\",\"networkRtt\":150,\"incompleteSubsCount\":0,\"accountType\":\"AAD\",\"synthetic\":false,\"profileTelemetryIdV2\":\"01REDACTED_ITEM_ID_PLACEHOLDER\",\"sessionIdV2\":\"01REDACTED_ITEM_ID_PLACEHOLDER\",\"correlationIdV2\":\"4ccda424-6779-4023-9943-0ecd0e37c5f3\",\"requestIdV2\":\"2c23d1c4-17bc-4e5b-8db6-1dd032e5cf00\"}}",
     "timestamp": 499638.617404
   },
   {
     "type": "request",
     "requestId": "45268.5144",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -87,7 +87,7 @@
   {
     "type": "request",
     "requestId": "60B12D78D4CC313186BEDAA79E10EF37",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "OPTIONS",
     "headers": {
       "Accept": "*/*",
@@ -103,7 +103,7 @@
     "type": "response",
     "requestId": "60B12D78D4CC313186BEDAA79E10EF37",
     "status": 200,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "response",
@@ -116,12 +116,12 @@
     "type": "response",
     "requestId": "45268.5144",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5145",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -141,12 +141,12 @@
     "type": "response",
     "requestId": "45268.5145",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5146",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -184,7 +184,7 @@
       "X-Client-Language": "zh-cn"
     },
     "hasPostData": true,
-    "postData": "{\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_QF\",\"Dimensions\":[{\"DimensionName\":\"Canvas\",\"DimensionValue\":\"Default\"},{\"DimensionName\":\"UserLicenseType\",\"DimensionValue\":\"Premium\"},{\"DimensionName\":\"UserExperience\",\"DimensionValue\":\"Work\"},{\"DimensionName\":\"ContextType\",\"DimensionValue\":\"EntityBased\"}]},\"EntityRequests\":[{\"EntityType\":\"Prompt\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"PropertySet\":\"ProvenanceOptimized\",\"Provenances\":[\"Exchange\"]},{\"EntityType\":\"People\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"Filter\":{\"And\":[{\"Or\":[{\"Term\":{\"PeopleType\":\"Person\"}},{\"Term\":{\"PeopleType\":\"Other\"}}]},{\"Or\":[{\"Term\":{\"PeopleSubtype\":\"OrganizationUser\"}},{\"Term\":{\"PeopleSubtype\":\"Guest\"}},{\"Term\":{\"PeopleSubtype\":\"OrganizationContact\"}}]}]},\"Provenances\":[\"Mailbox\",\"Directory\"],\"ServeNoEmailContacts\":true,\"From\":0},{\"EntityType\":\"File\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10},{\"EntityType\":\"Event\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c5940187-0115-4844-8db8-980173886989\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10}],\"SearchContext\":{\"InputContext\":[{\"Name\":\"CopilotConversationId\",\"Value\":\"\"},{\"Name\":\"TurnCount\",\"Value\":\"0\"}]},\"TextDecorations\":\"Forward\",\"TimeZone\":\"UTC\",\"LogicalId\":\"0b2b6591-0bd2-4452-b2b9-fd7efd760207\",\"Cvid\":\"5ca9a423-1933-4481-a981-391f7d009f81\"}",
+    "postData": "{\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_QF\",\"Dimensions\":[{\"DimensionName\":\"Canvas\",\"DimensionValue\":\"Default\"},{\"DimensionName\":\"UserLicenseType\",\"DimensionValue\":\"Premium\"},{\"DimensionName\":\"UserExperience\",\"DimensionValue\":\"Work\"},{\"DimensionName\":\"ContextType\",\"DimensionValue\":\"EntityBased\"}]},\"EntityRequests\":[{\"EntityType\":\"Prompt\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c59401REDACTED_ITEM_ID_PLACEHOLDER\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"PropertySet\":\"ProvenanceOptimized\",\"Provenances\":[\"Exchange\"]},{\"EntityType\":\"People\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c59401REDACTED_ITEM_ID_PLACEHOLDER\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10,\"Filter\":{\"And\":[{\"Or\":[{\"Term\":{\"PeopleType\":\"Person\"}},{\"Term\":{\"PeopleType\":\"Other\"}}]},{\"Or\":[{\"Term\":{\"PeopleSubtype\":\"OrganizationUser\"}},{\"Term\":{\"PeopleSubtype\":\"Guest\"}},{\"Term\":{\"PeopleSubtype\":\"OrganizationContact\"}}]}]},\"Provenances\":[\"Mailbox\",\"Directory\"],\"ServeNoEmailContacts\":true,\"From\":0},{\"EntityType\":\"File\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c59401REDACTED_ITEM_ID_PLACEHOLDER\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10},{\"EntityType\":\"Event\",\"Query\":{\"QueryString\":\"\"},\"Context\":{\"IntentContext\":{\"Attributes\":[{\"Name\":\"EntityId\",\"Value\":\"c59401REDACTED_ITEM_ID_PLACEHOLDER\"},{\"Name\":\"EntityType\",\"Value\":\"LocalFile\"}]}},\"Size\":10}],\"SearchContext\":{\"InputContext\":[{\"Name\":\"CopilotConversationId\",\"Value\":\"\"},{\"Name\":\"TurnCount\",\"Value\":\"0\"}]},\"TextDecorations\":\"Forward\",\"TimeZone\":\"UTC\",\"LogicalId\":\"0b2b6591-0bd2-4452-b2b9-fd7efd760207\",\"Cvid\":\"5ca9a423-1933-4481-a981-391f7d009f81\"}",
     "timestamp": 499644.601302
   },
   {
@@ -219,12 +219,12 @@
     "type": "response",
     "requestId": "45268.5146",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5150",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -244,12 +244,12 @@
     "type": "response",
     "requestId": "45268.5150",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5151",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -269,12 +269,12 @@
     "type": "response",
     "requestId": "45268.5151",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5153",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -294,12 +294,12 @@
     "type": "response",
     "requestId": "45268.5153",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5154",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -319,12 +319,12 @@
     "type": "response",
     "requestId": "45268.5154",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5155",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -344,12 +344,12 @@
     "type": "response",
     "requestId": "45268.5155",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5156",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -369,12 +369,12 @@
     "type": "response",
     "requestId": "45268.5156",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5157",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -394,12 +394,12 @@
     "type": "response",
     "requestId": "45268.5157",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5158",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -419,12 +419,12 @@
     "type": "response",
     "requestId": "45268.5158",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5159",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -444,12 +444,12 @@
     "type": "response",
     "requestId": "45268.5159",
     "status": 202,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
     "requestId": "45268.5160",
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0",
     "method": "PUT",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -469,7 +469,7 @@
     "type": "response",
     "requestId": "45268.5160",
     "status": 201,
-    "url": "https://cmacgmgroup-my.sharepoint.com/personal/gsc_vfu2_cma-cgm_com/_api/v2.0/drive/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
+    "url": "https://contoso-my.sharepoint.com/personal/user_redacted/_api/v2.0/drive/items/01REDACTED_ITEM_ID_PLACEHOLDER/uploadSession?guid=%27203d6bf7-d201-4125-b628-d568f8a71dfa%27&overwrite=True&rename=False&dc=0"
   },
   {
     "type": "request",
@@ -493,13 +493,13 @@
       "X-Client-Language": "zh-cn"
     },
     "hasPostData": true,
-    "postData": "{\"EntityRequests\":[{\"QueryAnnotations\":[{\"Id\":\"SPO_ZTc1ZjJhZjUtNGJiNy00ZDFmLTg5NDYtZGY1MjYzZGFkYmM0LGEwODY4ZWU3LTNhMzMtNGNhOS1iMWNiLTJiZWRmMGFhOTQ4NCwzN2Q5NzIwNy02ZTE5LTQxNzQtOGY5MC0xNTEyMjU4ODA0ZTA_01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7\",\"Type\":\"LocalFile\",\"Text\":\"test-100mb.txt\"}],\"PreferredResultSourceFormat\":\"EntityData\",\"SupportedResultSourceFormats\":[\"EntityData\"]}],\"LogicalId\":\"e636bec7-cecd-4851-abb7-4a982ca19a42\",\"Cvid\":\"09f24191-3fd5-4834-bb73-053ca5b0f60f\",\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_Drawer\",\"Dimensions\":[{\"DimensionName\":\"ScenarioDescription\",\"DimensionValue\":\"officeweb.prefetch.getdocumentsummary.fileupload\"},{\"DimensionName\":\"ScenarioType\",\"DimensionValue\":\"PO\"}]},\"CacheMode\":\"FireForget\"}",
+    "postData": "{\"EntityRequests\":[{\"QueryAnnotations\":[{\"Id\":\"SPO_ZTc1ZjJhZjUtNGJiNy00ZDFmLTg5NDYtZGY1MjYzZGFkYmM0LGEwODY4ZWU3LTNhMzMtNGNhOS1iMWNiLTJiZWRmMGFhOTQ4NCwzN2Q5NzIwNy02ZTE5LTQxNzQtOGY5MC0xNTEyMjU4ODA0ZTA_01REDACTED_ITEM_ID_PLACEHOLDER\",\"Type\":\"LocalFile\",\"Text\":\"test-100mb.txt\"}],\"PreferredResultSourceFormat\":\"EntityData\",\"SupportedResultSourceFormats\":[\"EntityData\"]}],\"LogicalId\":\"e636bec7-cecd-4851-abb7-4a982ca19a42\",\"Cvid\":\"09f24191-3fd5-4834-bb73-053ca5b0f60f\",\"Scenario\":{\"Name\":\"Harmony.Web.Copilot_Drawer\",\"Dimensions\":[{\"DimensionName\":\"ScenarioDescription\",\"DimensionValue\":\"officeweb.prefetch.getdocumentsummary.fileupload\"},{\"DimensionName\":\"ScenarioType\",\"DimensionValue\":\"PO\"}]},\"CacheMode\":\"FireForget\"}",
     "timestamp": 499660.459767
   },
   {
     "type": "request",
     "requestId": "45268.5165",
-    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel",
+    "url": "https://graph.microsoft.com/v1.0/drives/b!REDACTED_DRIVE_ID_PLACEHOLDER/items/01REDACTED_ITEM_ID_PLACEHOLDER?$select=sensitivityLabel",
     "method": "GET",
     "headers": {
       "sec-ch-ua-platform": "\"Windows\"",
@@ -529,7 +529,7 @@
   {
     "type": "request",
     "requestId": "FCBE37BEFE90FEFC4E1A6B7A42C44A63",
-    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel",
+    "url": "https://graph.microsoft.com/v1.0/drives/b!REDACTED_DRIVE_ID_PLACEHOLDER/items/01REDACTED_ITEM_ID_PLACEHOLDER?$select=sensitivityLabel",
     "method": "OPTIONS",
     "headers": {
       "Accept": "*/*",
@@ -545,7 +545,7 @@
     "type": "response",
     "requestId": "FCBE37BEFE90FEFC4E1A6B7A42C44A63",
     "status": 200,
-    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel"
+    "url": "https://graph.microsoft.com/v1.0/drives/b!REDACTED_DRIVE_ID_PLACEHOLDER/items/01REDACTED_ITEM_ID_PLACEHOLDER?$select=sensitivityLabel"
   },
   {
     "type": "response",
@@ -564,6 +564,6 @@
     "type": "response",
     "requestId": "45268.5165",
     "status": 200,
-    "url": "https://graph.microsoft.com/v1.0/drives/b!9Spf57dLH02JRt9SY9rbxOeOhqAzOqlMscsr7fCqlIQHctk3GW50QY-QFRIliATg/items/01SPEVMNJKZ7HWAMVLWVDZYWIGNHKX5NA7?$select=sensitivityLabel"
+    "url": "https://graph.microsoft.com/v1.0/drives/b!REDACTED_DRIVE_ID_PLACEHOLDER/items/01REDACTED_ITEM_ID_PLACEHOLDER?$select=sensitivityLabel"
   }
 ]

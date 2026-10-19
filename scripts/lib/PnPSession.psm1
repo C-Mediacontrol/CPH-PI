@@ -1,4 +1,4 @@
-﻿# shared/PnPSession.psm1
+# shared/PnPSession.psm1
 # DPS 认证层重构：三级 cookie 会话（PnP v1.12.0 cookie 认证，消除 UseWebLogin 脚本错误弹窗）
 # - Tier 1: 磁盘缓存 ~/.dps-session.json
 # - Tier 2: IE（WinINet）cookie 直读 CookieReader.GetCookie
@@ -24,10 +24,15 @@ function Get-PnpV1ModulePath {
     if ($ModuleBases -and @($ModuleBases).Count -gt 0) {
         $bases = @($ModuleBases)
     } else {
-        $bases = @(
-            (Join-Path $env:USERPROFILE 'OneDrive - CMA CGM\Documents\WindowsPowerShell\Modules\PnP.PowerShell'),
+        $dynamicBases = @(
             (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules\PnP.PowerShell')
         )
+        # 动态探测可能存在的 OneDrive 重定向 Documents 目录
+        $odDirs = Get-ChildItem -Path $env:USERPROFILE -Directory -Filter "OneDrive*" -ErrorAction SilentlyContinue
+        foreach ($od in $odDirs) {
+            $dynamicBases += (Join-Path $od.FullName 'Documents\WindowsPowerShell\Modules\PnP.PowerShell')
+        }
+        $bases = $dynamicBases
     }
     foreach ($base in $bases) {
         if (-not (Test-Path $base)) { continue }
@@ -51,12 +56,16 @@ if ($script:PnpV1Path) {
     Import-Module PnP.PowerShell -ErrorAction Stop
 }
 
-$script:DpsContexts = @{}    # 多站点内存缓存（2026-08-14：按 SiteUrl 分槽；域级 cookie 磁盘缓存仍单文件共用）
+$script:DpsContexts = @{}    # 多站点内存缓存
 
 function Get-DpsSessionCacheFile {
     param([object]$Config)
     if ($Config -and $Config.SharePoint -and $Config.SharePoint.SessionCacheFile) { return [string]$Config.SharePoint.SessionCacheFile }
-    return (Join-Path $env:USERPROFILE '.ltk-shipschedule-session.json')
+    $cphCache = Join-Path $env:USERPROFILE '.cph\pnp-session.json'
+    if (Test-Path $cphCache) { return $cphCache }
+    $legacyCache = Join-Path $env:USERPROFILE '.ltk-shipschedule-session.json'
+    if (Test-Path $legacyCache) { return $legacyCache }
+    return $cphCache
 }
 
 function Read-DpsSessionCache {
