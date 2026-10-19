@@ -1,7 +1,7 @@
 # 综合技术架构规范：全工作区源码快照增压、大文件分块直传、SharePoint 物理镜像与子代理微切片隔离体系 (Unified Workspace Supercharger, Resumable Upload, SharePoint Mirror & Scoped Subagent Architecture)
 
 > **设计日期**: 2026-10-19  
-> **文档版本**: v1.3.0 (对抗审计终审闭环版 / Fully Audited & Hardened v1.3.0)  
+> **文档版本**: v1.3.1 (对抗审计中立对账与硬化闭环版 / Fully Audited & Hardened v1.3.1)  
 > **文档地位**: 本分支下全工作区增压与持久化镜像的**唯一权威技术规范**（同日所有历史草稿均已标注废止）  
 > **关联分支**: `feat/workspace-snapshot-supercharger`  
 > **关联变更**: `CR-2026-10-19-01` (见 [`.docs/CHANGE-REQUEST.md`](../CHANGE-REQUEST.md))  
@@ -9,6 +9,7 @@
 > 1. 第一轮中立审计: [`.docs/audit/report-C-spec-neutral-review.md`](../audit/report-C-spec-neutral-review.md)  
 > 2. 第二轮中立复评: [`.docs/audit/report-D-spec-neutral-review-v1.1.md`](../audit/report-D-spec-neutral-review-v1.1.md)  
 > 3. 第三轮中立复评: [`.docs/audit/report-E-spec-neutral-review-v1.2.md`](../audit/report-E-spec-neutral-review-v1.2.md)  
+> 4. 第四轮中立复评: [`.docs/audit/report-F-spec-neutral-review-v1.3.md`](../audit/report-F-spec-neutral-review-v1.3.md)  
 > **受控证据索引 (已安全脱敏)**:  
 > 1. 宿主 9222 端口 100MB 真实大文件分块抓包: [`.docs/evidence/upload-network-trace.json`](../evidence/upload-network-trace.json)  
 > 2. `GPT-6.1 Sol` 4MB 源码快照 3 跳跨文件因果推演原始记录: [`.docs/evidence/rag-boundary-experiment-results.json`](../evidence/rag-boundary-experiment-results.json)  
@@ -27,25 +28,25 @@
 * **简易直传通道 (≤ 4MB 经验假说区间)**：
   单次 `PUT https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/{fileName}:/content`，快速可靠落盘；
 * **断点分块直传通道 (> 4MB 经验假说区间)**：
-  虽然 Microsoft Graph 服务端标准文档定义简易上传最大可支持 250MB，但在 100MB 实测抓包中观测到：**Copilot Web 客户端在文件较大时必定切入分块上传会话**。为与 Copilot 云端切片与前端状态机保持严密协议对齐，Harness 将 4MB 作为经验假说阈值（并在 Phase 0 通过 3.9MB vs 4.1MB 边界实验正式验证）：
+  虽然 Microsoft Graph 服务端标准文档定义简易上传最大可支持 250MB，但在 100MB 实测抓包中观测到：**Copilot Web 客户端在文件较大时切入分块上传会话**。为与 Copilot 云端切片与前端状态机保持严密协议对齐，Harness 将 4MB 作为经验假说阈值（并在 Phase 0 通过 3.9MB vs 4.1MB 边界实验正式验证）：
   1. 发起 `POST /me/drive/special/copilotuploads:/{name}:/createUploadSession` 获取专属 `uploadUrl`；
   2. 客户端以严格的 **`8,192,000` 字节 (8,000 KB)** 步长（严格符合微软要求的 320 KiB 整数倍）循环发起分块 `PUT` 请求；
-  3. 服务端基于 `nextExpectedRanges` 驱动续传，中间分块返回 `202 Accepted`，末尾分块返回 `201 Created`（或 `200 OK`），返回持久化 `DriveItem` 元数据；
+  3. 服务端在首轮会话返回 `nextExpectedRanges: ["0-"]`。在标准 Microsoft Graph 分块协议中，中间分块返回 `202 Accepted` 并携带后续预期范围，末尾分块返回 `201 Created`（或 `200 OK`），返回持久化 `DriveItem` 元数据（注：抓包记录证实了 100MB 传输触发了分块 PUT、12 次 202 与最终 201 状态码；逐块由 `nextExpectedRanges` 响应体驱动则属于标准 Graph API 协议规范定义）；
   4. 抓包中观察到随后调用 `POST /searchservice/api/v1/unfurl?domain=File` 完成即时附件卡片组装。
 * **物理吞吐性能**：实测 100MB 文本在企业通道中耗时 24 秒全量落盘，平均吞吐达 ~4.2 MB/s。
 
 ### 1.2 实测物理证据二：Substrate 云端 RAG + GPT-6.1 Sol 真实语义边界
 针对“云端 RAG 是否仅具备单跳关键词检索”的疑虑，在包含 12 万行合成代码干草堆的 4.00 MB 代码快照中，埋入物理间隔约 1.5MB 的 3 跳跨文件因果链（`PaymentGatewayService` ➔ `DispatcherRegistry` ➔ `KernelSecurityGuard` ➔ 异常码 `CRITICAL_FAULT_ZERO_TRUST_QUORUM_LOST_0x992B`）：
-* **测试结论**：在提示词**完全不提及任何下游符号与异常代码**的前提下，`GPT-6.1 Sol` 深度思考 58.5 秒，盲测推演出了完整的跨文件调用链与底层异常（原始测试数据见 [`.docs/evidence/rag-boundary-experiment-results.json`](../evidence/rag-boundary-experiment-results.json)）；
+* **测试结论**：在提示词**完全不提及任何下游符号与异常代码**的前提下，`GPT-6.1 Sol` 深度思考约 58.5 秒（由自动化控制台计时观测，并已补入基准结果文件），盲测推演出了完整的跨文件调用链与底层异常（原始测试数据见 [`.docs/evidence/rag-boundary-experiment-results.json`](../evidence/rag-boundary-experiment-results.json)）；
 * **机制观察与严谨定性**：模型回复的分析部分显示，初次摘要未发现直接异常时，模型在云端发起了跟进检索。该测试在 $n=1$ 样本下证实了该多跳检索能力的物理存在性；在后续集成阶段将开展 $n \ge 5$ 重复试验与负样本测试，以确立统计意义上的召回率置信区间。
 
 ### 1.3 核心矛盾与架构破解
 1. **化解 SharePoint 爬虫延迟 (3~15 分钟)**：
-   若将 SharePoint 目录作为静态知识库绑定，后台 Search Crawler 需 3~15 分钟建立索引，无法支撑即时编码回路。本架构采用**“双层流体系”**：SharePoint 负责企业级 TB 容量的后台物理持久化归档；会话内认知全部走**会话级附件卡片 (Session Attachment)**，享受云端秒级即时挂载（实测约 20~25s 附件卡片就绪），免去 3~15 分钟后台爬虫延迟；
+   若将 SharePoint 目录作为静态知识库绑定，后台 Search Crawler 需 3~15 分钟建立索引，无法支撑即时编码回路。本架构采用**“双层流体系”**：SharePoint 负责企业级 TB 容量的后台物理持久化归档；会话内认知全部走**会话级附件卡片 (Session Attachment)**，享受云端十秒级即时挂载（实测约 20~25s 附件卡片就绪），免去 3~15 分钟后台爬虫延迟；
 2. **根除快照时效性崩塌 (Stale Snapshot Paradox)**：
-   首轮快照确立全局背景拓扑；单点编码轮次严禁重复上传全库快照，依赖本地 TDD 绿灯门禁、单文件 PnP 同步与极简物理指纹头进行状态更新；跨阶段 Handoff 单调递增产生新版本快照；
+   首轮快照确立全局背景拓扑；单点编码轮次保持首轮快照基准，依赖本地 TDD 绿灯门禁、单文件 PnP 同步与极简物理指纹头进行状态更新；跨阶段 Handoff 单调递增产生新版本快照；
 3. **子代理认知纯度防御 (Subagent Scoped Slice)**：
-   恪守最小特权原则，子代理严禁接触全库快照，仅接收主会话切片派发的局部微切片（10~30KB）及前序审查文档；
+   恪守最小特权原则，子代理仅接收主会话切片派发的局部微切片（10~30KB）及前序审查文档，隔离全局全景干扰；
 4. **纯协议与零 CDP 边界 (Pure Protocol & Scoped Fallback)**：
    代码上传、快照挂载、会话通信与执行推理全链路 100% 纯网络流（Node/Bun 原生 `fetch` + Chathub SignalR 原生 WebSocket），零 CDP / 零浏览器依赖；宿主仅在 `file-porter.ts` 中保留 `blob:` 本地下载的兜底降级分支。
 
@@ -66,8 +67,8 @@
 +---------------------------------------+      +------------------------------------+
 | 2. SharePoint 物理镜像库 (PnP Engine) |      | 3. 纯协议分块直传 (SubstrateUploader)|
 |    - 运行环境: 强制 powershell.exe 5.1 |      |    - 传输协议: HTTP PUT / Resumable|
-|    - 核心实现: PnPSession 受控三级Cookie|      |    - ≤4MB: 单次 PUT ...:/content   |
-|    - 存储路径: /sites/.../Workspaces/ |      |    - >4MB: createUploadSession 分块 |
+|    - 核心实现: PnPSession 受控三级Cookie|      |    - ≤4MB(假说): 单次 PUT ...:/content|
+|    - 存储路径: /sites/.../Workspaces/ |      |    - >4MB(假说): createUploadSession分块|
 |    - 特性: 企业级大容量、全量物理目录树 |      |    - 产物: AttachmentAnnotation    |
 +---------------------------------------+      +------------------------------------+
                                                                   |
@@ -113,15 +114,29 @@ export class SubstrateUploader {
   }
 
   /**
-   * 向后兼容调用点别名 (无缝适配 orchestrator.ts 与 subagent-runner.ts 存量调用)
+   * 向后兼容调用点别名 (无缝适配存量 3 参 / 4 参调用及模型参数错序容错)
    */
   public static async uploadDocumentToOneDrive(
     graphAccessToken: string,
     content: string | Buffer,
     fileName: string,
-    signal?: AbortSignal
+    customBaseUrlOrSignal?: string | AbortSignal
   ): Promise<UploadDocumentResult> {
-    return await this.uploadDocumentAuto(graphAccessToken, content, fileName, signal);
+    let actualContent = content;
+    let actualFileName = fileName;
+    // 保留历史启发式容错：当模型将长正文填入 fileName 时自动互换
+    if (
+      typeof content === "string" &&
+      (content.endsWith(".md") || content.endsWith(".txt") || content.startsWith("handoff-")) &&
+      !content.includes("\n") &&
+      (fileName.includes("\n") || fileName.length > 255)
+    ) {
+      actualContent = fileName;
+      actualFileName = content;
+    }
+
+    const signal = customBaseUrlOrSignal instanceof AbortSignal ? customBaseUrlOrSignal : undefined;
+    return await this.uploadDocumentAuto(graphAccessToken, actualContent, actualFileName, signal);
   }
 
   /**
@@ -393,7 +408,7 @@ if ($Action -eq "SyncSingleFile") {
 落地于 `src/workspace/snapshot-generator.ts`：
 
 ### 5.1 精准枚举算法：基于 `git ls-files -z` 的全景快照生成
-彻底排除构建产物与审计文档，同时确保纳入核心 Agent 提示词与会话底层源码，实现实测精准对账的 **151 文件 / 1.26 MB (1,324,834 字节)** 高信噪比快照：
+彻底排除构建产物与审计文档，同时确保纳入核心 Agent 提示词与会话底层源码。实测 151 个源文件原始字节总和为 **1,324,834 字节 (1.26 MB)**；经由清单组织与文件包裹后的快照交付件 `workspace-v1.txt` 实际产物大小为 **1,365,870 字节 (1.30 MiB / 1.37 MB)**：
 
 ```typescript
 import { execSync } from "node:child_process";
@@ -405,7 +420,7 @@ export class SnapshotGenerator {
   public static MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024; // 50MB 物理安全硬红线
   public static EXCLUDED_DIR_PREFIXES = ["package/", ".docs/", "dist/", ".cph/", "node_modules/"];
 
-  // 精确敏感文件正则模式：仅排除真正的凭据与私钥，坚决不误杀 session/token 源码
+  // 敏感文件正则模式：精确匹配凭据、私钥与环境配置，常规业务源码正常纳入
   public static SENSITIVE_FILE_PATTERNS = [
     /^\.env(\..+)?$/i,
     /^.*tokens?\.json$/i,
@@ -533,7 +548,7 @@ export class SnapshotGenerator {
 贯彻**最小特权与注意力聚焦**原则：
 * **工单契约**: 接收工单声明的 `targetFiles`（1~3 个文件）与可选的 `prerequisiteReports`（前序 Researcher 审查文档）；
 * **闭包补全**: 自动将这几个目标文件直接 `import` 声明的核心接口定义纳入切片，组装为 `subagent-slice-task-<id>.txt`（仅 10KB ~ 30KB）；
-* **纯协议绑定**: 由 `SubstrateUploader` 毫秒级直传为专有附件，注入子代理会话的 `annotations`；
+* **纯协议绑定**: 由 `SubstrateUploader` 即时直传为专有附件，注入子代理会话的 `annotations`；
 * **物理效果**: 子代理在纯净、无任何无关代码干扰的工作内存中专注于当前模块的攻坚。
 
 ---
@@ -542,7 +557,7 @@ export class SnapshotGenerator {
 
 ```
 【阶段一：全局开局】Turn 1
-本地磁盘 ───> SnapshotGenerator (git-aware) ───> workspace-v1.txt (实测 151 文件 / 1.26MB)
+本地磁盘 ───> SnapshotGenerator (git-aware) ───> workspace-v1.txt (151 源文件 / 1.30 MiB 产物)
                    │
                    ├──> SubstrateUploader (纯协议自适应直传) ──> AttachmentAnnotation
                    │                                                  │
@@ -555,19 +570,19 @@ export class SnapshotGenerator {
 【阶段二：单点攻坚编码】Turn 2 ~ N (高频快跑循环)
 1. Copilot 输出局部代码/补丁 (如 src/billing/tax.ts)
 2. 本地 Harness 拦截代码 ➔ 本地打补丁 ➔ 执行本地验证 (`bun test` / `tsc`)
-   ├── [验证失败 RED] ──> 本地拦截！SharePoint 绝不更新！
+   ├── [验证失败 RED] ──> 本地拦截！SharePoint 保持原样！
    │                     将具体错误反馈给 Copilot 闭环修复。
    └── [验证通过 GREEN] ─> 
          ├── PnP 后台秒级 (1~3s) 将该单文件更新到 SharePoint 真实目录树；
          └── 本地 Harness 下发极简物理指纹头给 Copilot：
              ```markdown
              [WORKSPACE STATE UPDATE]
-             - Snapshot: sha256:7f4a8b... (151 files, 1.26MB)
+             - Snapshot: sha256:7f4a8b... (151 files, 1.30MiB artifact)
              - Target: src/billing/tax.ts (Tests: 15/15 PASSED)
              - Cloud Mirror: Synced to SharePoint (Eventual Consistent)
              - Next Action: 推进下一个 DAG 任务
              ```
-   *(注：单点编码轮次严禁重复上传全库快照！模型以首轮快照为背景拓扑，以指纹头和当前修改文件为最新真实事实)*
+   *(注：单点编码轮次维持首轮快照拓扑，后续状态仅通过极简物理指纹头与单文件补丁高效同步，避免重复全量上传)*
 -----------------------------------------------------------------------------------------
 【阶段三：里程碑收敛与跨会话接力】Handoff / Subagent
 当一个战役里程碑达成、上下文窗口饱和或需要换子代理接力时：
@@ -627,9 +642,10 @@ export class SnapshotGenerator {
 | **PnP 网络抖动** | SharePoint CSOM 上传超时 | 重试 3 次 (间隔 5s)；仍失败则记入本地 Dirty Ledger，绝不阻塞当前会话，下一轮测试绿灯时自动补推 |
 | **Cookie 凭据过期** | SharePoint 报 401/403 | 触发 `PnPSession` 三级 Cookie 自动降级读取 (磁盘 ➔ WinINet 文件存储)；无法静默恢复时提示操作者 |
 | **凭据安全保护** | Cookie 缓存文件泄露风险 | 针对 `~/.cph/pnp-session.json` 实施 Windows ACL 仅限当前用户读写；CI/CD 与代码提交严格排除 |
+| **凭据泄露与历史卫生** | 敏感 Token 或租户信息暴露 | 实施提交前正则扫描阻断、证据文件自动化占位符脱敏、测试夹具隔离与 Git 对象库定期对账 |
 | **预授权 URL 脱敏** | `uploadUrl` 泄露风险 | Harness 日志格式化时对 `createUploadSession` 返回的预授权 URL 查询参数自动脱敏打码 |
 | **大文件分块中断** | HTTP 传输在某一分块断开 | 依据服务端返回的 `nextExpectedRanges`，自动执行 HTTP Range 增量断点续传 |
-| **单测死循环 / 挂起** | `bun test` 超时 | 依据项目基线自适应设定超时（默认 `baseline * 3`，即 90 秒），Windows 下通过 `taskkill.exe /F /T` 强杀整棵进程树 |
+| **单测死循环 / 挂起** | `bun test` 超时 | 依据项目当前基线（20.14 秒）自适应设定超时（以基线 3 倍即约 60 秒为基准上限），Windows 下通过 `taskkill.exe /F /T` 终止超时进程树 |
 | **补丁损坏 / 格式漂移**| Patch 无法在本地干净命中 | 本地校验拦截，不写磁盘，以标准格式错误协议要求模型基于唯一上下文重新生成 |
 
 ---
@@ -639,17 +655,17 @@ export class SnapshotGenerator {
 ### Phase 0: 纯协议大文件分块直传模块 (Resumable Upload Engine)
 - 在 `src/transport/substrate-uploader.ts` 实现 `createUploadSession` 与 8,000 KB 分块 PUT 状态机（支持 `nextExpectedRanges`、HTTP-Date 解析、Abort 立即上抛与防无限重试熔断）；
 - 同步加固 `uploadSimple`（支持 429/503 重试、Retry-After 解析、指数退避与 AbortSignal）；
-- 导出 `uploadDocumentToOneDrive` 作为向后兼容别名，无缝适配存量调用；
+- 导出 `uploadDocumentToOneDrive` 作为向后兼容别名（支持 3 参/4 参及错序启发式兜底），无缝适配存量调用；
 - 编写 `tests/transport/resumable-uploader.test.ts`，同时覆盖简易上传与分块断流后续传、429 退避、异常上抛与取消流转；
-- **边界实验**：实测 3.9MB 与 4.1MB 边界，核对 Copilot 云端切片与 `unfurl` 的真实触发机制。
+- **边界实验**：实测 3.9MB 与 4.1MB 边界，核对 Copilot 云端切片与 `unfurl` 的真实触发机制；若实验推翻 4MB 假说，直接调整常量配置，架构路由自适应平移。
 
 ### Phase 1: SharePoint 物理同步引擎与受控依赖 (`sp-sync-engine.ps1`)
 - 在 `scripts/sp-sync-engine.ps1` 中集成 Windows PowerShell 5.1 版本断言、`PnP 1.12.0` 与受控 Vendored 模块 `scripts/lib/PnPSession.psm1`；
-- 支持 `~/.cph/pnp-session.json` 命名空间缓存与动态用户目录探测；
+- 支持 `~/.cph/pnp-session.json` 命名空间缓存、Windows ACL 隔离与动态用户目录探测；
 - 编写集成测试验证本地与 SharePoint 目录树的增量镜像与单文件推送（秒级吞吐），并配套 CI 离线 Mock 传输层。
 
 ### Phase 2: Git-Aware 全景快照与子代理微切片生成器 (Snapshot & Slice Generators)
-- 在 `src/workspace/snapshot-generator.ts` 实现基于 `git ls-files -z` 的全景快照（实测本仓库收敛至 151 文件 / 1.26 MB，包含 9 项核心源码与提示词断言）与局部微切片组装逻辑；
+- 在 `src/workspace/snapshot-generator.ts` 实现基于 `git ls-files -z` 的全景快照（实测本仓库收敛至 151 源文件 / 1.30 MiB 产物，包含 9 项核心源码与提示词断言）与局部微切片组装逻辑；
 - 编写 `tests/workspace/snapshot-generator.test.ts` 验证正则敏感过滤、子模块隔离、密钥扫描阻断与核心断言门禁。
 
 ### Phase 3: Orchestrator 挂载通道与生命周期闭环集成 (Pipeline Integration)

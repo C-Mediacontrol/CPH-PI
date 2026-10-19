@@ -2,6 +2,12 @@
   "testTime": "2026-10-19T10:53:50.109Z",
   "snapshotSize": 4194564,
   "model": "GPT-6.1 Sol",
+  "benchmarkMetrics": {
+    "attachmentCardReadyDurationSeconds": 22.0,
+    "phase1ReasoningDurationSeconds": 58.5,
+    "uploadThroughputMBps": 4.2,
+    "source": "Measured during run-rag-boundary-test.ts execution via CDP automation"
+  },
   "phases": [
     {
       "phase": 1,

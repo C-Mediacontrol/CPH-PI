@@ -61,17 +61,24 @@ $script:DpsContexts = @{}    # 多站点内存缓存
 function Get-DpsSessionCacheFile {
     param([object]$Config)
     if ($Config -and $Config.SharePoint -and $Config.SharePoint.SessionCacheFile) { return [string]$Config.SharePoint.SessionCacheFile }
-    $cphCache = Join-Path $env:USERPROFILE '.cph\pnp-session.json'
-    if (Test-Path $cphCache) { return $cphCache }
-    $legacyCache = Join-Path $env:USERPROFILE '.ltk-shipschedule-session.json'
-    if (Test-Path $legacyCache) { return $legacyCache }
-    return $cphCache
+    return (Join-Path $env:USERPROFILE '.cph\pnp-session.json')
 }
 
 function Read-DpsSessionCache {
-    param([string]$CacheFile)
+    param(
+        [string]$CacheFile,
+        [switch]$AllowLegacyFallback
+    )
     if (-not $CacheFile) { $CacheFile = Get-DpsSessionCacheFile }
-    if (-not (Test-Path $CacheFile)) { return $null }
+    if (-not (Test-Path $CacheFile)) {
+        if ($AllowLegacyFallback) {
+            $legacyCache = Join-Path $env:USERPROFILE '.ltk-shipschedule-session.json'
+            if (Test-Path $legacyCache) { $CacheFile = $legacyCache }
+            else { return $null }
+        } else {
+            return $null
+        }
+    }
     try {
         $c = Get-Content $CacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($c -and $c.SiteUrl -and $c.Cookies -and @($c.Cookies).Count -gt 0) { return $c }
@@ -87,9 +94,26 @@ function Write-DpsSessionCache {
     )
     if (-not $CacheFile) { $CacheFile = Get-DpsSessionCacheFile }
     if (-not $Cookies -or @($Cookies).Count -eq 0) { throw '无可序列化 cookie' }
+
+    $dir = [System.IO.Path]::GetDirectoryName($CacheFile)
+    if (-not (Test-Path $dir)) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null }
+
     $obj = @{ SiteUrl = $SiteUrl; CachedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); Cookies = @($Cookies) }
     $json = $obj | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($CacheFile, $json, [System.Text.UTF8Encoding]::new($false))
+
+    # Windows ACL 权限加固：限定仅当前登录 Windows 用户具备完全控制权限，隔断跨用户访问
+    try {
+        $acl = New-Object System.Security.AccessControl.FileSecurity
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'Allow')
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule($rule)
+        $fileInfo = New-Object System.IO.FileInfo($CacheFile)
+        $fileInfo.SetAccessControl($acl)
+    } catch {
+        # 在非 NTFS 文件系统或受限权限环境中平滑保持
+    }
 }
 
 function Clear-DpsSessionCache {

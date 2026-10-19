@@ -7,7 +7,7 @@
 - **状态**: 批准待实施 (Approved - Ready for Implementation)
 - **关联分支**: `feat/workspace-snapshot-supercharger`
 - **唯一权威技术规范**: [`.docs/specs/2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md`](./specs/2026-10-19-unified-workspace-supercharger-and-pnp-mirror-architecture.md)
-- **审查与审计报告**: [report-C (v1.0.0)](./audit/report-C-spec-neutral-review.md), [report-D (v1.1.0)](./audit/report-D-spec-neutral-review-v1.1.md), [report-E (v1.2.0)](./audit/report-E-spec-neutral-review-v1.2.md)
+- **审查与审计报告**: [report-C (v1.0.0)](./audit/report-C-spec-neutral-review.md), [report-D (v1.1.0)](./audit/report-D-spec-neutral-review-v1.1.md), [report-E (v1.2.0)](./audit/report-E-spec-neutral-review-v1.2.md), [report-F (v1.3.0)](./audit/report-F-spec-neutral-review-v1.3.md)
 - **核心变更摘要**:
   1. **纯协议大文件分块直传**: 在 `SubstrateUploader` 中实现 `createUploadSession` 与 8,000 KB 分块状态机，支持断点续传（由 `nextExpectedRanges` 驱动与 429/503 退避）；
   2. **SharePoint 物理镜像**: 新增 `scripts/sp-sync-engine.ps1`，强制锁定 Windows PowerShell 5.1 运行，复用 `PnPSession.psm1` 三级 Cookie 机制，提供企业级容量的单向物理归档；
