@@ -251,9 +251,9 @@ switch ($Action) {
         $manifest = Get-SyncManifest -Path $ManifestPath
         $files = @()
 
-        # 优先使用 git ls-files
+        # 优先使用 git ls-files (跟踪文件 + 未跟踪文件，排除 .gitignore)
         try {
-            $gitOut = git -C $WorkspaceRoot ls-files 2>$null
+            $gitOut = git -C $WorkspaceRoot ls-files --cached --others --exclude-standard 2>$null
             if ($LASTEXITCODE -eq 0 -and $gitOut) {
                 $files = @($gitOut)
             }
