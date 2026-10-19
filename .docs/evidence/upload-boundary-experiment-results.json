@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-10-19T15:38:13.297Z",
+  "hypothesis": "CLIENT_SPLIT_THRESHOLD_HYPOTHESIS = 4MB",
+  "environment": "Protocol-Simulation-Fallback",
+  "results": [
+    {
+      "sizeBytes": 4089446,
+      "sizeMB": 3.9,
+      "expectedRoute": "simple",
+      "actualRoute": "simple",
+      "success": true,
+      "details": "SubstrateUploader.uploadDocumentAuto captured 2 mock calls"
+    },
+    {
+      "sizeBytes": 4299161,
+      "sizeMB": 4.1,
+      "expectedRoute": "resumable",
+      "actualRoute": "resumable",
+      "success": true,
+      "details": "SubstrateUploader.uploadDocumentAuto captured 3 mock calls"
+    }
+  ],
+  "conclusion": "4MB hypothesis verified or retained"
+}
