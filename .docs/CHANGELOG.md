@@ -2,6 +2,38 @@
 
 本文档记录 CPH-PI 核心调度核、协议层、会话治理与展现层的关键变更历史，严格遵循《AGENTS.md》开发与治理准则。
 
+## [2026-10-19] 长战役连续自主接力跃迁与集群并发容量感知架构升级 (Autonomous Multi-Hop Handoff & Swarm Concurrency)
+
+### 概述
+排查并彻底解决真实长战役日志中执行至 Gen 11 发生意外中断、返回终端提示符且输入“请继续”无效的根本原因，以及多账号集群下后期仅派发 2-3 个子任务的吞吐瓶颈。严格遵循《AGENTS.md》开发与治理宪章（纯粹中立、黑盒抽象、正向引导、全量附件），将 `maxGenerations` 与 `maxAutonomousHandoffHops` 默认提升至 50，实现代次超标时自主触发无缝接力归档与连续接续；引入集群并发容量事实注入，引导主控模型满额利用账号池算力。全量 651 项单元、集成与 E2E 测试保持 100% 绿灯全通。
+
+### 变更分类明细
+
+#### 1. 核心调度核与 CLI 连续自主接力解脱 (`src/agent/orchestrator.ts`, `src/cli.ts`, `src/cli/args.ts`)
+- **根因**:
+  - `orchestrator.ts` 默认 `maxGenerations = 10`。运行 6 小时进入 Gen 11 后，第 944 行直接返回未完成且遗漏了 `handedOff: true`，导致 `cli.ts` 退出自动接力循环并返回 `cph-pi>` 交互提示符；
+  - 用户在终端输入“请继续”时，由于 `orchestrator.generation` 已累积至 11+ 且 `maxGenerations` 仍为 10，再次派发子代理立即再次触发阻断；
+  - `turn = 0` 的重置逻辑被包裹在 `if (this.generation <= this.maxGenerations)` 守卫内，导致跨代后推理轮数未清零，累积溢出至 133/30；
+  - `cli.ts` 在 `constructor` 与 `initSession` 中实例化 `CopilotOrchestrator` 时遗漏了透传 `maxGenerations: this.maxAutonomousHandoffHops`。
+- **改动**:
+  - `src/agent/orchestrator.ts`: 提升 `maxGenerations` 默认至 50；当 `generation > maxGenerations` 时，自动生成五维阶段性成果交接快照（`generateHandoffSnapshot`）并返回 `handedOff: true, handoffSnapshot, handoffDocPath`，驱动 CLI 自动创建后继会话接力跃迁；后继代次无条件重置 `turn = 0`，确保全新 30 轮推理预算兑现；
+  - `src/cli.ts`: 提升 `maxAutonomousHandoffHops` 默认至 50，并向 `CopilotOrchestrator` 构造函数显式传递 `maxGenerations: this.maxAutonomousHandoffHops`；
+  - `src/cli/args.ts`: 同步更新 CLI `--hops` 帮助文档默认值为 50。
+
+#### 2. 账号池集群容量客观事实注入 (`src/protocol/prompt-builder.ts`, `src/session/main-plan-snapshot.ts`)
+- **根因**:
+  - 此前 Orchestrator 向主控注入的提示词仅包含工作区骨架与物理文件大小，缺乏当前账号池物理集群容量事实，导致模型仅按单文件 ≤300 行规则保守切片为 2-3 个子任务，无法获知底层 4 账号并发资源。
+- **改动**:
+  - `src/agent/orchestrator.ts`: 新增 `getConcurrencyWorkerCount()` 私有辅助方法，动态读取当前账号池可用/白名单账号总数；
+  - `src/protocol/prompt-builder.ts`: 在 `buildDirectAgentPrompt`、`buildTurn2TaskPrompt`、`buildTurn2TaskPromptWithAttachment` 中增加可选 `concurrencyWorkers?: number`，若 >0 注入 `- 并发集群容量: N 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`；
+  - `src/session/main-plan-snapshot.ts`: `formatSuccessorTurn1Prompt` 支持透传并注入集群并发容量事实，确保后继代次主控会话持续感知集群算力。
+
+#### 3. 主控认知塑形与正向集群并发指引 (`cph-main-agent-prompt.txt`, `skills/subagent/SKILL.md`)
+- **改动**:
+  - 严格遵循《AGENTS.md》准则 3（摒弃负面禁止词，全正向引导），在主控系统提示词 Section 8 与工作区专属技能 `subagent` 核心原则中，增设“集群并发匹配与满载吞吐建议”：在存在多个待攻坚业务切片或正交模块时，推荐单批派发与 Worker 数量匹配的正交子任务，实现多账号集群满负荷并行吞吐。
+
+---
+
 ## [2026-10-19] 传输层权威消息恢复与工具执行生命周期链路修复
 
 ### 概述

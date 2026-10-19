@@ -101,6 +101,7 @@ describe("E2E Session Flow & Auto-Handoff Integration Tests", () => {
         workspaceRoot: tmpDir,
         sessionManager,
         maxTurns: 2,
+        maxAutonomousHandoffHops: 1,
         chatClient: mockClient as any,
         isInteractive: false,
       });
@@ -144,6 +145,7 @@ describe("E2E Session Flow & Auto-Handoff Integration Tests", () => {
           workspaceRoot: tmpDir,
           sessionManager,
           maxTurns: 2,
+          maxAutonomousHandoffHops: 1,
           chatClient: mockClient as any,
           isInteractive: true,
         });

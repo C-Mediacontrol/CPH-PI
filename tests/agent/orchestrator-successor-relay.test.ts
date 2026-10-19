@@ -72,4 +72,72 @@ subagents:
     expect(result.completed).toBe(true);
     expect(result.finalAnswer).toContain("全部子任务验证通过");
   });
+
+  it("should trigger handedOff: true when maxGenerations is reached to drive autonomous session handoff", async () => {
+    let turns = 0;
+    const mockChatClient = {
+      sendMessage: async () => {
+        turns++;
+        if (turns === 1) {
+          return {
+            text: `\`\`\`action
+tool: invoke_subagent
+subagents:
+  - role: coder
+    description: 编写核心模块
+    prompt: 编写模块
+\`\`\``,
+          };
+        }
+        return {
+          text: `\`\`\`action
+tool: invoke_subagent
+subagents:
+  - role: coder
+    description: 编写模块2
+    prompt: 编写模块2
+\`\`\``,
+        };
+      },
+    };
+
+    const mockRunner = {
+      executeBatch: async () => [
+        {
+          id: "sub-1",
+          role: "coder",
+          description: "编写核心模块",
+          success: true,
+          finalAnswer: "完成",
+          turnsCount: 1,
+          durationMs: 10,
+        },
+      ],
+      formatReportSummary: () => "### 完成",
+    };
+
+    const orchestrator = new CopilotOrchestrator({
+      workspaceRoot: process.cwd(),
+      chatClient: mockChatClient as any,
+      subagentRunner: mockRunner as any,
+      maxGenerations: 1, // Triggers cutoff on gen 2
+    });
+
+    const result = await orchestrator.run({
+      task: "长战役多代执行任务",
+      sessionId: "ses_max_gen_test",
+    });
+
+    // When maxGenerations is exceeded, must trigger handedOff: true to allow continuous autonomous relay
+    expect(result.completed).toBe(false);
+    expect(result.handedOff).toBe(true);
+    expect(result.handoffSnapshot).toBeDefined();
+    expect(result.handoffSnapshot?.length).toBeGreaterThan(0);
+  });
+
+  it("should default maxGenerations to 50 in CopilotOrchestrator options", () => {
+    const orchestrator = new CopilotOrchestrator();
+    expect((orchestrator as any).maxGenerations).toBe(50);
+  });
 });
+

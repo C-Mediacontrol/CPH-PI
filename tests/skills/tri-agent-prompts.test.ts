@@ -203,5 +203,99 @@ describe("Tri-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(skillContent).toContain("轨道 2：Swarm 批量并发虚拟化");
     expect(skillContent).toContain("Plan 范围守恒律与 Partial Success 纵向切片");
   });
+
+  it("should enforce Two-Stage Role Decoupling and Deferred Skill Injection in main prompt and subagent SKILL.md", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+
+    expect(mainPrompt).toContain("两阶段职责解耦与技能延后注入准则");
+    expect(mainPrompt).toContain("第一阶段斥候工单极简化");
+    expect(mainPrompt).toContain("第二阶段集群攻坚工单精准化");
+    expect(mainPrompt).toContain("完整保留在主控自身的规划心智中");
+
+    expect(skillContent).toContain("业务技能解耦与延后注入");
+    expect(skillContent).toContain("完整保留在主控自身的规划心智中");
+
+    // Compliance with Rule 3: No negative prohibition words in Two-Stage guidance
+    const twoStageSection = mainPrompt.substring(
+      mainPrompt.indexOf("两阶段职责解耦与技能延后注入准则"),
+      mainPrompt.indexOf("7. **子任务体量三大物理度量指标")
+    );
+    expect(twoStageSection).not.toContain("严禁");
+    expect(twoStageSection).not.toContain("切勿");
+    expect(twoStageSection).not.toContain("不要");
+    expect(twoStageSection).not.toContain("杜绝");
+  });
+
+  it("should prepend scout guideline header in subagent-runner.ts for inline scout tasks", () => {
+    const runnerSource = fs.readFileSync(path.join(root, "src/agent/subagent-runner.ts"), "utf8");
+    expect(runnerSource).toContain("isInlineScoutTask");
+    expect(runnerSource).toContain("【斥候宏观侦察工单】");
+    expect(runnerSource).toMatch(/本阶段任务聚焦于目标文件的宏观结构概览与顶层大纲探查/);
+  });
+
+  it("should embed native PowerShell execution guide in all three agent prompts", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const coderPrompt = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
+    const researcherPrompt = fs.readFileSync(path.join(root, "cph-researcher-agent-prompt.txt"), "utf8");
+
+    for (const prompt of [mainPrompt, coderPrompt, researcherPrompt]) {
+      expect(prompt).toContain("PowerShell 原生稳健执行规范");
+      expect(prompt).toContain("变量内插优先");
+      expect(prompt).toContain("独立脚本优先");
+      expect(prompt).toContain("保持 PS 5.1 兼容");
+      expect(prompt).toMatch(/-File\s+<?.*\.ps1>?/);
+    }
+  });
+
+  it("should enforce Scout prompt physical outline standard with 3 physical metrics in subagent SKILL.md and main prompt", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const skillContent = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+
+    // Main prompt Scout focus on 3 physical metrics
+    expect(mainPrompt).toMatch(/三大物理指标.*起止行号/);
+    expect(mainPrompt).toMatch(/300\s*行/);
+
+    // Scout template in SKILL.md
+    expect(skillContent).toContain("【斥候探测目标】: 快速摸清 <目标文件或模块> 的物理结构大纲与核心数据流。");
+    expect(skillContent).toContain("梳理文件内的核心类定义、主要函数清单及其起始与结束行号范围");
+    expect(skillContent).toContain("提取输入到输出的核心数据流动拓扑");
+    expect(skillContent).toContain("基于物理行号提出后续精细切片建议（每个切片聚焦于 ≤300 行核心逻辑或单一子系统）。");
+  });
+
+  it("should package PowerShell-Agent-Guide into distribution bundle in docx, txt, pdf, and md formats", () => {
+    const packagerScript = fs.readFileSync(path.join(root, "scripts/package-agent-bundle.ts"), "utf8");
+    const guideDoc = fs.readFileSync(path.join(root, "docs/PowerShell-Agent-Guide.md"), "utf8");
+    const guideTxt = fs.readFileSync(path.join(root, "docs/PowerShell-Agent-Guide.txt"), "utf8");
+
+    expect(packagerScript).toContain("PowerShell-Agent-Guide.docx");
+    expect(packagerScript).toContain("PowerShell-Agent-Guide.txt");
+    expect(packagerScript).toContain("PowerShell-Agent-Guide.pdf");
+    expect(packagerScript).toContain("专属知识库挂载指引");
+    expect(guideDoc).toContain("PowerShell Agent 实战避坑与原生执行指南");
+    expect(guideDoc).toContain("ParserError: (:)");
+    expect(guideDoc).toContain("-File script.ps1");
+    expect(guideTxt).toContain("PowerShell Agent 实战避坑与原生执行指南");
+    expect(guideTxt).toContain("ParserError: (:)");
+    expect(fs.existsSync(path.join(root, "docs/PowerShell-Agent-Guide.docx"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "docs/PowerShell-Agent-Guide.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "docs/PowerShell-Agent-Guide.pdf"))).toBe(true);
+  });
+
+  it("should uphold Rule 3 constructive guidance without negative prohibition words across tri-agent prompts and subagent skill", () => {
+    const files = [
+      "cph-main-agent-prompt.txt",
+      "cph-coder-agent-prompt.txt",
+      "cph-researcher-agent-prompt.txt",
+      "skills/subagent/SKILL.md",
+    ];
+
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(root, file), "utf8");
+      expect(content).not.toContain("严禁");
+      expect(content).not.toContain("切勿");
+    }
+  });
 });
+
 

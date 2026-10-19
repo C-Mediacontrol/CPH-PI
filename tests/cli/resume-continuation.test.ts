@@ -50,13 +50,13 @@ describe("10-Hop Autonomous Relay Limit & Auto-Continuation (Task 5)", () => {
   });
 
   describe("1. Default Hops Limit & CLI Flags Override", () => {
-    it("should default maxAutonomousHandoffHops to 10 in CliApp", () => {
+    it("should default maxAutonomousHandoffHops to 50 in CliApp", () => {
       const app = new CliApp({
         workspaceRoot: tmpDir,
         sessionManager,
         renderer,
       });
-      expect(app.getMaxAutonomousHandoffHops()).toBe(10);
+      expect(app.getMaxAutonomousHandoffHops()).toBe(50);
     });
 
     it("should support option override for maxAutonomousHandoffHops", () => {
@@ -83,11 +83,11 @@ describe("10-Hop Autonomous Relay Limit & Auto-Continuation (Task 5)", () => {
       expect(res4.maxAutonomousHandoffHops).toBe(7);
     });
 
-    it("should document --hops and updated default 10 in getHelpText", () => {
+    it("should document --hops and updated default 50 in getHelpText", () => {
       const help = getHelpText();
       expect(help).toContain("--max-hops");
       expect(help).toContain("--hops");
-      expect(help).toContain("10");
+      expect(help).toContain("50");
     });
   });
 

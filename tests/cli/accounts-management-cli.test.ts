@@ -151,5 +151,65 @@ describe("CLI Accounts Management & Whitelist Configuration Tests", () => {
 
     cli.close();
   });
+
+  it("7. renderCurrentStatusBar should display an allowed account instead of unallowed first account", () => {
+    // TestTokenManager has GSC.VFU2@cma-cgm.com at index 0
+    const pool = new AccountPool(new TestTokenManager(), {
+      allowedAccounts: ["GSC.DDAI@cma-cgm.com", "GSC.MLU@cma-cgm.com"],
+    });
+    let renderedInfo: any;
+    const mockRenderer: any = {
+      renderStatusBar: (info: any) => {
+        renderedInfo = info;
+      },
+    };
+    const cli = new CphPiCli({
+      workspaceRoot: tmpDir,
+      pool,
+      renderer: mockRenderer,
+    });
+
+    cli.renderCurrentStatusBar();
+    expect(renderedInfo).toBeDefined();
+    expect(renderedInfo.currentAccount).not.toBe("GSC.VFU2@cma-cgm.com");
+    expect(["GSC.DDAI@cma-cgm.com", "GSC.MLU@cma-cgm.com"]).toContain(renderedInfo.currentAccount);
+
+    cli.close();
+  });
+
+  it("8. getDiagnosticCard should report available and preferred accounts strictly among allowed whitelist", () => {
+    const pool = new AccountPool(new TestTokenManager(), {
+      allowedAccounts: ["GSC.DDAI@cma-cgm.com", "GSC.MLU@cma-cgm.com"],
+    });
+    const cli = new CphPiCli({
+      workspaceRoot: tmpDir,
+      pool,
+    });
+
+    const card = cli.getDiagnosticCard();
+    expect(card).toContain("2/2"); // 2 allowed accounts available out of 2 allowed total
+    expect(card).not.toContain("GSC.VFU2@cma-cgm.com");
+
+    cli.close();
+  });
+
+  it("9. AccountPool.refreshAccountList should include allowed accounts even if they appear beyond default maxAccounts", () => {
+    class TenAccountManager extends TokenManager {
+      public override loadAccounts(): StoredAccount[] {
+        return Array.from({ length: 12 }, (_, i) => ({
+          email: `user${i + 1}@contoso.com`,
+          refreshToken: `tok${i + 1}`,
+        }));
+      }
+    }
+    const pool = new AccountPool(new TenAccountManager(), {
+      allowedAccounts: ["user10@contoso.com", "user12@contoso.com"],
+    });
+
+    const refreshed = pool.refreshAccountList();
+    expect(refreshed.map((a) => a.email)).toEqual(["user10@contoso.com", "user12@contoso.com"]);
+    expect(pool.isAccountAllowed("user10@contoso.com")).toBe(true);
+    expect(pool.isAccountAllowed("user12@contoso.com")).toBe(true);
+  });
 });
 

@@ -301,7 +301,7 @@ export function getHelpText(): string {
     `  ${chalk.green("--log <path>")}             指定终端输出落盘日志文件路径 (自动启用 Debug 模式)`,
     `  ${chalk.green("-t, --timeout <seconds>")}  单轮请求超时时间 (默认: 600 秒)`,
     `  ${chalk.green("--max-turns <n>")}          单任务最大推理循环轮数 (默认: 30)`,
-    `  ${chalk.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 10)`,
+    `  ${chalk.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 50)`,
     `  ${chalk.green("--task <prompt>")}          非交互式直接执行任务并退出`,
     "",
     chalk.bold("交互模式命令 (Interactive Commands):"),

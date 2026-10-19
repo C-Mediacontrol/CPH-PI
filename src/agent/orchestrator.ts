@@ -211,7 +211,7 @@ export class Orchestrator {
   constructor(options: OrchestratorOptions = {}) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
-    this.maxGenerations = options.maxGenerations ?? 10;
+    this.maxGenerations = options.maxGenerations ?? 50;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
     this.modelTone = options.modelTone ?? "Gpt_61_Sol_Reasoning";
     this.pool = options.pool;
@@ -260,6 +260,21 @@ export class Orchestrator {
 
   public getHandoffCount(): number {
     return Math.max(0, this.generation - 1);
+  }
+
+  public getConcurrencyWorkerCount(): number | undefined {
+    if (!this.pool) return undefined;
+    try {
+      const statuses = this.pool.getPoolStatus();
+      const allowed = this.pool.getAllowedAccounts();
+      const allowedStatuses =
+        allowed !== undefined && allowed.length > 0
+          ? statuses.filter((s) => s.isAllowed !== false)
+          : statuses;
+      return allowedStatuses.length > 0 ? allowedStatuses.length : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   public linkSuccessor(oldId: string, newId: string): void {
@@ -436,11 +451,13 @@ export class Orchestrator {
     let currentPrompt: string;
     if (this.customAgentId) {
       // Direct Mode for Custom Agent (CPH-Dev): bypass handshake, send task directly with 2-level directory skeleton
+      const workerCount = this.getConcurrencyWorkerCount();
       currentPrompt = PromptBuilder.buildDirectAgentPrompt(
         this.workspaceRoot,
         task,
         skillsSection,
-        dirTree
+        dirTree,
+        workerCount
       );
     } else if (this.isHandshakePending) {
       // Turn 1 Grounding Handshake (Pure: NO task, NO skillsSection)
@@ -816,12 +833,11 @@ export class Orchestrator {
               } catch {}
             }
 
-            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+            const workerCount = this.getConcurrencyWorkerCount();
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount);
             this.completeHandshake();
             refusalRetries = 0;
-            if (this.generation <= this.maxGenerations) {
-              turn = 0; // Reset turn counter for fresh 30 turns budget!
-            }
+            turn = 0; // Reset turn counter for fresh 30 turns budget!
           }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
@@ -905,20 +921,24 @@ export class Orchestrator {
           this.completeHandshake();
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
+            const workerCount = this.getConcurrencyWorkerCount();
             currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(
               this.pendingTask,
               this.pendingSkills,
               parsed.action.tool || toolResult.actionName,
               uploadedAttachment.fileName,
               { lineCount, charCount },
-              excerpt
+              excerpt,
+              workerCount
             );
           } else {
+            const workerCount = this.getConcurrencyWorkerCount();
             currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
               task: this.pendingTask,
               toolResult: toolResult.output,
               skillsSection: this.pendingSkills,
               toolName: parsed.action.tool || toolResult.actionName,
+              concurrencyWorkers: workerCount,
             });
           }
         } else {
@@ -942,11 +962,18 @@ export class Orchestrator {
 
         events?.onTurnEnd?.(turnIndex, turnResponseText);
         if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
+          const targetSessionId = options.sessionId || this.sessionId;
+          const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
+          const handoffDocPath = this.lastHandoffDocPath;
+          events?.onHandoff?.(handoffSnapshot, handoffDocPath);
           return {
-            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
+            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion. Triggered autonomous session handoff.`,
             turnsCount: turnIndex,
             completed: false,
             history,
+            handedOff: true,
+            handoffSnapshot,
+            handoffDocPath,
           };
         }
         turn++;

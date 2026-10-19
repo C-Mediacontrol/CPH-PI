@@ -7,6 +7,8 @@ export interface AccountStatus {
   isAvailable: boolean;
   isThrottled: boolean;
   isAllowed: boolean;
+  isLeased?: boolean;
+  leasedBy?: string;
   cooldownUntil: number; // timestamp in ms
   lastUsedAt: number;
   totalRequests: number;
@@ -22,6 +24,7 @@ export interface AccountPoolOptions {
 
 export interface GetTokenOptions {
   forAgentId?: string;
+  sessionId?: string;
 }
 
 export interface RelayOptions {
@@ -36,6 +39,7 @@ export class AccountPool {
   private allowedAccounts?: Set<string>;
   private originalAllowedCase: Map<string, string> = new Map();
   private inFlightLeases: Set<string> = new Set();
+  private sessionLeases: Map<string, string> = new Map(); // sessionId -> lowercase email
   private currentIndex = 0;
   private maxAccounts: number;
   private defaultCooldownMs: number;
@@ -141,13 +145,16 @@ export class AccountPool {
   }
 
   /**
-   * Sync accounts list from TokenManager (capped at maxAccounts, default 7)
+   * Sync accounts list from TokenManager (capped at maxAccounts, or filtered by allowedAccounts)
    */
   public refreshAccountList(): StoredAccount[] {
     const rawAccounts = this.manager.loadAccounts();
-    const capped = rawAccounts.slice(0, this.maxAccounts);
+    const hasAllowedFilter = this.allowedAccounts && this.allowedAccounts.size > 0;
+    const targetAccounts = hasAllowedFilter
+      ? rawAccounts.filter((acc) => this.isAccountAllowed(acc.email))
+      : rawAccounts.slice(0, this.maxAccounts);
 
-    for (const acc of capped) {
+    for (const acc of rawAccounts) {
       const key = acc.email.toLowerCase();
       const isAllowed = this.isAccountAllowed(acc.email);
       if (!this.statuses.has(key)) {
@@ -166,7 +173,7 @@ export class AccountPool {
         st.isAllowed = isAllowed;
       }
     }
-    return capped.filter((acc) => this.isAccountAllowed(acc.email));
+    return targetAccounts;
   }
 
   /**
@@ -183,13 +190,167 @@ export class AccountPool {
         st.cooldownUntil = 0;
       }
       st.isAllowed = this.isAccountAllowed(st.email);
-      const ineligibles = this.ineligibleAgents.get(st.email.toLowerCase());
+      const lower = st.email.toLowerCase();
+      const ineligibles = this.ineligibleAgents.get(lower);
+      const isLeased = this.isAccountLeased(lower);
+      let leasedBy: string | undefined;
+      for (const [sId, lEmail] of this.sessionLeases.entries()) {
+        if (lEmail === lower) {
+          leasedBy = sId;
+          break;
+        }
+      }
       result.push({
         ...st,
+        isLeased,
+        leasedBy,
         ineligibleAgents: ineligibles ? Array.from(ineligibles) : [],
       });
     }
     return result;
+  }
+
+  /**
+   * Check whether an account is currently leased by an active session or in flight
+   */
+  public isAccountLeased(email: string): boolean {
+    const lower = email.trim().toLowerCase();
+    for (const leasedEmail of this.sessionLeases.values()) {
+      if (leasedEmail === lower) return true;
+    }
+    return this.inFlightLeases.has(lower);
+  }
+
+  /**
+   * Get total number of unthrottled and unleased accounts eligible for a given agent
+   */
+  public getAvailableCapacity(forAgentId?: string): number {
+    const normAgentId = forAgentId?.trim().toLowerCase();
+    const accounts = this.refreshAccountList();
+    const now = Date.now();
+    let capacity = 0;
+
+    for (const acc of accounts) {
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key);
+      if (!status) continue;
+      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) continue;
+      if (status.isThrottled && now < status.cooldownUntil) continue;
+      if (this.isAccountLeased(key)) continue;
+      capacity++;
+    }
+    return capacity;
+  }
+
+  /**
+   * Acquires an exclusive account lease for a session.
+   * The leased account will NOT be assigned to any other session until releaseSessionLease is called.
+   */
+  public async acquireSessionLease(
+    sessionId: string,
+    options?: GetTokenOptions
+  ): Promise<ActiveSessionToken> {
+    const normSessionId = sessionId.trim();
+    if (!normSessionId) {
+      throw new Error("sessionId is required to acquire a session lease");
+    }
+
+    // Re-use already leased account if held by this session
+    const existingEmail = this.sessionLeases.get(normSessionId);
+    if (existingEmail) {
+      const status = this.statuses.get(existingEmail.toLowerCase());
+      if (status && !status.isThrottled) {
+        status.lastUsedAt = Date.now();
+        status.totalRequests++;
+        return await this.manager.getAccessToken(existingEmail);
+      }
+      this.sessionLeases.delete(normSessionId);
+    }
+
+    const accounts = this.refreshAccountList();
+    const total = accounts.length;
+    if (total === 0) {
+      throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
+    }
+
+    const rawAgentId = options?.forAgentId;
+    const normAgentId = rawAgentId
+      ? (ChatHubClient.normalizeAgentId(rawAgentId) || rawAgentId.trim())
+      : undefined;
+
+    const now = Date.now();
+    const startIndex = this.currentIndex;
+
+    for (let i = 0; i < total; i++) {
+      const idx = (startIndex + i) % total;
+      const acc = accounts[idx];
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key)!;
+
+      if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+        continue;
+      }
+
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+      }
+
+      if (status.isThrottled) {
+        continue;
+      }
+
+      if (this.isAccountLeased(key)) {
+        continue;
+      }
+
+      // Claim session lease
+      this.sessionLeases.set(normSessionId, key);
+      this.currentIndex = (idx + 1) % total;
+
+      try {
+        const session = await this.manager.getAccessToken(acc.email);
+        status.lastUsedAt = Date.now();
+        status.totalRequests++;
+        return session;
+      } catch (err) {
+        this.sessionLeases.delete(normSessionId);
+        status.isThrottled = true;
+        status.cooldownUntil = Date.now() + 60 * 1000;
+        status.throttledCount = (status.throttledCount || 0) + 1;
+      }
+    }
+
+    const eligibleAccounts = accounts.filter(
+      (acc) => !normAgentId || this.isAgentEligible(acc.email, normAgentId)
+    );
+    const unthrottledCount = eligibleAccounts.filter(
+      (acc) => !this.statuses.get(acc.email.toLowerCase())?.isThrottled
+    ).length;
+
+    const error = new Error(
+      `ALL_ACCOUNTS_LEASED: All ${unthrottledCount} available accounts in the pool are currently leased by active sessions.`
+    );
+    (error as any).code = "ALL_ACCOUNTS_LEASED";
+    throw error;
+  }
+
+  /**
+   * Releases the session lease held by a session
+   */
+  public releaseSessionLease(sessionId: string): void {
+    const normSessionId = sessionId.trim();
+    this.sessionLeases.delete(normSessionId);
+  }
+
+  /**
+   * Get the account email currently leased by a session
+   */
+  public getSessionLease(sessionId: string): string | undefined {
+    const normSessionId = sessionId.trim();
+    const lower = this.sessionLeases.get(normSessionId);
+    if (!lower) return undefined;
+    return this.originalAllowedCase.get(lower) || this.statuses.get(lower)?.email || lower;
   }
 
   /**
@@ -300,6 +461,10 @@ export class AccountPool {
       throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
     }
 
+    if (typeof targetAgentOrOptions === "object" && targetAgentOrOptions?.sessionId) {
+      return await this.acquireSessionLease(targetAgentOrOptions.sessionId, targetAgentOrOptions);
+    }
+
     const rawAgentId =
       typeof targetAgentOrOptions === "string"
         ? targetAgentOrOptions
@@ -344,7 +509,8 @@ export class AccountPool {
           continue;
         }
 
-        if (preferUnleased && this.inFlightLeases.has(key)) {
+        const isLeased = this.inFlightLeases.has(key) || this.isAccountLeased(key);
+        if (preferUnleased && isLeased) {
           continue;
         }
 

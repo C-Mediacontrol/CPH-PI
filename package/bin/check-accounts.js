@@ -1119,7 +1119,10 @@ class ChatHubClient {
                         resetIdleTimer();
                       }
                     }
-                  } else if ((m.author === "bot" || m.messageType === "Disengaged" || m.messageType === "OffTopic") && m.text) {
+                  } else if (m.messageType === "Disengaged" || m.messageType === "OffTopic") {
+                    fullText = m.text;
+                    resetIdleTimer();
+                  } else if (m.author === "bot" && m.text) {
                     if (/rate limit|too many requests|配额已达上限|请稍后再试/i.test(m.text)) {
                       events?.onRateLimitDetected?.(this.token.email);
                     }

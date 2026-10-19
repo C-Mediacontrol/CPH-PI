@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { CopilotOrchestrator, type OrchestratorRunOptions } from "./orchestrator.ts";
+import { CopilotOrchestrator, isInlineScoutTask, type OrchestratorRunOptions } from "./orchestrator.ts";
 import { ToolBridge, type SubagentTaskSpec } from "../protocol/tool-bridge.ts";
 import { TerminalLogger, type SessionLoggerTree } from "../ui/terminal-logger.ts";
 import { AccountPool } from "../auth/account-pool.ts";
@@ -463,6 +463,12 @@ export class SubagentRunner {
 
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
+    const isScout = isInlineScoutTask([spec]);
+    if (isScout) {
+      currentTaskPrompt =
+        `【斥候宏观侦察工单】：本阶段任务聚焦于目标文件的宏观结构概览与顶层大纲探查（顶层函数/类列表、对外导出与大致行号分布）。请在梳理出清晰目录大纲后，立即输出包含大纲与建议切片的 FINAL_ANSWER 结题，以便主控进入下一阶段精准拆解任务。\n\n` +
+        currentTaskPrompt;
+    }
     let previousSessionId: string | undefined = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";

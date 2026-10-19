@@ -612,8 +612,17 @@ export class ToolBridge {
 
     // 4. run_command / bash / exec
     if (toolName === "run_command" || toolName === "bash" || toolName === "exec") {
-      const command = action.command ?? action.cmd ?? "";
+      let command = action.command ?? action.cmd ?? "";
       const timeout = action.timeout !== undefined ? Number(action.timeout) : 30;
+
+      // Defense-in-depth: Unescape Sydney/markdown corrupted brackets in shell commands:
+      // e.g. [System.IO.File\] -> [System.IO.File], [ref\] -> [ref], \[Type\] -> [Type]
+      if (typeof command === "string" && command.includes("\\]")) {
+        command = command.replace(/([a-zA-Z0-9_.]+)\\\]/g, "$1]");
+      }
+      if (typeof command === "string" && command.includes("\\[")) {
+        command = command.replace(/\\\[([a-zA-Z0-9_.]+)/g, "[$1");
+      }
 
       const args: MappedBashArgs = {
         command,

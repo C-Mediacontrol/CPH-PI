@@ -286,6 +286,48 @@ describe("Auth Module & AccountPool Unit Tests", () => {
 
       expect(callCount).toBe(1);
     });
+
+    it("should acquire and release session leases exclusively", async () => {
+      expect(pool.getAvailableCapacity()).toBe(7);
+
+      const t1 = await pool.acquireSessionLease("sub-session-1");
+      expect(t1.email).toBe("acc1@contoso.com");
+      expect(pool.isAccountLeased("acc1@contoso.com")).toBe(true);
+      expect(pool.getAvailableCapacity()).toBe(6);
+
+      const t2 = await pool.acquireSessionLease("sub-session-2");
+      expect(t2.email).toBe("acc2@contoso.com");
+      expect(pool.isAccountLeased("acc2@contoso.com")).toBe(true);
+      expect(pool.getAvailableCapacity()).toBe(5);
+
+      const status = pool.getPoolStatus();
+      const s1 = status.find((s) => s.email === "acc1@contoso.com");
+      const s2 = status.find((s) => s.email === "acc2@contoso.com");
+      expect(s1?.isLeased).toBe(true);
+      expect(s1?.leasedBy).toBe("sub-session-1");
+      expect(s2?.isLeased).toBe(true);
+      expect(s2?.leasedBy).toBe("sub-session-2");
+
+      // Re-acquiring with same session id returns same account
+      const t1Repeat = await pool.acquireSessionLease("sub-session-1");
+      expect(t1Repeat.email).toBe("acc1@contoso.com");
+
+      // Releasing session 1 frees acc1
+      pool.releaseSessionLease("sub-session-1");
+      expect(pool.isAccountLeased("acc1@contoso.com")).toBe(false);
+      expect(pool.getAvailableCapacity()).toBe(6);
+    });
+
+    it("should throw ALL_ACCOUNTS_LEASED when all eligible accounts are leased", async () => {
+      // Pool has 7 accounts, lease all 7
+      for (let i = 1; i <= 7; i++) {
+        await pool.acquireSessionLease(`session-${i}`);
+      }
+      expect(pool.getAvailableCapacity()).toBe(0);
+
+      await expect(pool.acquireSessionLease("session-8")).rejects.toThrow("ALL_ACCOUNTS_LEASED");
+    });
   });
 });
+
 

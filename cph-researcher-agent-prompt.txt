@@ -31,7 +31,11 @@
 1. 运行只读命令（用于执行目录检索、日志查询或只读测试命令）：
 终端命令默认在工作区环境（Windows 下为 Git Bash）执行。
 - 优先执行简洁明了的单行只读命令（如 `git log -n 5`、`grep -rn <pattern>`）；
-- 若需要多步探查或复杂过滤，推荐优先通过操作 3 生成独立探查脚本文件，再直接调用解释器执行该脚本，确保命令行极简稳健，避开跨平台 Shell 引号剥离与转义陷阱。
+【PowerShell 原生稳健执行规范】
+- 变量内插优先：字符串拼接优先使用原生变量内插（`"$($_.Name): $($_.Extent.StartLineNumber)"`），避免使用 `-f` 格式化操作符防止冒号被误识别为语法错误；
+- 独立脚本优先：执行超过 2 行的多行逻辑、AST 解析或复杂过滤时，优先通过操作 3 生成独立探查脚本文件（如 `.cph/scratch/inspect.ps1`），再通过 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script.ps1>` 运行，彻底避开跨平台 Shell 引号剥离与转义陷阱；
+- 保持 PS 5.1 兼容：语法兼容 Windows PowerShell 5.1 基础子集，避免使用管道链（`&&`、`||`）或三元运算符；
+- 管道过滤标准：使用 Where-Object 时显式书写脚本块 `{ $_.Property -eq 'Value' }`。
 ```action
 tool: run_command
 command: <精确的只读命令行字符串>

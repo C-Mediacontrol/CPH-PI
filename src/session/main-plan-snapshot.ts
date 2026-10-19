@@ -96,7 +96,8 @@ export function loadMainPlanSnapshot(
 export function formatSuccessorTurn1Prompt(
   snapshot: MainPlanSnapshot,
   reportsSummary: string,
-  customLedgerMountHeader?: string
+  customLedgerMountHeader?: string,
+  concurrencyWorkers?: number
 ): string {
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
@@ -112,6 +113,11 @@ export function formatSuccessorTurn1Prompt(
     ? `\n### 2. 物理执行账本挂载 (Pass-by-Reference)\n${mountHeader}\n`
     : "";
 
+  const clusterFact =
+    concurrencyWorkers !== undefined && concurrencyWorkers > 0
+      ? `\n- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)\n`
+      : "";
+
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
@@ -121,14 +127,15 @@ ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
 ${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-${mountSection}
+${clusterFact}${mountSection}
 ### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
 ---
-请你作为后继主控智能体，以当前全新满额的推理配额，综合审阅上述交付物，执行交叉验证与必要测试。
-若需回溯具体的执行细节，可按需调阅已挂载的物理账本；
-若全部达成目标且验证充分，请直接输出 FINAL_ANSWER 完成结题；
-若评估后需要第二阶段专项攻坚，可继续派发 invoke_subagent。`;
+请你作为后继主控智能体，以当前全新满额的推理配额，推进工程对账与收敛：
+1. 【对账打勾】：根据上述各子任务结题成果，使用 patch_file 立即将 plan.md 中已成功的任务项更新打勾为 - [x] 步骤描述；
+2. 【成果引用】：完整调研报告与证据链已由底层自动落盘至物理报告文件（.cph/reports/），若需回溯执行细节可按需调阅已挂载的物理账本或使用 read_file 调阅；
+3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，保护已完成的规划与成果；
+4. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
 }
 

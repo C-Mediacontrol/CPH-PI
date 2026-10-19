@@ -163,7 +163,7 @@ export class CphPiCli {
     this.maxTurns = options.maxTurns || 30;
     this.timeoutSec = options.timeoutSec ?? options.parsedArgs?.timeoutSec ?? 600;
     const timeoutMs = this.timeoutSec * 1000;
-    this.maxAutonomousHandoffHops = options.maxAutonomousHandoffHops ?? 10;
+    this.maxAutonomousHandoffHops = options.maxAutonomousHandoffHops ?? 50;
     this.pool = options.pool || new AccountPool();
     const effectiveAllowedAccounts = options.allowedAccounts || config.allowedAccounts;
     if (effectiveAllowedAccounts && effectiveAllowedAccounts.length > 0) {
@@ -222,6 +222,7 @@ export class CphPiCli {
         workspaceRoot: this.workspaceRoot,
         modelTone: this.modelTone,
         maxTurns: this.maxTurns,
+        maxGenerations: this.maxAutonomousHandoffHops,
         pool: this.pool,
         chatClient: this.chatClient,
         arbitratorChatClient: this.arbitratorChatClient,
@@ -360,6 +361,7 @@ export class CphPiCli {
       workspaceRoot: this.workspaceRoot,
       modelTone: this.modelTone,
       maxTurns: this.maxTurns,
+      maxGenerations: this.maxAutonomousHandoffHops,
       pool: this.pool,
       chatClient: this.chatClient,
       arbitratorChatClient: this.arbitratorChatClient,
@@ -594,9 +596,15 @@ export class CphPiCli {
     }
 
     const statuses = this.pool.getPoolStatus();
+    const activeAllowed = statuses.filter((s) => s.isAllowed !== false && !s.isThrottled);
+    const activeSessionLease = this.pool?.getSessionLease
+      ? this.pool.getSessionLease(session.id)
+      : undefined;
     const currentAcc =
       session.currentAccount ||
-      statuses.find((s) => !s.isThrottled)?.email ||
+      activeSessionLease ||
+      activeAllowed[0]?.email ||
+      statuses.find((s) => s.isAllowed !== false)?.email ||
       statuses[0]?.email;
 
     const agentBadge = this.customAgentId
@@ -872,8 +880,12 @@ export class CphPiCli {
    */
   public getDiagnosticCard(): string {
     const statuses = this.pool.getPoolStatus();
-    const available = statuses.filter((s) => !s.isThrottled).length;
-    const total = statuses.length;
+    const hasAllowedFilter = this.pool.getAllowedAccounts() !== undefined;
+    const allowedStatuses = hasAllowedFilter
+      ? statuses.filter((s) => s.isAllowed !== false)
+      : statuses;
+    const available = allowedStatuses.filter((s) => !s.isThrottled).length;
+    const total = allowedStatuses.length;
     const activeSkills = this.skillRegistry.getActiveSkills();
     const activeSkillStr =
       activeSkills.length > 0
@@ -902,6 +914,16 @@ export class CphPiCli {
       ? chalk.green(this.customAgentId)
       : chalk.gray("无 (通用模式)");
 
+    const activeSessionLease = this.pool?.getSessionLease
+      ? this.pool.getSessionLease(currentSession.id)
+      : undefined;
+    const preferredEmail =
+      currentSession.currentAccount ||
+      activeSessionLease ||
+      allowedStatuses.find((s) => !s.isThrottled)?.email ||
+      allowedStatuses[0]?.email ||
+      "默认";
+
     const lines = [
       chalk.bold.cyan("\n[CPH-PI 运行状态] - CPH-PI 运行与会话诊断卡"),
       chalk.gray("──────────────────────────────────────────────────"),
@@ -918,7 +940,7 @@ export class CphPiCli {
       `  工作区目录:    ${chalk.white(this.workspaceRoot)}`,
       `  模型风格:      ${chalk.white(this.modelTone)}`,
       `  可用账号数:    ${chalk.green(`${available}/${total}`)}`,
-      `  当前/首选账号: ${chalk.cyan(currentSession.currentAccount || (statuses.find((s) => !s.isThrottled)?.email || "默认"))}`,
+      `  当前/首选账号: ${chalk.cyan(preferredEmail)}`,
       `  已激活技能:    ${chalk.magenta(activeSkillStr)}`,
       "",
     ];
@@ -1145,15 +1167,22 @@ export class CphPiCli {
           events: {
             onDelta: (d) => this.renderer.renderTextChunk(d),
             onReasoning: (r) => this.renderer.renderReasoningChunk(r),
-            onTurnStart: (turn) => this.renderer.renderTurnHeader(turn),
+            onTurnStart: (turn) => {
+              if (this.pool?.getSessionLease) {
+                const leased = this.pool.getSessionLease(currentSession.id);
+                if (leased) currentSession.currentAccount = leased;
+              }
+              this.renderer.renderTurnHeader(turn);
+            },
             onToolStart: (action) => this.renderer.renderToolBadge(action),
             onToolEnd: (result) => this.renderer.renderToolResult(result),
-            onSubagentStart: (id, role, spec, initialHop) => {
+            onSubagentStart: (id, role, spec, initialHop, account) => {
               subagentStartTimes.set(id, Date.now());
               const hop = initialHop || 1;
               activeSubagents.set(id, {
                 id,
                 role: role === "coder" ? "coder" : "researcher",
+                account,
                 description: spec?.description || spec?.prompt?.slice(0, 40) || id,
                 status: "running",
                 currentTurn: 1,
@@ -1164,12 +1193,16 @@ export class CphPiCli {
               });
               this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
             },
-            onSubagentProgress: (id, turn, _delta, action, hopCount) => {
+            onSubagentProgress: (id, turn, _delta, action, hopCount, account) => {
               const state = activeSubagents.get(id);
               if (!state) return;
               const startTime = subagentStartTimes.get(id) || Date.now();
               state.durationMs = Date.now() - startTime;
               let changed = false;
+              if (account && account !== state.account) {
+                state.account = account;
+                changed = true;
+              }
               if (hopCount && hopCount !== state.hopCount) {
                 state.hopCount = hopCount;
                 state.handoffCount = Math.max(0, hopCount - 1);
@@ -1198,6 +1231,7 @@ export class CphPiCli {
                   report.durationMs ||
                   Date.now() - (subagentStartTimes.get(report.id) || Date.now());
                 state.currentTurn = report.turnsCount || state.currentTurn;
+                if (report.account) state.account = report.account;
                 if (report.hopCount) state.hopCount = report.hopCount;
                 if (report.handoffCount !== undefined) state.handoffCount = report.handoffCount;
                 state.lastAction = report.success
@@ -1212,8 +1246,10 @@ export class CphPiCli {
               this.lastCompactionRatio = ratio;
               this.renderer.renderCompactedNotice(cleared, ratio);
             },
-            onAccountSwitched: (oldEmail, newEmail) =>
-              this.renderer.renderAccountSwitchedNotice(oldEmail, newEmail),
+            onAccountSwitched: (oldEmail, newEmail) => {
+              currentSession.currentAccount = newEmail;
+              this.renderer.renderAccountSwitchedNotice(oldEmail, newEmail);
+            },
             onCompleted: (ans) => this.renderer.renderFinalAnswer(ans),
             onError: (err) => this.renderer.renderError(err),
             onDisasterOccurred: (blackbox, err) =>
@@ -1235,6 +1271,11 @@ export class CphPiCli {
             },
           },
         });
+
+        if (this.pool?.getSessionLease) {
+          const leased = this.pool.getSessionLease(currentSession.id);
+          if (leased) currentSession.currentAccount = leased;
+        }
 
         currentInitialAnnotations = undefined;
 
@@ -1325,6 +1366,7 @@ export class CphPiCli {
               workspaceRoot: this.workspaceRoot,
               maxTurns: this.maxTurns,
               modelTone: this.modelTone,
+              currentAccount: currentSession.currentAccount,
               handoffSnapshot: result.handoffSnapshot,
               handoffDocPath: result.handoffDocPath,
               disasterBlackbox: result.disasterBlackbox,

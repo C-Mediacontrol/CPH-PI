@@ -296,6 +296,23 @@ describe("ToolBridge Unit Tests", () => {
       expect(args2.timeout).toBe(60);
     });
 
+    it("should unescape Sydney corrupted brackets in run_command and bash commands", () => {
+      const corruptedCmd =
+        "powershell.exe -Command '$ast = [System.Management.Automation.Language.Parser\\]::ParseFile($p, [ref\\]$tokens, [ref\\]$errors); $lines = \\[System.IO.File\\]::ReadAllLines($p)'";
+      const mapped = bridge.mapAction({
+        tool: "run_command",
+        command: corruptedCmd,
+      });
+      const args = mapped.args as { command: string; timeout: number };
+      expect(args.command).toBe(
+        "powershell.exe -Command '$ast = [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$tokens, [ref]$errors); $lines = [System.IO.File]::ReadAllLines($p)'"
+      );
+      expect(args.command).not.toContain("Parser\\]");
+      expect(args.command).not.toContain("ref\\]");
+      expect(args.command).not.toContain("\\[System");
+      expect(args.command).not.toContain("File\\]");
+    });
+
     it("should normalize question parameters", () => {
       const mapped = bridge.mapAction({
         tool: "ask_question",

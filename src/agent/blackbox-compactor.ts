@@ -178,8 +178,9 @@ export class BlackboxCompactor {
     const lastTurn = history && history.length > 0 ? history[history.length - 1] : undefined;
     const lastTurnErr = (lastTurn?.error || "").trim();
     const combined = `${errText} ${lastTurnErr}`.toLowerCase();
+    const sanitized = combined.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "");
 
-    if (/429|rate[- ]?limit|throttl|quota|too many requests/.test(combined)) {
+    if (/\b429\b|rate[- ]?limit|throttl|\bquota\s*(?:exceeded|reached|limit)\b|too many requests|配额已达上限|请求过于频繁/.test(sanitized)) {
       return {
         category: "429_RATE_LIMIT (上游频控限流)",
         signature: "检测到 Sydney 上游 429 频控限流或请求阈值溢出，会话被迫异常终止。",

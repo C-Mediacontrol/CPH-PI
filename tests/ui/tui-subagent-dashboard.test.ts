@@ -38,4 +38,26 @@ describe("TuiRenderer - Subagent Dashboard", () => {
     expect(card).toContain("[Hop 2 (接手 1 次)]");
     expect(card).toContain("已完成");
   });
+
+  it("should display account badge when account is specified in subagent state", () => {
+    const renderer = new TuiRenderer({ colorLevel: 0 });
+    const states: ActiveSubagentState[] = [
+      {
+        id: "sub-1",
+        role: "coder",
+        account: "user1@contoso.com",
+        description: "编写单元测试",
+        status: "running",
+        currentTurn: 1,
+        durationMs: 2000,
+      },
+    ];
+
+    const card = renderer.formatSubagentMatrix(states);
+    expect(card).toContain("[user1@contoso.com]");
+
+    const event = renderer.formatSubagentMatrixEvent(states[0]);
+    expect(event).toContain("[user1@contoso.com]");
+  });
 });
+

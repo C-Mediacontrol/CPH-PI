@@ -22241,10 +22241,14 @@ ${options.task}
 
 ` : ""}${this.PROTOCOL_REMINDER}`;
   }
-  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "") {
+  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "", concurrencyWorkers) {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
     let prompt = `【本地宿主机工作区事实】
 - 工作区绝对路径: ${wsNorm}`;
+    if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
+      prompt += `
+- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
+    }
     if (dirSkeleton && dirSkeleton.trim() !== "") {
       prompt += `
 
@@ -22285,27 +22289,32 @@ command: git status
 
 在本地完成初次探测并反馈 [TOOL_RESULT] 后，系统将在第二轮注入用户的正式业务需求与全量流程！`;
   }
-  static buildTurn2TaskPrompt(optionsOrTask, toolResult, skillsSection = "", toolName) {
+  static buildTurn2TaskPrompt(optionsOrTask, toolResult, skillsSection = "", toolName, concurrencyWorkers) {
     let finalTask = "";
     let finalToolResult = "";
     let finalSkillsSection = "";
     let finalToolName;
+    let finalConcurrencyWorkers;
     if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
       finalTask = optionsOrTask.task;
       finalToolResult = optionsOrTask.toolResult;
       finalSkillsSection = optionsOrTask.skillsSection || "";
       finalToolName = optionsOrTask.toolName;
+      finalConcurrencyWorkers = optionsOrTask.concurrencyWorkers;
     } else {
       finalTask = optionsOrTask;
       finalToolResult = toolResult ?? "";
       finalSkillsSection = skillsSection ?? "";
       finalToolName = toolName;
+      finalConcurrencyWorkers = concurrencyWorkers;
     }
     const toolHeader = finalToolName ? `[TOOL_RESULT for ${finalToolName} - SUCCESS]:` : `[TOOL_RESULT - SUCCESS]:`;
+    const clusterFact = finalConcurrencyWorkers !== undefined && finalConcurrencyWorkers > 0 ? `
+- 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)` : "";
     return `${toolHeader}
 ${finalToolResult}
 
-【环境握手完成：本地工具与工作区已就绪】
+【环境握手完成：本地工具与工作区已就绪】${clusterFact}
 ${finalSkillsSection ? `【当前已激活的专业技能 (Skill)】
 ${finalSkillsSection}
 
@@ -22361,16 +22370,18 @@ ${excerpt}` : "";
 
 ${this.PROTOCOL_REMINDER}`;
   }
-  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary, excerpt) {
+  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary, excerpt, concurrencyWorkers) {
     const fingerprintBlock = excerpt ? `
 
 【物理执行指纹摘要 (Head-Tail Fingerprint)】:
 ${excerpt}` : "";
+    const clusterFact = concurrencyWorkers !== undefined && concurrencyWorkers > 0 ? `
+- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)` : "";
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
 【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 
-【环境握手完成：本地工具与工作区已就绪】
+【环境握手完成：本地工具与工作区已就绪】${clusterFact}
 ${skillsSection ? `【当前已激活的专业技能 (Skill)】
 ${skillsSection}
 
@@ -24658,7 +24669,7 @@ ${sub.prompt || ""}
   fs9.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
-function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader) {
+function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader, concurrencyWorkers) {
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
     try {
@@ -24670,6 +24681,9 @@ function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountH
 ### 2. 物理执行账本挂载 (Pass-by-Reference)
 ${mountHeader}
 ` : "";
+  const clusterFact = concurrencyWorkers !== undefined && concurrencyWorkers > 0 ? `
+- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)
+` : "";
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
@@ -24679,7 +24693,7 @@ ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
 ${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-${mountSection}
+${clusterFact}${mountSection}
 ### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
@@ -24687,7 +24701,7 @@ ${reportsSummary}
 请你作为后继主控智能体，以当前全新满额的推理配额，推进工程对账与收敛：
 1. 【对账打勾】：根据上述各子任务结题成果，使用 patch_file 立即将 plan.md 中已成功的任务项更新打勾为 - [x] 步骤描述；
 2. 【成果引用】：完整调研报告与证据链已由底层自动落盘至物理报告文件（.cph/reports/），若需回溯执行细节可按需调阅已挂载的物理账本或使用 read_file 调阅；
-3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，严禁推翻已完成的规划与成果；
+3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，保护已完成的规划与成果；
 4. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
 }
 
@@ -24747,7 +24761,7 @@ class Orchestrator {
   constructor(options = {}) {
     this.workspaceRoot = path10.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
-    this.maxGenerations = options.maxGenerations ?? 10;
+    this.maxGenerations = options.maxGenerations ?? 50;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
     this.modelTone = options.modelTone ?? "Gpt_61_Sol_Reasoning";
     this.pool = options.pool;
@@ -24783,6 +24797,18 @@ class Orchestrator {
   }
   getHandoffCount() {
     return Math.max(0, this.generation - 1);
+  }
+  getConcurrencyWorkerCount() {
+    if (!this.pool)
+      return;
+    try {
+      const statuses = this.pool.getPoolStatus();
+      const allowed = this.pool.getAllowedAccounts();
+      const allowedStatuses = allowed !== undefined && allowed.length > 0 ? statuses.filter((s) => s.isAllowed !== false) : statuses;
+      return allowedStatuses.length > 0 ? allowedStatuses.length : undefined;
+    } catch {
+      return;
+    }
   }
   linkSuccessor(oldId, newId) {
     this.lineageTracker.register({
@@ -24924,7 +24950,8 @@ class Orchestrator {
     const skillsSection = this.formatSkillsSection(skillsToUse);
     let currentPrompt;
     if (this.customAgentId) {
-      currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree);
+      const workerCount = this.getConcurrencyWorkerCount();
+      currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree, workerCount);
     } else if (this.isHandshakePending) {
       this.pendingTask = task;
       this.pendingSkills = skillsSection;
@@ -25227,12 +25254,11 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
                 });
               } catch {}
             }
-            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput);
+            const workerCount = this.getConcurrencyWorkerCount();
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount);
             this.completeHandshake();
             refusalRetries = 0;
-            if (this.generation <= this.maxGenerations) {
-              turn = 0;
-            }
+            turn = 0;
           }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
@@ -25285,13 +25311,16 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
           this.completeHandshake();
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
-            currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
+            const workerCount = this.getConcurrencyWorkerCount();
+            currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, workerCount);
           } else {
+            const workerCount = this.getConcurrencyWorkerCount();
             currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
               task: this.pendingTask,
               toolResult: toolResult.output,
               skillsSection: this.pendingSkills,
-              toolName: parsed.action.tool || toolResult.actionName
+              toolName: parsed.action.tool || toolResult.actionName,
+              concurrencyWorkers: workerCount
             });
           }
         } else {
@@ -25304,11 +25333,18 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
         }
         events?.onTurnEnd?.(turnIndex, turnResponseText);
         if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
+          const targetSessionId = options.sessionId || this.sessionId;
+          const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
+          const handoffDocPath = this.lastHandoffDocPath;
+          events?.onHandoff?.(handoffSnapshot, handoffDocPath);
           return {
-            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion.`,
+            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion. Triggered autonomous session handoff.`,
             turnsCount: turnIndex,
             completed: false,
-            history
+            history,
+            handedOff: true,
+            handoffSnapshot,
+            handoffDocPath
           };
         }
         turn++;
@@ -27214,7 +27250,7 @@ function getHelpText() {
     `  ${source_default.green("--log <path>")}             指定终端输出落盘日志文件路径 (自动启用 Debug 模式)`,
     `  ${source_default.green("-t, --timeout <seconds>")}  单轮请求超时时间 (默认: 600 秒)`,
     `  ${source_default.green("--max-turns <n>")}          单任务最大推理循环轮数 (默认: 30)`,
-    `  ${source_default.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 10)`,
+    `  ${source_default.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 50)`,
     `  ${source_default.green("--task <prompt>")}          非交互式直接执行任务并退出`,
     "",
     source_default.bold("交互模式命令 (Interactive Commands):"),
@@ -27654,7 +27690,7 @@ class CphPiCli {
     this.maxTurns = options.maxTurns || 30;
     this.timeoutSec = options.timeoutSec ?? options.parsedArgs?.timeoutSec ?? 600;
     const timeoutMs = this.timeoutSec * 1000;
-    this.maxAutonomousHandoffHops = options.maxAutonomousHandoffHops ?? 10;
+    this.maxAutonomousHandoffHops = options.maxAutonomousHandoffHops ?? 50;
     this.pool = options.pool || new AccountPool;
     const effectiveAllowedAccounts = options.allowedAccounts || config.allowedAccounts;
     if (effectiveAllowedAccounts && effectiveAllowedAccounts.length > 0) {
@@ -27706,6 +27742,7 @@ ${source_default.yellow(msg)}
       workspaceRoot: this.workspaceRoot,
       modelTone: this.modelTone,
       maxTurns: this.maxTurns,
+      maxGenerations: this.maxAutonomousHandoffHops,
       pool: this.pool,
       chatClient: this.chatClient,
       arbitratorChatClient: this.arbitratorChatClient,
@@ -27819,6 +27856,7 @@ ${source_default.yellow(msg)}
       workspaceRoot: this.workspaceRoot,
       modelTone: this.modelTone,
       maxTurns: this.maxTurns,
+      maxGenerations: this.maxAutonomousHandoffHops,
       pool: this.pool,
       chatClient: this.chatClient,
       arbitratorChatClient: this.arbitratorChatClient,

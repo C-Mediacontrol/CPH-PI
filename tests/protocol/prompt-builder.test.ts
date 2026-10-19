@@ -48,7 +48,7 @@ describe("PromptBuilder Unit Tests", () => {
       expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
     });
 
-    it("should build failed tool result prompt with error message", () => {
+    it("should build failed tool result prompt with error message and maintain Harness neutrality", () => {
       const prompt = PromptBuilder.buildToolResultPrompt(
         "edit",
         false,
@@ -59,6 +59,8 @@ describe("PromptBuilder Unit Tests", () => {
       expect(prompt).toContain("[TOOL_RESULT for edit - FAILED]");
       expect(prompt).toContain("Error: Unique match not found");
       expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
+      expect(prompt).not.toContain("请根据错误进行分析");
+      expect(prompt).not.toContain("尝试排查修复");
     });
   });
 
@@ -134,7 +136,26 @@ describe("PromptBuilder Unit Tests", () => {
       expect(prompt).toContain("#### [技能 1: tdd]");
       expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
     });
+
+    it("should inject concurrency cluster capacity into buildDirectAgentPrompt and buildTurn2TaskPrompt", () => {
+      const directPrompt = PromptBuilder.buildDirectAgentPrompt(
+        "E:/workspace",
+        "全量重构",
+        "",
+        "",
+        4
+      );
+      expect(directPrompt).toContain("- 并发集群容量: 4 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)");
+
+      const turn2Prompt = PromptBuilder.buildTurn2TaskPrompt({
+        task: "全量重构",
+        toolResult: "OK",
+        concurrencyWorkers: 4,
+      });
+      expect(turn2Prompt).toContain("- 并发集群容量: 4 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)");
+    });
   });
 });
+
 
 

@@ -103,10 +103,31 @@ if (fs.existsSync(handoffSkillDir)) {
   console.warn(`⚠️ 警告: 发布包内未检测到 skills/handoff`);
 }
 
-// 4. Generate Upload Guide with Tri-Agent links and skill mounting matrix
+// 3.5 Copy Knowledge documents (PowerShell Agent Guide in docx, txt, pdf, md formats)
+const docsDir = path.join(projectRoot, "docs");
+const targetDocsDir = path.join(bundleDir, "docs");
+fs.mkdirSync(targetDocsDir, { recursive: true });
+
+const knowledgeFiles = [
+  "PowerShell-Agent-Guide.docx",
+  "PowerShell-Agent-Guide.txt",
+  "PowerShell-Agent-Guide.pdf",
+  "PowerShell-Agent-Guide.md",
+];
+
+for (const kf of knowledgeFiles) {
+  const src = path.join(docsDir, kf);
+  if (fs.existsSync(src)) {
+    fs.copyFileSync(src, path.join(targetDocsDir, kf));
+    fs.copyFileSync(src, path.join(bundleDir, kf));
+    console.log(`✔ 已打包知识库文档: ${kf}`);
+  }
+}
+
+// 4. Generate Upload Guide with Tri-Agent links, Knowledge upload, and skill mounting matrix
 const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tri-Agent 架构)
 
-本压缩包已为你聚合好了更新 Copilot Agent 体系所需的所有核心资产：包含 3 个专项智能体的提示词以及工作区专属技能包。
+本压缩包已为你聚合好了更新 Copilot Agent 体系所需的所有核心资产：包含 3 个专项智能体的提示词、PowerShell 执行指南知识库以及工作区专属技能包。
 
 ---
 
@@ -144,7 +165,22 @@ const uploadGuideContent = `# Copilot M365 Agent 一键更新与配置指南 (Tr
 
 ---
 
-## 4. 上传知识库 / 专属技能挂载矩阵 (Skill Mounting Matrix)
+## 4. 专属知识库挂载指引 (Knowledge Base)
+
+根据 Copilot Studio / M365 Agent 知识库格式支持（仅限 \`*.docx; *.txt; *.pdf; *.pptx; *.xlsx; *.doc\` 等格式，不支持 \`.md\`），本压缩包已为你生成多种可直接上传的文件（位于压缩包根目录及 \`docs/\` 目录）：
+- **可选文件格式（三选一，均原生支持）**：
+  1. \`PowerShell-Agent-Guide.docx\`（Word 文档，保留章节与排版）
+  2. \`PowerShell-Agent-Guide.txt\`（纯文本文档，极简轻量，100% 原始字节保真）
+  3. \`PowerShell-Agent-Guide.pdf\`（PDF 文档，标准固定版面）
+- **挂载建议**: 推荐在 **Main**、**Coder** 与 **Researcher** 3 个 Agent 的「知识 (Knowledge)」板块均上传上述任一格式文件；
+- **核心价值**:
+  1. 规避跨 Shell 引号剥离与 \`-f\` 格式化操作符造成的冒号语法报错（\`ParserError: (:)\`）；
+  2. 引导模型对多行逻辑采用生成独立 \`.ps1\` 脚本并以 \`-File\` 模式免转义执行；
+  3. 兼容 Windows PowerShell 5.1 基础子集，阻断 PS 7+ 语法泄漏，消除命令行空转。
+
+---
+
+## 5. 专属技能挂载矩阵 (Skill Mounting Matrix)
 
 在各 Agent 的「知识 (Knowledge)」或「功能 / 技能」板块分别挂载对应技能文件（位于本压缩包 \`skills/\` 目录）：
 

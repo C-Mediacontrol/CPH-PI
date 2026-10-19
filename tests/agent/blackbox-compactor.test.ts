@@ -83,6 +83,17 @@ describe("BlackboxCompactor Unit Tests (TDD)", () => {
       expect(blackbox).toContain("网络中断");
     });
 
+    it("should accurately diagnose connection aborted incidents even if WebSocket URL contains 4329 in GUID", () => {
+      const history = createMockHistory(3, 200);
+      const blackbox = BlackboxCompactor.extractDisasterBlackbox(
+        history,
+        "WebSocket connection failed to wss://substrate.office.com/m365Copilot/Chathub/hub?sub=9d314297-75dc-4329-8f94-a66489b4b9bb: socket hang up"
+      );
+
+      expect(blackbox).toContain("CONNECTION_ABORTED");
+      expect(blackbox).not.toContain("429_RATE_LIMIT");
+    });
+
     it("should accurately diagnose custom agent permission incidents", () => {
       const history = createMockHistory(3, 200);
       const blackbox = BlackboxCompactor.extractDisasterBlackbox(

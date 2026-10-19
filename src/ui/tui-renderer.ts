@@ -24,6 +24,7 @@ export interface SessionStatusInfo {
 export interface SubagentLiveState {
   id: string;
   role: "researcher" | "coder" | string;
+  account?: string;
   description?: string;
   status: "running" | "completed" | "failed" | string;
   currentTurn?: number;
@@ -838,7 +839,8 @@ export class TuiRenderer {
     const role = state.role || "unknown";
     const status = state.status || "unknown";
     const action = state.lastAction || "";
-    return `[Subagent Event] [${displayId}] [${role}] 状态: ${status} | 动作: ${action}\n`;
+    const account = state.account ? ` [${state.account}]` : "";
+    return `[Subagent Event] [${displayId}] [${role}]${account} 状态: ${status} | 动作: ${action}\n`;
   }
 
   /**
@@ -855,6 +857,7 @@ export class TuiRenderer {
     for (let i = 0; i < states.length; i++) {
       const s = states[i];
       const roleBadge = s.role === "coder" ? this.c.yellow(`[coder]`) : this.c.blue(`[researcher]`);
+      const accountBadge = s.account ? this.c.magenta(`[${s.account}]`) : "";
       const hop = s.hopCount ?? (s.handoffCount !== undefined ? s.handoffCount + 1 : 1);
       const subHandoffs = s.handoffCount ?? Math.max(0, hop - 1);
       const hopBadge =
@@ -870,9 +873,11 @@ export class TuiRenderer {
           : this.c.cyan("🔄 运行中");
       const durationSec = ((s.durationMs ?? 0) / 1000).toFixed(1);
 
+      const headerBadges = [roleBadge, accountBadge, hopBadge].filter(Boolean).join(" ");
+
       lines.push(
         this.c.bold(`│ [Sub-${i + 1}] `) +
-          `${roleBadge} ${hopBadge} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`
+          `${headerBadges} ${(s.description || "").slice(0, 24)} | 状态: ${statusBadge} | 耗时: ${durationSec}s`
       );
       if (s.lastAction) {
         lines.push(`│   └─ 最新动作: ${this.c.gray(s.lastAction)}`);

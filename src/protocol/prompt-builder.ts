@@ -21,6 +21,7 @@ export interface Turn2TaskPromptOptions {
   toolResult: string;
   skillsSection?: string;
   toolName?: string;
+  concurrencyWorkers?: number;
 }
 
 export class PromptBuilder {
@@ -95,12 +96,22 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
   public static buildDirectAgentPrompt(
     workspaceRoot: string,
     task: string,
-    activeSkillsSection = ""
+    activeSkillsSection = "",
+    dirSkeleton = "",
+    concurrencyWorkers?: number
   ): string {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
 
     let prompt = `【本地宿主机工作区事实】
 - 工作区绝对路径: ${wsNorm}`;
+
+    if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
+      prompt += `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
+    }
+
+    if (dirSkeleton && dirSkeleton.trim() !== "") {
+      prompt += `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`;
+    }
 
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
       prompt += `\n\n【当前已激活的专业技能 (Skill)】\n${activeSkillsSection.trim()}`;
@@ -149,33 +160,42 @@ command: git status
     optionsOrTask: Turn2TaskPromptOptions | string,
     toolResult?: string,
     skillsSection = "",
-    toolName?: string
+    toolName?: string,
+    concurrencyWorkers?: number
   ): string {
     let finalTask = "";
     let finalToolResult = "";
     let finalSkillsSection = "";
     let finalToolName: string | undefined;
+    let finalConcurrencyWorkers: number | undefined;
 
     if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
       finalTask = optionsOrTask.task;
       finalToolResult = optionsOrTask.toolResult;
       finalSkillsSection = optionsOrTask.skillsSection || "";
       finalToolName = optionsOrTask.toolName;
+      finalConcurrencyWorkers = optionsOrTask.concurrencyWorkers;
     } else {
       finalTask = optionsOrTask;
       finalToolResult = toolResult ?? "";
       finalSkillsSection = skillsSection ?? "";
       finalToolName = toolName;
+      finalConcurrencyWorkers = concurrencyWorkers;
     }
 
     const toolHeader = finalToolName
       ? `[TOOL_RESULT for ${finalToolName} - SUCCESS]:`
       : `[TOOL_RESULT - SUCCESS]:`;
 
+    const clusterFact =
+      finalConcurrencyWorkers !== undefined && finalConcurrencyWorkers > 0
+        ? `\n- 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
+        : "";
+
     return `${toolHeader}
 ${finalToolResult}
 
-【环境握手完成：本地工具与工作区已就绪】
+【环境握手完成：本地工具与工作区已就绪】${clusterFact}
 ${finalSkillsSection ? `【当前已激活的专业技能 (Skill)】\n${finalSkillsSection}\n\n` : ""}
 【用户正式需求】
 ${finalTask}
@@ -207,7 +227,6 @@ ${this.PROTOCOL_REMINDER}`;
 Error: ${error || "Execution failed"}
 Output: ${output}
 
-请根据错误进行分析并尝试排查修复：
 ${this.PROTOCOL_REMINDER}`;
     }
   }
@@ -266,17 +285,23 @@ ${this.PROTOCOL_REMINDER}`;
     toolName: string,
     fileName: string,
     summary: { lineCount: number; charCount: number },
-    excerpt?: string
+    excerpt?: string,
+    concurrencyWorkers?: number
   ): string {
     const fingerprintBlock = excerpt
       ? `\n\n【物理执行指纹摘要 (Head-Tail Fingerprint)】:\n${excerpt}`
       : "";
 
+    const clusterFact =
+      concurrencyWorkers !== undefined && concurrencyWorkers > 0
+        ? `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
+        : "";
+
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
 【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 
-【环境握手完成：本地工具与工作区已就绪】
+【环境握手完成：本地工具与工作区已就绪】${clusterFact}
 ${skillsSection ? `【当前已激活的专业技能 (Skill)】\n${skillsSection}\n\n` : ""}
 【用户正式需求】
 ${task}
