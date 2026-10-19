@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 /**
  * CPH-PI Copilot Agent & Skills Packager
  * Packages system prompts and workspace-specific skills into ready-to-upload bundles.
+ * Synchronizes outputs to both dist/copilot-agent-bundle and package/agent-bundle/.
  */
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -12,10 +13,11 @@ const skillsDir = path.join(projectRoot, "skills");
 const distDir = path.join(projectRoot, "dist");
 const bundleDir = path.join(distDir, "copilot-agent-bundle");
 const zipPath = path.join(distDir, "copilot-agent-bundle.zip");
+const packageBundleDir = path.join(projectRoot, "package", "agent-bundle");
 
-console.log("📦 [Packager] 开始构建 Copilot M365 Agent 上传包 (Tri-Agent 架构)...");
+console.log("📦 [Packager] 开始构建 Copilot M365 Agent 上传包 (Tri-Agent & Dev 兼容架构)...");
 
-// 1. Prepare dist directories
+// 1. Prepare dist & package directories
 if (fs.existsSync(bundleDir)) {
   fs.rmSync(bundleDir, { recursive: true, force: true });
 }
@@ -23,6 +25,7 @@ if (fs.existsSync(zipPath)) {
   fs.rmSync(zipPath, { force: true });
 }
 fs.mkdirSync(bundleDir, { recursive: true });
+fs.mkdirSync(packageBundleDir, { recursive: true });
 
 // 2. Copy and format System Prompts for Tri-Agent architecture
 const promptMappings = [
@@ -56,24 +59,46 @@ for (const p of promptMappings) {
     continue;
   }
   const content = fs.readFileSync(srcPath, "utf8");
+  // Write to dist/copilot-agent-bundle
   const targetPath = path.join(bundleDir, p.dest);
   fs.writeFileSync(targetPath, content, "utf8");
+  // Sync to package/agent-bundle/
+  fs.writeFileSync(path.join(packageBundleDir, p.dest), content, "utf8");
   console.log(`✔ 已打包提示词: [${p.title}] -> ${p.dest} (${content.length} 字符)`);
 }
 
-// Backward-compatible Instructions-系统提示词.txt
+// Backward-compatible Instructions-系统提示词.txt (from cph-dev-agent-prompt.txt)
 const devPromptPath = path.join(projectRoot, "cph-dev-agent-prompt.txt");
 const fallbackMainPromptPath = path.join(projectRoot, "cph-main-agent-prompt.txt");
 const legacySrc = fs.existsSync(devPromptPath) ? devPromptPath : fallbackMainPromptPath;
 if (fs.existsSync(legacySrc)) {
   const content = fs.readFileSync(legacySrc, "utf8");
   fs.writeFileSync(path.join(bundleDir, "Instructions-系统提示词.txt"), content, "utf8");
+  fs.writeFileSync(path.join(packageBundleDir, "Instructions-系统提示词.txt"), content, "utf8");
   console.log(`✔ 已保留兼容提示词 -> Instructions-系统提示词.txt (${content.length} 字符)`);
+}
+
+// 2.5 Sync raw prompt files to package/agent-bundle/
+const rawPromptFiles = [
+  "cph-main-agent-prompt.txt",
+  "cph-coder-agent-prompt.txt",
+  "cph-researcher-agent-prompt.txt",
+  "cph-dev-agent-prompt.txt",
+];
+for (const pf of rawPromptFiles) {
+  const srcPath = path.join(projectRoot, pf);
+  if (fs.existsSync(srcPath)) {
+    const content = fs.readFileSync(srcPath, "utf8");
+    fs.writeFileSync(path.join(packageBundleDir, pf), content, "utf8");
+    console.log(`✔ 已同步源码提示词至 package/agent-bundle/: ${pf}`);
+  }
 }
 
 // 3. Copy workspace skills (including skills/subagent & skills/handoff)
 const targetSkillsDir = path.join(bundleDir, "skills");
+const packageSkillsDir = path.join(packageBundleDir, "skills");
 fs.mkdirSync(targetSkillsDir, { recursive: true });
+fs.mkdirSync(packageSkillsDir, { recursive: true });
 
 let skillCount = 0;
 if (fs.existsSync(skillsDir)) {
@@ -82,7 +107,9 @@ if (fs.existsSync(skillsDir)) {
     if (entry.isDirectory()) {
       const srcSkillDir = path.join(skillsDir, entry.name);
       const destSkillDir = path.join(targetSkillsDir, entry.name);
+      const destPackageSkillDir = path.join(packageSkillsDir, entry.name);
       fs.cpSync(srcSkillDir, destSkillDir, { recursive: true });
+      fs.cpSync(srcSkillDir, destPackageSkillDir, { recursive: true });
       skillCount++;
       console.log(`✔ 已打包工作区技能: ${entry.name}`);
     }
@@ -106,7 +133,9 @@ if (fs.existsSync(handoffSkillDir)) {
 // 3.5 Copy Knowledge documents (PowerShell Agent Guide in docx, txt, pdf, md formats)
 const docsDir = path.join(projectRoot, "docs");
 const targetDocsDir = path.join(bundleDir, "docs");
+const packageDocsDir = path.join(packageBundleDir, "docs");
 fs.mkdirSync(targetDocsDir, { recursive: true });
+fs.mkdirSync(packageDocsDir, { recursive: true });
 
 const knowledgeFiles = [
   "PowerShell-Agent-Guide.docx",
@@ -120,6 +149,8 @@ for (const kf of knowledgeFiles) {
   if (fs.existsSync(src)) {
     fs.copyFileSync(src, path.join(targetDocsDir, kf));
     fs.copyFileSync(src, path.join(bundleDir, kf));
+    fs.copyFileSync(src, path.join(packageDocsDir, kf));
+    fs.copyFileSync(src, path.join(packageBundleDir, kf));
     console.log(`✔ 已打包知识库文档: ${kf}`);
   }
 }
@@ -219,6 +250,7 @@ cph-pi --agent <main-id> --coder-agent-id <coder-id> --researcher-agent-id <rese
 `;
 
 fs.writeFileSync(path.join(bundleDir, "UPLOAD-GUIDE.md"), uploadGuideContent, "utf8");
+fs.writeFileSync(path.join(packageBundleDir, "UPLOAD-GUIDE.md"), uploadGuideContent, "utf8");
 
 // 5. Compress into ZIP using PowerShell
 try {
@@ -227,6 +259,9 @@ try {
   console.log(`\n🎉 打包完成！ZIP 文件已生成至:`);
   console.log(`👉 ${zipPath}`);
   console.log(`👉 文件夹目录: ${bundleDir}`);
+  // Copy zip to package/agent-bundle/copilot-agent-bundle.zip
+  fs.copyFileSync(zipPath, path.join(packageBundleDir, "copilot-agent-bundle.zip"));
+  console.log(`👉 同步至 package/agent-bundle/: ${packageBundleDir}`);
 } catch (e: any) {
   console.warn(`⚠️ ZIP 压缩命令执行警告: ${e.message}，但解压文件夹已就绪: ${bundleDir}`);
 }

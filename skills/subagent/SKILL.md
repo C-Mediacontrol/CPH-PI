@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: '复杂工程任务正交拆解与 Sub-agent 并发调度技能——指导主控 Agent 在面对多文件改动、跨模块重构、深度探查或长推理任务时，将大任务科学拆解为独立的 Researcher（调研）或 Coder（编码）子任务，按三大物理指标严格控制任务规模（核心修改源文件 ≤1 个、>500 行独占、聚焦 ≤2 个关注点），内化专业技能并进行无名化工单派发，通过 invoke_subagent 调派独立子任务攻坚，严格与工作区 plan.md 物理任务清单对账，突破单会话限制并收敛交付。Use when: 任务涉及多个文件、需要先调研后实施、任务复杂度高、需要并发加速。触发词：subagent、子代理、拆解任务、派发子会话、并发调度'
+description: '复杂工程任务正交拆解与 Sub-agent 并发调度技能——指导主控 Agent 在面对多文件改动、跨模块重构、深度探查或长推理任务时，废除旧式斥候摸黑探查，全面升级为基于 DAG 因果依赖与微切片隔离的工单派发矩阵，将大任务科学拆解为独立的 Researcher（调研）或 Coder（编码）子任务，按三大物理指标严格控制任务规模（核心修改源文件 ≤1 个、>500 行独占、聚焦 ≤2 个关注点），规范 targetFiles 与 prerequisiteReports/prerequisiteContext 微切片工单契约，设立因果阶段屏障与正交满额并发，内化专业技能并进行无名化工单派发，通过 invoke_subagent 调派独立子任务攻坚，严格与工作区 plan.md 物理任务清单对账，突破单会话限制并收敛交付。Use when: 任务涉及多个文件、需要先调研后实施、任务复杂度高、需要并发加速。触发词：subagent、子代理、拆解任务、派发子会话、并发调度'
 argument-hint: ''
 user-invocable: true
 disable-model-invocation: false
@@ -14,15 +14,22 @@ disable-model-invocation: false
 
 ## 核心原则 (Core Principles)
 
-1. **会话独立与配额倍增**：每个子任务派发给全新的独立会话，享有专属的充足推理预算与干净上下文；
-2. **显式角色与工具边界**：每个子任务必须显式指定为 `researcher`（别名 `searcher`）或 `coder`，系统按角色施加严格的工具权限隔离；
-3. **任务体量三大物理指标 (Three Physical Sizing Metrics)**：每个子任务聚焦于单一内聚的功能垂直切片，严格依据客观三大物理指标界定规模，替代抽象轮数估算：
+1. **废除旧式摸黑探查，升级为 DAG 因果派发**：全面废除无序的斥候摸黑探查，建立基于有向无环图（DAG）因果时序与阶段屏障的清晰工单矩阵；
+2. **局部微切片认知隔离 (Scoped Micro-Slice)**：每个子任务派发前，通过声明 `targetFiles`（限定文件）与 `prerequisiteReports` / `prerequisiteContext`（前序审查报告或上下文）组装局部微切片，隔离全局无关代码噪音；
+3. **会话独立与配额倍增**：每个子任务派发给全新的独立会话，享有专属的充足推理预算与干净上下文；
+4. **显式角色与工具边界**：每个子任务必须显式指定为 `researcher`（别名 `searcher`）或 `coder`，系统按角色施加严格的工具权限隔离；
+5. **任务体量三大物理指标 (Three Physical Sizing Metrics)**：每个子任务聚焦于单一内聚的功能垂直切片，严格依据客观三大物理指标界定规模，替代抽象轮数估算：
    - **指标 1（单核心文件）**：单任务核心修改源文件 ≤1 个，避免跨文件耦合；
    - **指标 2（大文件独占）**：单文件超过 500 行的源文件必须作为独占子任务派发，不得与其合并其它文件；
    - **指标 3（低关注点聚集）**：单任务聚焦 ≤2 个明确技术关注点，保障子代理注意力高度集中；
-4. **技能内化与无名化派发铁律 (Internalized Skills & Anonymous Dispatch)**：主控在全局把控并内化专业技能（审查、TDD 测试驱动开发、系统化排错等）；调用 `invoke_subagent` 派发子任务时，**工单 Prompt 中不得出现任何 Skill 名称**！必须将其解构为具体的物理目标、限定文件路径与验收命令。子代理零 Skill 认知；
-5. **自包含首轮提示词**：子会话不共享主会话上下文，派发给子代理的首轮提示词（First-Turn Prompt）必须 100% 自闭环，明确“干什么、在哪干、如何测”；
-6. **集群并发匹配与满载吞吐 (Cluster Capacity Matching & High-Throughput Focus)**：当系统事实注入了集群并发容量（如 `并发集群容量: N 个并行 Worker`）且任务清单中存在多个独立切片或正交模块时，推荐单批次派发与 Worker 数量相当的正交子任务，实现多账号集群算力的高效协同与满额吞吐。
+6. **技能内化与无名化派发铁律 (Internalized Skills & Anonymous Dispatch)**：主控在全局把控并内化专业技能（审查、TDD 测试驱动开发、系统化排错等）；调用 `invoke_subagent` 派发子任务时，**工单 Prompt 中不得出现任何 Skill 名称**！必须将其解构为具体的物理目标、限定文件路径与验收命令。子代理零 Skill 认知；
+7. **自包含首轮提示词**：子会话不共享主会话上下文，派发给子代理的首轮提示词（First-Turn Prompt）必须 100% 自闭环，明确“干什么、在哪干、如何测”；
+8. **阶段屏障与因果时序四原则 (Stage Barriers & Causality Sequence)**：
+   - **契约先于实现**：接口定义与数据契约确立后，下游实现方可开工；
+   - **底座先于应用**：公共类库打桩就绪后，上层业务方可接入；
+   - **研判先于重构**：调研走查报告产出并经主控在会话中综合提炼后，方可派发编码工单；
+   - **实施先于集成**：各独立模块单测全绿后，方可调度集成测试；
+9. **正交任务满额并发 (Orthogonal Concurrency)**：当多个子任务负责互不重叠的文件集合且输入输出相互独立时，并行派发 Worker 集群，达成安全高吞吐。
 
 ---
 
@@ -66,21 +73,22 @@ disable-model-invocation: false
                              │
                              ▼
  ┌────────────────────────────────────────────────────────┐
- │ 【Gate 4: 首轮提示词完备度门禁 (First-Turn Prompt)】     │
- │ 检查每个子任务的 prompt 字段：                         │
- │ · 包含清晰的问题背景与明确的单点目标                    │
- │ · 包含限定的文件路径或入口函数                          │
- │ · Coder 必须包含明确的单元测试命令与验收标准            │
+ │ 【Gate 4: 局部微切片与首轮提示词完备度门禁】             │
+ │ 检查每个子任务工单规范：                               │
+ │ · 明确声明 targetFiles 目标文件清单 (1~3 个文件)       │
+ │ · 声明 prerequisiteReports / prerequisiteContext 上下文 │
+ │ · Coder 必须包含明确的单元测试命令与 100% 绿灯标准     │
  │ · Researcher 必须包含期望的排查结论与证据输出结构      │
  └───────────────────────────┬────────────────────────────┘
                              │
                              ▼
  ┌────────────────────────────────────────────────────────┐
- │ 【Gate 5: 因果依赖与阶段屏障门禁 (Stage Barrier Gate)】 │
+ │ 【Gate 5: DAG 因果依赖与阶段屏障门禁 (Stage Barrier)】  │
  │ 检查任务之间的先后顺序与信息依赖：                     │
- │ · 跨角色信息因果（调研 ➔ 编码）：必须分轮次等待回传     │
- │ · 纯代码执行依赖（已知全貌）：显式声明 stage: 1, 2       │
- │ · 调度核保证 Stage 升序串行、Stage 内并发滑窗、失败熔断 │
+ │ · 遵循因果时序：契约先于实现、底座先于应用、研判先于重构 │
+ │ · 跨阶段执行依赖：显式声明 stage: 1 与 stage: 2         │
+ │ · 阶段内互不重叠任务：享受正交满额并发 (Orthogonal)    │
+ │ · 调度核保证 Stage 升序串行、Stage 内并发、失败熔断    │
  └───────────────────────────┬────────────────────────────┘
                              │
                              ▼
@@ -97,8 +105,8 @@ disable-model-invocation: false
 
 | 角色标识 (`role`) | 别名支持 | 职能定位 | 可用工具清单 | 核心交付物 |
 |---|---|---|---|---|
-| `researcher` | `searcher` | 复杂代码走查、链路逆向、根因分析 | `read_file`, 只读 `run_command`, `write_file` (仅限落盘正式报告/交接) | 结构化 Markdown 调研分析报告（含文件路径、行号与根因建议） |
-| `coder` | 无 | 外科手术级精准代码修改与单测验证 | `read_file`, `patch_file`, `write_file`, `run_command` | 代码微补丁落地与单元测试通过证据报告 |
+| `researcher` | `searcher` | 复杂代码走查、链路逆向、根因分析（单点攻坚分析锤） | `read_file`, 只读 `run_command` | 结构化 Markdown 调研分析报告（含文件路径、行号与根因建议） |
+| `coder` | 无 | 外科手术级精准代码修改与单测绿灯闭环 | `read_file`, `patch_file`, `run_command` | 代码微补丁落地与单元测试 100% 绿灯通过证据报告 |
 
 ---
 
@@ -115,11 +123,12 @@ disable-model-invocation: false
 
 ---
 
-## 首轮提示词（First-Turn Prompt）编写标准
+## 首轮提示词（First-Turn Prompt）与微切片工单标准
 
-### 1. 调研角色 (`researcher` / `searcher`) 首轮提示词规范
+### 1. 调研角色 (`researcher` / `searcher`) 首轮微切片工单规范
 
-必须为 Researcher 提供精准的侦探线索：
+必须为 Researcher 提供精准的线索与微切片范围：
+- **微切片限定**：明确声明 `targetFiles` 与 `prerequisiteContext`；
 - **目标与假设**：需要排查什么现象、验证什么假设；
 - **排查入口**：建议从哪些文件、函数或历史提交切入；
 - **输出要求**：明确要求输出关键代码行号、真实执行链路与后续重构建议。
@@ -130,6 +139,9 @@ role: researcher
 description: 调查 <模块名> 的调用链路与潜在瓶颈
 prompt: |
   【调研目标】: 探查 <具体问题/需求背景>。
+  【微切片范围】:
+  - targetFiles: [<目标文件路径A>, <目标文件路径B>]
+  - prerequisiteContext: <前序架构背景、调用契约或业务要求>
   【入口文件】: 请阅读 <文件路径A> 中的 <函数名> 与 <文件路径B>。
   【关键关注点】:
   1. 梳理数据从输入到落盘的完整流转过程；
@@ -165,13 +177,14 @@ prompt: |
 
 ---
 
-### 3. 编码角色 (`coder`) 首轮提示词规范
+### 3. 编码角色 (`coder`) 首轮微切片工单规范
 
 必须为 Coder 划定明确的文件边界与验收标准（严格遵循三大物理指标：核心修改源文件 ≤1 个，单文件超过 500 行必须独占，聚焦 ≤2 个关注点）：
+- **微切片限定**：明确声明 `targetFiles` 与 `prerequisiteReports`；
 - **修改目标**：需要新增的功能特性或修复的具体缺陷；
 - **文件边界**：限定修改的具体文件路径（严格正交，核心修改源文件 ≤1 个，单文件超过 500 行独占，聚焦 ≤2 个技术关注点）；
 - **补丁约束**：强调采用 `patch_file` 局部精准替换；
-- **验收命令**：必须运行的测试命令与期望的输出状态。
+- **验收命令**：必须运行的测试命令与 100% 绿灯期望输出。
 
 **标准模板**：
 ```yaml
@@ -179,6 +192,9 @@ role: coder
 description: 修复 <文件路径> 中的 <具体缺陷> 并补充测试
 prompt: |
   【实施目标】: 为 <模块名> 修复/实现 <具体功能需求>。
+  【微切片范围】:
+  - targetFiles: [<核心修改源文件 ≤1 个>, <测试文件路径>]
+  - prerequisiteReports: [<前序调研报告路径或审查文档>]
   【涉及文件 (限定范围)】:
   - 核心实现: <文件路径A (核心修改源文件 ≤1 个)>
   - 单元测试: <测试文件路径B>
@@ -194,7 +210,7 @@ prompt: |
 
 ## 标准 `invoke_subagent` 调用示例
 
-主控 Agent 在满足五道门禁后，在标准 ```action 块中发起调派：
+主控 Agent 在满足五道门禁后，在标准 ```action 块中发起调派，展现 DAG 因果依赖与阶段屏障：
 
 ```action
 tool: invoke_subagent
@@ -204,6 +220,9 @@ subagents:
     description: 探查 AccountPool 在并发下的 Token 轮换机制与限频点
     prompt: |
       【调研目标】: 调查 AccountPool 在并发获取 Token 时的锁机制与避险策略。
+      【微切片范围】:
+      - targetFiles: [src/auth/account-pool.ts, src/auth/token-manager.ts]
+      - prerequisiteContext: 契约规范与并发认证设计
       【入口文件】: src/auth/account-pool.ts 与 src/auth/token-manager.ts。
       【关键关注点】:
       1. 分析 getNextAvailableToken 在多并发调用时是否存在竞态条件；
@@ -214,15 +233,21 @@ subagents:
     description: 完善 session-manager 的边界用例测试覆盖
     prompt: |
       【实施目标】: 为 session-manager 补充会话恢复异常边界测试。
+      【微切片范围】:
+      - targetFiles: [tests/session/session.test.ts]
+      - prerequisiteContext: 会话生命周期状态机契约
       【涉及文件】: tests/session/session.test.ts。
-      【验证标准】: 执行 `bun test tests/session/session.test.ts` 确保全部通过，并汇报测试日志证据。
+      【验证标准】: 执行 `bun test tests/session/session.test.ts` 确保全部绿灯通过，并汇报测试日志证据。
   - stage: 2
     role: coder
     description: 基于 Stage 1 调研与测试基线修复并发死锁
     prompt: |
       【实施目标】: 修复并发获取 Token 时的锁竞态。
+      【微切片范围】:
+      - targetFiles: [src/auth/account-pool.ts]
+      - prerequisiteReports: [.cph/reports/researcher-accountpool.md]
       【涉及文件】: src/auth/account-pool.ts。
-      【验证标准】: 执行 `bun test tests/auth/` 确保全部绿灯。
+      【验证标准】: 执行 `bun test tests/auth/` 确保全部绿灯通过。
 ```
 
 ---
@@ -234,7 +259,7 @@ subagents:
 1. **轨道 1：单 Scout 斥候内联等待 (Inline Wait Track)**
    - **适用场景**：第一阶段面对超大文件（>500 行）或宏观架构未明的系统，需要先摸清结构再制定精细计划；
    - **调度特征**：`subagents.length === 1` 且角色为 `researcher`（带有 `isScout: true` 或描述中含有 `斥候/大纲/架构探查`）；
-   - **物理契约**：主控保持当前 WebSocket 连接活跃，不触发虚拟化归档，不递增代次，不切换 Session。由调度核从账号池独立租用隔离账号执行 Scout。执行完毕后，简报作为标准 toolResult 直接回传至主控当前会话；
+   - **物理契约**：主控保持当前连接活跃，不触发虚拟化归档，不递增代次，不切换 Session。由调度核独立执行 Scout。执行完毕后，简报作为标准 toolResult 直接回传至主控当前会话；
    - **闭环行动**：主控在第 3 轮收到大纲后，立桩精准的 `plan.md`，随后转入轨道 2。
 
 2. **轨道 2：Swarm 批量并发虚拟化 (Virtualization Swarm Track)**
@@ -269,7 +294,7 @@ subagents:
 | **❌ 缺失 `role` 字段** | 系统无法识别目标角色，导致调度中断 | 必须显式声明 `role: researcher` 或 `role: coder` |
 | **❌ 违反三大物理指标（修改多文件、500 行未独占或关注点过多）** | 任务认知超载、子代理中途耗尽轮数，上下文损耗严重 | 严格遵循三大物理指标：单任务核心修改源文件 ≤1 个、>500 行独占、聚焦 ≤2 个关注点 |
 | **❌ 并发 Coder 修改相同文件** | 并发写冲突、后完成的覆盖先完成的，导致代码丢失 | 按文件正交拆分；重叠文件拆分为串行两阶段执行 |
-| **❌ 提示词简陋 (“帮我改下登录”)** | 子代理无主会话历史，因上下文缺失而瞎猜乱改 | 编写完整的首轮提示词（背景、文件路径、测试命令） |
+| **❌ 提示词简陋 (“帮我改下登录”)** | 子代理无主会话历史，因上下文缺失而瞎猜乱改 | 编写完整的首轮提示词与微切片（targetFiles、背景、测试命令） |
 | **❌ 工单 Prompt 携带 Skill 名称** | 诱发子代理 Skill 幻觉与认知混乱，破坏纯粹执行边界 | 技能内化与无名化派发：Prompt 中不得出现任何 Skill 名称，解构为物理动作、文件路径与验收命令 |
 | **❌ 让 Researcher 顺手改代码** | 破坏只读边界，易引发未验证的回归错误 | 严格让 Researcher 只输出报告，由后续 Coder 施工 |
 | **❌ plan.md 物理任务清单未清空即提前早退** | 任务半途而废，违背收敛门禁导致半拉子工程 | 成果审阅必须与 plan.md 物理任务清单打勾对账，清单全部打勾完成方可输出 `FINAL_ANSWER` |
