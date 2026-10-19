@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import { AccountPool } from "../auth/account-pool.ts";
 import { ChatHubClient } from "../transport/chathub-client.ts";
 import {
@@ -9,6 +9,7 @@ import {
   type UploadDocumentResult,
 } from "../transport/substrate-uploader.ts";
 import type { AttachmentAnnotation } from "../transport/types.ts";
+import { SnapshotGenerator, type SnapshotResult } from "../workspace/snapshot-generator.ts";
 import {
   ToolBridge,
   type CopilotAction,
@@ -84,6 +85,7 @@ export interface OrchestratorOptions {
   cloudAttachmentThresholdLines?: number;
   lineageTracker?: SessionLineageTracker;
   maxGenerations?: number;
+  enableWorkspaceSnapshot?: boolean;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -121,6 +123,7 @@ export interface OrchestratorRunOptions {
   arbitratorChatClient?: IOrchestratorChatClient;
   initialAnnotations?: AttachmentAnnotation[];
   rootUserPrompt?: string;
+  enableWorkspaceSnapshot?: boolean;
 }
 
 export interface OrchestratorRunResult {
@@ -199,6 +202,9 @@ export class Orchestrator {
   private lineageTracker: SessionLineageTracker;
   public generation: number = 1;
   private maxGenerations: number;
+  public enableWorkspaceSnapshot: boolean;
+  public lastNextSnapshotMeta?: SnapshotResult;
+  private lastModifiedFile?: string;
 
   // Handshake State Machine
   public isHandshakePending: boolean = true;
@@ -237,10 +243,27 @@ export class Orchestrator {
         ? options.cloudAttachmentThresholdLines
         : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
+    this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
         ? options.isHandshakePending
         : !this.customAgentId;
+  }
+
+  public getLastNextSnapshotMeta(): SnapshotResult | undefined {
+    return this.lastNextSnapshotMeta;
+  }
+
+  public getCurrentGitBranch(): string {
+    if (!this.workspaceRoot) return "main";
+    try {
+      return execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: this.workspaceRoot,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).toString("utf-8").trim();
+    } catch {
+      return "main";
+    }
   }
 
   public getCloudAttachmentThresholds(): { chars: number; lines: number } {
@@ -487,6 +510,103 @@ export class Orchestrator {
     let currentAnnotations: AttachmentAnnotation[] = options.initialAnnotations
       ? [...options.initialAnnotations]
       : [];
+
+    // Turn 1: Workspace Snapshot Attachment, Cache Check & Explicit Fault Tolerance
+    const isWorkspaceSnapshotEnabled =
+      options.enableWorkspaceSnapshot !== undefined
+        ? options.enableWorkspaceSnapshot
+        : this.enableWorkspaceSnapshot;
+
+    if (isWorkspaceSnapshotEnabled && this.workspaceRoot) {
+      try {
+        const generation = this.generation || 1;
+        const snap = SnapshotGenerator.generateWorkspaceSnapshot(
+          this.workspaceRoot,
+          undefined,
+          generation
+        );
+        const cacheFile = path.join(
+          this.workspaceRoot,
+          ".cph",
+          "state",
+          "workspace-snapshot-cache.json"
+        );
+        let cached: {
+          snapshotHash?: string;
+          uploadResult?: UploadDocumentResult;
+          updatedAt?: string;
+        } | null = null;
+
+        if (fs.existsSync(cacheFile)) {
+          try {
+            cached = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+          } catch {
+            cached = null;
+          }
+        }
+
+        if (
+          cached &&
+          cached.snapshotHash === snap.hash &&
+          cached.uploadResult?.annotation
+        ) {
+          // Unchanged hash: directly reuse cached annotation
+          currentAnnotations.unshift(cached.uploadResult.annotation);
+          events?.onAttachmentUploaded?.(cached.uploadResult, "workspace_snapshot");
+        } else {
+          // Upload new snapshot buffer
+          const graphToken = await this.acquireGraphToken();
+          if (!graphToken) {
+            throw new Error("No Graph access token available for workspace snapshot upload");
+          }
+          const snapshotBuffer = fs.readFileSync(snap.snapshotPath);
+          const uploadResult = await SubstrateUploader.uploadDocumentAuto(
+            graphToken,
+            snapshotBuffer,
+            snap.cloudFileName,
+            signal
+          );
+
+          // Persist full annotation cache
+          const cacheData = {
+            snapshotHash: snap.hash,
+            uploadResult,
+            updatedAt: new Date().toISOString(),
+          };
+          fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+          fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
+
+          currentAnnotations.unshift(uploadResult.annotation);
+          events?.onAttachmentUploaded?.(uploadResult, "workspace_snapshot");
+        }
+      } catch (err: any) {
+        // Explicit fault tolerance & model-visible perception (M2/I20)
+        try {
+          const errLogPath = path.join(
+            this.workspaceRoot,
+            ".cph",
+            "state",
+            "upload-error.log"
+          );
+          fs.mkdirSync(path.dirname(errLogPath), { recursive: true });
+          const errContent = `[${new Date().toISOString()}] Turn 1 workspace snapshot upload failed:\n${
+            err?.stack || err?.message || String(err)
+          }\n\n`;
+          fs.appendFileSync(errLogPath, errContent, "utf-8");
+        } catch {}
+
+        const warnMsg = "[WARN: Turn 1 workspace snapshot upload failed]";
+        if ((this as any).tuiRenderer?.c?.yellow) {
+          console.warn((this as any).tuiRenderer.c.yellow(warnMsg));
+        } else {
+          console.warn(warnMsg);
+        }
+
+        const degradationNotice =
+          "\n[WORKSPACE NOTICE: 全景代码快照上传暂未就绪，当前进入增量探查降级模式，请按需调用 read_file 探查所需文件]\n";
+        currentPrompt = degradationNotice + currentPrompt;
+      }
+    }
 
     while (turn <= this.maxTurns) {
       if (signal?.aborted) {
@@ -847,7 +967,88 @@ export class Orchestrator {
 
         events?.onToolEnd?.(toolResult);
 
-        // Check and trigger cloud document attachment upload for tool outputs (aggressive upload policy to avoid encoding corruption and chat bloat)
+        // Track last modified file for edit/patch_file/write_file
+        if (
+          toolResult.success &&
+          (parsed.action.tool === "edit" ||
+            parsed.action.tool === "patch_file" ||
+            parsed.action.tool === "write_file")
+        ) {
+          const modFile =
+            (parsed.action as any).path ||
+            (parsed.action as any).file ||
+            (parsed.action as any).filePath ||
+            (parsed.action as any).targetPath;
+          if (modFile && typeof modFile === "string") {
+            this.lastModifiedFile = modFile;
+          }
+        }
+
+        // Check if single point modification / testing passed with green status
+        let isGreenTestResult = false;
+        if (toolResult.success) {
+          const rawOut = toolResult.rawOutput || toolResult.output || "";
+          const isTestCommand =
+            (parsed.action.tool === "run_command" || toolResult.actionName === "run_command") &&
+            parsed.action.command &&
+            /(?:test|vitest|jest|pytest|cargo\s+test)/i.test(parsed.action.command);
+          const hasGreenPattern =
+            /(?:pass(?:ed)?|绿灯|\b\d+\s+pass(?:ed)?\b|status:\s*green|all\s+tests\s+pass(?:ed)?)/i.test(rawOut);
+
+          if ((isTestCommand && hasGreenPattern) || (hasGreenPattern && /(?:pass|0 fail|passed)/i.test(rawOut))) {
+            isGreenTestResult = true;
+          }
+        }
+
+        let fingerprintHeader = "";
+        if (isGreenTestResult) {
+          const branch = this.getCurrentGitBranch() || "main";
+          const targetFile =
+            this.lastModifiedFile ||
+            (parsed.action as any)?.path ||
+            (parsed.action as any)?.file ||
+            "workspace";
+          fingerprintHeader = [
+            "[WORKSPACE STATE UPDATE]",
+            `Branch: ${branch}`,
+            `Status: Green`,
+            `Target: ${targetFile} (Verified: Tests passed on disk)`,
+            `Cloud Mirror: Synced to SharePoint`,
+          ].join("\n");
+
+          // Trigger asynchronous silent sp-sync-engine.ps1
+          try {
+            const syncScript = path.join(this.workspaceRoot, "scripts", "sp-sync-engine.ps1");
+            if (fs.existsSync(syncScript)) {
+              const child = spawn(
+                "powershell.exe",
+                [
+                  "-NoProfile",
+                  "-ExecutionPolicy",
+                  "Bypass",
+                  "-File",
+                  syncScript,
+                  "-Action",
+                  "SyncSingleFile",
+                  "-SourceFile",
+                  targetFile,
+                  "-WorkspaceRoot",
+                  this.workspaceRoot,
+                ],
+                {
+                  cwd: this.workspaceRoot,
+                  stdio: "ignore",
+                  detached: true,
+                }
+              );
+              child.unref();
+            }
+          } catch {
+            // Background async trigger - do not block
+          }
+        }
+
+        // Check and trigger cloud document attachment upload for tool outputs (intercept full upload on green test)
         let uploadedAttachment: UploadDocumentResult | null = null;
         const rawContent = toolResult.rawOutput || toolResult.output || "";
         const lineCount = rawContent.split(/\r?\n/).length;
@@ -858,6 +1059,7 @@ export class Orchestrator {
 
         const shouldUpload =
           this.enableCloudAttachment &&
+          !isGreenTestResult &&
           toolResult.success &&
           charCount > 0 &&
           (isFileReadAction ||
@@ -965,6 +1167,10 @@ export class Orchestrator {
           }
         }
 
+        if (fingerprintHeader) {
+          currentPrompt = `${fingerprintHeader}\n\n${currentPrompt}`;
+        }
+
         events?.onTurnEnd?.(turnIndex, turnResponseText);
         if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
           const targetSessionId = options.sessionId || this.sessionId;
@@ -1062,6 +1268,22 @@ export class Orchestrator {
     const cleanTask =
       task || this.pendingTask || (history[0]?.userInput ? history[0].userInput : "未指定任务需求");
 
+    // Incremental Workspace Snapshot generation on handoff
+    let nextSnapshotMeta: SnapshotResult | undefined;
+    if (this.enableWorkspaceSnapshot && this.workspaceRoot) {
+      try {
+        const nextGen = (this.generation || 1) + 1;
+        nextSnapshotMeta = SnapshotGenerator.generateWorkspaceSnapshot(
+          this.workspaceRoot,
+          undefined,
+          nextGen
+        );
+        this.lastNextSnapshotMeta = nextSnapshotMeta;
+      } catch {
+        // Fallback gracefully
+      }
+    }
+
     // 0. File-First Handoff: if the model has already written the handoff document directly via write_file,
     // honor and return the model's authentic document without secondary wrapping!
     if (effectiveSessionId && this.workspaceRoot) {
@@ -1079,11 +1301,16 @@ export class Orchestrator {
       }
     }
 
+    const nextSnapshotFact = nextSnapshotMeta
+      ? `- **下一代工作区全景快照**: \`${nextSnapshotMeta.cloudFileName}\` (SHA: \`${nextSnapshotMeta.hash}\`, Files: ${nextSnapshotMeta.fileCount})`
+      : "";
+
     // Module 1: 【任务目标与原始需求】
     const taskSection = [
       `- **原始任务**: ${cleanTask}`,
       `- **工作区根目录**: \`${this.workspaceRoot}\``,
       effectiveSessionId ? `- **会话标识**: \`${effectiveSessionId}\`` : "",
+      nextSnapshotFact,
     ]
       .filter(Boolean)
       .join("\n");

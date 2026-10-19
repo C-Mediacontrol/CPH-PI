@@ -8,6 +8,7 @@ import { AccountPool } from "../auth/account-pool.ts";
 import { SessionLineageTracker } from "../session/lineage-tracker.ts";
 import { SkillLoader, type Skill } from "../skills/skill-loader.ts";
 import { SubstrateUploader } from "../transport/substrate-uploader.ts";
+import { SnapshotGenerator } from "../workspace/snapshot-generator.ts";
 import type { AttachmentAnnotation } from "../transport/types.ts";
 
 /**
@@ -474,10 +475,50 @@ export class SubagentRunner {
     let lastFinalAnswer = "";
     let completed = false;
 
-    // 单文件任务开局全量附件自动挂载探测
+    // 单文件任务/局部微切片开局附件自动挂载探测
     let initialAnnotations: AttachmentAnnotation[] | undefined = undefined;
     const targetFilePath = extractTargetFilePath(spec, this.workspaceRoot);
-    if (targetFilePath && fs.existsSync(targetFilePath)) {
+    const specTargetFiles: string[] = Array.isArray((spec as any).targetFiles)
+      ? (spec as any).targetFiles
+      : [];
+    const prerequisiteReports: string[] = Array.isArray((spec as any).prerequisiteReports)
+      ? (spec as any).prerequisiteReports
+      : [];
+
+    if (specTargetFiles.length > 0) {
+      try {
+        let graphToken: string | undefined;
+        if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
+          graphToken = await this.pool.getGraphAccessToken();
+        }
+        if (graphToken) {
+          const sliceResult = SnapshotGenerator.generateScopedSubagentSlice(
+            this.workspaceRoot,
+            specTargetFiles,
+            prerequisiteReports
+          );
+          if (sliceResult && fs.existsSync(sliceResult.slicePath)) {
+            const sliceBuffer = fs.readFileSync(sliceResult.slicePath);
+            const sliceName = `subagent-slice-${subId}-${path.basename(sliceResult.slicePath)}`;
+            const uploaded = await SubstrateUploader.uploadDocumentAuto(
+              graphToken,
+              sliceBuffer,
+              sliceName
+            );
+            if (uploaded && uploaded.annotation) {
+              initialAnnotations = [uploaded.annotation];
+              logStream?.write(
+                `\n☁️ [开局局部微切片已直传挂载] ${sliceResult.slicePath} (${sliceName}, ${sliceResult.bytes} bytes)\n`
+              );
+            }
+          }
+        }
+      } catch (err: any) {
+        logStream?.write(
+          `\n⚠️ [开局局部微切片直传失败，降级本地工具读取] ${err?.message || err}\n`
+        );
+      }
+    } else if (targetFilePath && fs.existsSync(targetFilePath)) {
       try {
         let graphToken: string | undefined;
         if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
