@@ -22329,17 +22329,21 @@ ${finalTask}
 
 ${this.PROTOCOL_REMINDER}`;
   }
-  static buildToolResultPrompt(toolName, success, output, error) {
+  static buildToolResultPrompt(toolName, success, output, error, taskInvariant) {
+    const invariantBlock = taskInvariant && taskInvariant.trim() !== "" ? `
+【当前推进战役北极星 (Task Invariant)】:
+${taskInvariant.trim()}
+` : "";
     if (success) {
       return `[TOOL_RESULT for ${toolName} - SUCCESS]:
 ${output}
-
+${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     } else {
       return `[TOOL_RESULT for ${toolName} - FAILED]:
 Error: ${error || "Execution failed"}
 Output: ${output}
-
+${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     }
   }
@@ -22358,15 +22362,19 @@ ${this.PROTOCOL_REMINDER}`;
 ... (省略 ${omittedCount} 行) ...
 ${tail}`;
   }
-  static buildAttachedToolResultPrompt(toolName, fileName, summary, excerpt) {
+  static buildAttachedToolResultPrompt(toolName, fileName, summary, excerpt, taskInvariant) {
     const fingerprintBlock = excerpt ? `
 
 【物理执行指纹摘要 (Head-Tail Fingerprint)】:
 ${excerpt}` : "";
+    const invariantBlock = taskInvariant && taskInvariant.trim() !== "" ? `
+
+【当前推进战役北极星 (Task Invariant)】:
+${taskInvariant.trim()}` : "";
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ ${toolName} 执行成功 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)。
 完整执行结果已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}${invariantBlock}
 
 ${this.PROTOCOL_REMINDER}`;
   }
@@ -22395,11 +22403,15 @@ ${task}
 
 ${this.PROTOCOL_REMINDER}`;
   }
-  static buildUserResponsePrompt(userResponse) {
+  static buildUserResponsePrompt(userResponse, taskInvariant) {
+    const invariantBlock = taskInvariant && taskInvariant.trim() !== "" ? `
+【当前推进战役北极星 (Task Invariant)】:
+${taskInvariant.trim()}
+` : "";
     return `[USER_RESPONSE for ask_question]:
 用户已回复确认：
 ${userResponse}
-
+${invariantBlock}
 请根据用户输入继续推进执行下一步任务：
 ${this.PROTOCOL_REMINDER}`;
   }
@@ -24669,7 +24681,7 @@ ${sub.prompt || ""}
   fs9.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
-function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader, concurrencyWorkers) {
+function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader, concurrencyWorkers, dirSkeleton) {
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
     try {
@@ -24682,18 +24694,25 @@ function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountH
 ${mountHeader}
 ` : "";
   const clusterFact = concurrencyWorkers !== undefined && concurrencyWorkers > 0 ? `
-- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)
-` : "";
+- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)` : "";
+  const wsNorm = snapshot.workspaceRoot ? snapshot.workspaceRoot.replace(/\\/g, "/") : "";
+  const workspaceFact = wsNorm ? `
+- **工作区绝对路径**: ${wsNorm}` : "";
+  const skeletonFact = dirSkeleton && dirSkeleton.trim() !== "" ? `
+
+【工作区受控目录骨架 (2-Level Skeleton)】
+${dirSkeleton.trim()}` : "";
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
+
+【本地宿主机工作区事实】${workspaceFact}${clusterFact}${skeletonFact}
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:
 ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
-${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-${clusterFact}${mountSection}
+${snapshot.thought || "按既定规范开展模块化调研与修改。"}${mountSection}
 ### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
@@ -24702,7 +24721,8 @@ ${reportsSummary}
 1. 【对账打勾】：根据上述各子任务结题成果，使用 patch_file 立即将 plan.md 中已成功的任务项更新打勾为 - [x] 步骤描述；
 2. 【成果引用】：完整调研报告与证据链已由底层自动落盘至物理报告文件（.cph/reports/），若需回溯执行细节可按需调阅已挂载的物理账本或使用 read_file 调阅；
 3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，保护已完成的规划与成果；
-4. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
+4. 【自闭环攻坚心智】：你正处于既定工程战役的收敛攻坚阶段，工作区已具备明确的战役目标与 plan.md 待办项。请直接基于上述成果与物理事实推进对账或补缺派发，优先基于受控目录骨架定位真实文件路径展开工作，无需中断执行向用户重问初始需求；
+5. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
 }
 
 // src/agent/orchestrator.ts
@@ -25255,7 +25275,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
               } catch {}
             }
             const workerCount = this.getConcurrencyWorkerCount();
-            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount);
+            const dirTree = this.collectDirTreePreview();
+            this.pendingTask = snapshot.originalTask || this.pendingTask || task;
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount, dirTree);
             this.completeHandshake();
             refusalRetries = 0;
             turn = 0;
@@ -25324,11 +25346,12 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
             });
           }
         } else {
+          const currentTask = this.pendingTask || task || "";
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
-            currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt);
+            currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, currentTask);
           } else {
-            currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output);
+            currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output, currentTask);
           }
         }
         events?.onTurnEnd?.(turnIndex, turnResponseText);

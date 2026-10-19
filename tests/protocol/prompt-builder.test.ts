@@ -62,6 +62,35 @@ describe("PromptBuilder Unit Tests", () => {
       expect(prompt).not.toContain("请根据错误进行分析");
       expect(prompt).not.toContain("尝试排查修复");
     });
+
+    it("should embed task invariant anchor in buildToolResultPrompt when provided", () => {
+      const prompt = PromptBuilder.buildToolResultPrompt(
+        "run_command",
+        true,
+        "find output: /e/test/Library/YardApi.psm1",
+        undefined,
+        "CNNJI QUERY 项目审查与重构"
+      );
+
+      expect(prompt).toContain("【当前推进战役北极星 (Task Invariant)】:");
+      expect(prompt).toContain("CNNJI QUERY 项目审查与重构");
+      expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
+    });
+
+    it("should embed task invariant anchor in buildAttachedToolResultPrompt when provided", () => {
+      const prompt = PromptBuilder.buildAttachedToolResultPrompt(
+        "read_file",
+        "read-AGENTS.md-12345.txt",
+        { lineCount: 68, charCount: 2500 },
+        "Head line\n... (省略 10 行) ...\nTail line",
+        "CNNJI QUERY 模块审查与重构"
+      );
+
+      expect(prompt).toContain("【当前推进战役北极星 (Task Invariant)】:");
+      expect(prompt).toContain("CNNJI QUERY 模块审查与重构");
+      expect(prompt).toContain("【物理执行指纹摘要 (Head-Tail Fingerprint)】:");
+      expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
+    });
   });
 
   describe("3. User Response Prompt", () => {
@@ -70,6 +99,17 @@ describe("PromptBuilder Unit Tests", () => {
       expect(prompt).toContain("[USER_RESPONSE for ask_question]");
       expect(prompt).toContain("Yes, proceed with tests.");
       expect(prompt).toContain(PromptBuilder.PROTOCOL_REMINDER);
+    });
+
+    it("should embed task invariant in buildUserResponsePrompt when provided", () => {
+      const prompt = PromptBuilder.buildUserResponsePrompt(
+        "确认按方案 A 执行",
+        "CNNJI QUERY 项目审查"
+      );
+      expect(prompt).toContain("[USER_RESPONSE for ask_question]");
+      expect(prompt).toContain("确认按方案 A 执行");
+      expect(prompt).toContain("【当前推进战役北极星 (Task Invariant)】:");
+      expect(prompt).toContain("CNNJI QUERY 项目审查");
     });
   });
 

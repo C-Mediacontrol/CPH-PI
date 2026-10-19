@@ -196,3 +196,4 @@ sequenceDiagram
 - 运行 `bun test` 确保全部 650+ 测试套件 100% 通过；
 - 执行打包脚本 `bun run package; bun run build:package` 同步分发包；
 - 在真实测试环境验证首轮快照立桩与因果编排的实际表现。
+

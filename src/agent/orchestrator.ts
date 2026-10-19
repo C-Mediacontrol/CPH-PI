@@ -834,7 +834,9 @@ export class Orchestrator {
             }
 
             const workerCount = this.getConcurrencyWorkerCount();
-            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount);
+            const dirTree = this.collectDirTreePreview();
+            this.pendingTask = snapshot.originalTask || this.pendingTask || task;
+            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount, dirTree);
             this.completeHandshake();
             refusalRetries = 0;
             turn = 0; // Reset turn counter for fresh 30 turns budget!
@@ -942,20 +944,23 @@ export class Orchestrator {
             });
           }
         } else {
+          const currentTask = this.pendingTask || task || "";
           if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(
               parsed.action.tool || toolResult.actionName,
               uploadedAttachment.fileName,
               { lineCount, charCount },
-              excerpt
+              excerpt,
+              currentTask
             );
           } else {
             currentPrompt = PromptBuilder.buildToolResultPrompt(
               parsed.action.tool || toolResult.actionName,
               toolResult.success,
               toolResult.output,
-              toolResult.success ? undefined : toolResult.output
+              toolResult.success ? undefined : toolResult.output,
+              currentTask
             );
           }
         }

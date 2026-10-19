@@ -210,23 +210,30 @@ ${this.PROTOCOL_REMINDER}`;
 
   /**
    * Builds continuation prompt containing tool execution output and protocol reinforcement.
+   * Optionally embeds taskInvariant to maintain grounding anchor across extended turns and avoid cognitive drift.
    */
   public static buildToolResultPrompt(
     toolName: string,
     success: boolean,
     output: string,
-    error?: string
+    error?: string,
+    taskInvariant?: string
   ): string {
+    const invariantBlock =
+      taskInvariant && taskInvariant.trim() !== ""
+        ? `\n【当前推进战役北极星 (Task Invariant)】:\n${taskInvariant.trim()}\n`
+        : "";
+
     if (success) {
       return `[TOOL_RESULT for ${toolName} - SUCCESS]:
 ${output}
-
+${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     } else {
       return `[TOOL_RESULT for ${toolName} - FAILED]:
 Error: ${error || "Execution failed"}
 Output: ${output}
-
+${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     }
   }
@@ -257,21 +264,28 @@ ${this.PROTOCOL_REMINDER}`;
    * Builds high-efficiency tool result prompt when output is attached as a cloud file.
    * Completely avoids dumping massive texts into chat, preventing attention dilution and timeouts.
    * Embeds physical execution fingerprint if excerpt is provided.
+   * Optionally embeds taskInvariant to anchor model focus across turns.
    */
   public static buildAttachedToolResultPrompt(
     toolName: string,
     fileName: string,
     summary: { lineCount: number; charCount: number },
-    excerpt?: string
+    excerpt?: string,
+    taskInvariant?: string
   ): string {
     const fingerprintBlock = excerpt
       ? `\n\n【物理执行指纹摘要 (Head-Tail Fingerprint)】:\n${excerpt}`
       : "";
 
+    const invariantBlock =
+      taskInvariant && taskInvariant.trim() !== ""
+        ? `\n\n【当前推进战役北极星 (Task Invariant)】:\n${taskInvariant.trim()}`
+        : "";
+
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ ${toolName} 执行成功 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)。
 完整执行结果已作为文件附件【${fileName}】挂载送达。
-【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}
+【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}${invariantBlock}
 
 ${this.PROTOCOL_REMINDER}`;
   }
@@ -316,11 +330,16 @@ ${this.PROTOCOL_REMINDER}`;
   /**
    * Builds continuation prompt when user responds to ask_question.
    */
-  public static buildUserResponsePrompt(userResponse: string): string {
+  public static buildUserResponsePrompt(userResponse: string, taskInvariant?: string): string {
+    const invariantBlock =
+      taskInvariant && taskInvariant.trim() !== ""
+        ? `\n【当前推进战役北极星 (Task Invariant)】:\n${taskInvariant.trim()}\n`
+        : "";
+
     return `[USER_RESPONSE for ask_question]:
 用户已回复确认：
 ${userResponse}
-
+${invariantBlock}
 请根据用户输入继续推进执行下一步任务：
 ${this.PROTOCOL_REMINDER}`;
   }

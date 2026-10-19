@@ -86,4 +86,33 @@ describe("MainPlanSnapshot Engine", () => {
     expect(prompt).toContain(".cph/state/execution-ledger.md");
     expect(prompt).toContain("按需调阅已挂载的物理账本");
   });
+
+  it("should embed workspace facts, directory skeleton, and self-contained execution mindset in successor prompt", () => {
+    const snapshot = createMainPlanSnapshot({
+      originalSessionId: "main_ses_999",
+      originalTask: "审查 CNNJI QUERY 模块",
+      thought: "优先审查大文件",
+      workspaceRoot: "E:/test",
+      plannedSubagents: [],
+    });
+
+    const dirSkeleton = "- Library/\n  - CNNJI QUERY/\n- plan.md\n- AGENTS.md";
+    const prompt = formatSuccessorTurn1Prompt(
+      snapshot,
+      "子任务结题成果",
+      undefined,
+      4,
+      dirSkeleton
+    );
+
+    expect(prompt).toContain("【本地宿主机工作区事实】");
+    expect(prompt).toContain("- **工作区绝对路径**: E:/test");
+    expect(prompt).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+    expect(prompt).toContain("- Library/");
+    expect(prompt).toContain("- **并发集群容量**: 4 个并行 Worker");
+    expect(prompt).toContain("【自闭环攻坚心智】");
+    expect(prompt).toContain("无需中断执行向用户重问初始需求");
+    expect(prompt).not.toContain("严禁");
+    expect(prompt).not.toContain("切勿");
+  });
 });

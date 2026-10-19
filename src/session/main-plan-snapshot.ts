@@ -97,7 +97,8 @@ export function formatSuccessorTurn1Prompt(
   snapshot: MainPlanSnapshot,
   reportsSummary: string,
   customLedgerMountHeader?: string,
-  concurrencyWorkers?: number
+  concurrencyWorkers?: number,
+  dirSkeleton?: string
 ): string {
   let mountHeader = customLedgerMountHeader;
   if (!mountHeader && snapshot.workspaceRoot) {
@@ -115,19 +116,27 @@ export function formatSuccessorTurn1Prompt(
 
   const clusterFact =
     concurrencyWorkers !== undefined && concurrencyWorkers > 0
-      ? `\n- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)\n`
+      ? `\n- **并发集群容量**: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
+      : "";
+
+  const wsNorm = snapshot.workspaceRoot ? snapshot.workspaceRoot.replace(/\\/g, "/") : "";
+  const workspaceFact = wsNorm ? `\n- **工作区绝对路径**: ${wsNorm}` : "";
+  const skeletonFact =
+    dirSkeleton && dirSkeleton.trim() !== ""
+      ? `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`
       : "";
 
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
+
+【本地宿主机工作区事实】${workspaceFact}${clusterFact}${skeletonFact}
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:
 ${snapshot.originalTask}
 
 - **前序推演与架构思绪**:
-${snapshot.thought || "按既定规范开展模块化调研与修改。"}
-${clusterFact}${mountSection}
+${snapshot.thought || "按既定规范开展模块化调研与修改。"}${mountSection}
 ### 3. 子任务攻坚结题成果
 ${reportsSummary}
 
@@ -136,6 +145,7 @@ ${reportsSummary}
 1. 【对账打勾】：根据上述各子任务结题成果，使用 patch_file 立即将 plan.md 中已成功的任务项更新打勾为 - [x] 步骤描述；
 2. 【成果引用】：完整调研报告与证据链已由底层自动落盘至物理报告文件（.cph/reports/），若需回溯执行细节可按需调阅已挂载的物理账本或使用 read_file 调阅；
 3. 【局部补缺】：若存在未成功的子任务，仅对该失败项进行单点定向重试或补充派发，保护已完成的规划与成果；
-4. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
+4. 【自闭环攻坚心智】：你正处于既定工程战役的收敛攻坚阶段，工作区已具备明确的战役目标与 plan.md 待办项。请直接基于上述成果与物理事实推进对账或补缺派发，优先基于受控目录骨架定位真实文件路径展开工作，无需中断执行向用户重问初始需求；
+5. 【终局结题】：只有当 plan.md 中所有规划项均已达成 (- [x]) 且全部验证通过时，输出 FINAL_ANSWER 完成结题。`;
 }
 
