@@ -1,24 +1,175 @@
-# 全工作区无损源码快照增压与因果感知调度架构实施计划 (Workspace Snapshot Supercharger & Causality-Aware Pipeline Implementation Plan)
+# 全工作区源码快照增压、大文件分块上传与因果调度架构实施计划 (Workspace Snapshot Supercharger, Resumable Upload & Causality-Aware Pipeline Implementation Plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 构建工作区全量无损源码快照生成与云端直传挂载通道，推倒重塑 Tri-Agent 提示词体系，建立首轮全局洞察立桩与因果时序把控的高吞吐调度管线。
+**Goal:** 突破 4MB 简易上传硬限，构建基于 Microsoft Graph `createUploadSession` 的断点分块上传引擎与全量无损源码快照通道；推倒重塑 Tri-Agent 提示词与 `subagent`/`handoff` 专属技能体系，建立首轮全局洞察立桩与因果时序把控的高吞吐调度管线。
 
-**Architecture:** 本地 Harness 在开局首轮将工作区源码安全打平为单快照文本，经 OneDrive/Substrate 附件直传通道挂载送达；废除 Scout 斥候探查，Main Agent 首轮立桩高精度 `plan.md`，并基于因果时序与阶段屏障并发调派 Researcher 深度分析锤与 Coder 手术刀实施专家。
+**Architecture:** 
+1. 传输层实现双通道自适应路由（<4MB 简易直传，≥4MB 以 8,192,000 字节分块 PUT 传输至专属会话）；
+2. 本地 Harness 首轮将源码安全打平为单快照文本，经分块上传直传至 OneDrive，在 Turn 1 无损挂载；
+3. 彻底废除 Scout 斥候探查，Main Agent 首轮立桩高精度 `plan.md`，基于因果时序与阶段屏障并发调派 Researcher 深度分析锤与 Coder 手术刀实施专家；
+4. 全面重构 `skills/subagent` 与 `skills/handoff`，固化防盲目并发与后继防失忆契约。
 
-**Tech Stack:** TypeScript, Bun, Node.js `fs` & `crypto`, Microsoft Graph / Substrate OneDrive Uploader, Copilot Agent Protocol.
+**Tech Stack:** TypeScript, Bun, Node.js `fs` & `crypto`, Microsoft Graph Upload Session API, SharePoint Online, Office Substrate, Copilot Agent Protocol.
 
 ## Global Constraints
 
 - 严禁在工作区根目录写入任何非受控文件，所有产物和测试均在子目录内；
 - 遵循 Harness 纯粹与中立原则，不给模型打侵入式特化补丁；
-- 全面摒弃负面禁止词（“严禁”、“切勿”、“不要”），系统提示词与指引一律采用正向建设性引导；
+- 全面摒弃负面禁止词（“严禁”、“切勿”、“不要”），系统提示词与技能指引一律采用正向建设性引导；
 - 废弃单文件人为截断，白名单源码 100% 原始完整打入快照，仅设 100MB 宿主物理防爆安全线；
-- 严禁盲目并发，严格遵循因果时序屏障（先研后改，同阶段正交并发，跨阶段屏障等待）。
+- 严格遵循因果时序屏障：先研后改、主会话综合决策、同阶段正交并发、跨阶段屏障等待，杜绝盲目并发。
 
 ---
 
-### Task 1: 物理快照生成引擎 (WorkspaceSnapshotGenerator) 与单元测试
+### Task 0: 大文件断点分块上传引擎 (`Resumable Upload Engine`) 与单元测试
+
+**Files:**
+- Modify: `src/transport/substrate-uploader.ts`
+- Create: `tests/transport/resumable-uploader.test.ts`
+
+**Interfaces:**
+- Produces: `SubstrateUploader.uploadDocumentToOneDrive(graphAccessToken: string, content: string | Buffer, fileName: string, customBaseUrl?: string): Promise<UploadDocumentResult>`
+  - 自动识别体积：`< 4 * 1024 * 1024` 走简易 PUT；`>= 4 * 1024 * 1024` 走 `createUploadSession` + `8,192,000` 字节分块上传流水线。
+
+- [ ] **Step 1: 编写分块上传引擎的单元测试 (Mock 微软 Graph 与 SharePoint)**
+
+```typescript
+// tests/transport/resumable-uploader.test.ts
+import { describe, it, expect, mock } from "bun:test";
+import { SubstrateUploader } from "../../src/transport/substrate-uploader.ts";
+
+describe("SubstrateUploader Resumable Chunked Upload", () => {
+  it("should route files >= 4MB to createUploadSession and send 8192000-byte chunks", async () => {
+    const chunkRequests: { range: string; length: string }[] = [];
+    let sessionCreated = false;
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = url.toString();
+
+      // 1. Mock createUploadSession
+      if (urlStr.includes("createUploadSession")) {
+        sessionCreated = true;
+        return new Response(
+          JSON.stringify({
+            uploadUrl: "https://mock.sharepoint.com/uploadSession?guid=123",
+            expirationDateTime: new Date(Date.now() + 3600000).toISOString(),
+            nextExpectedRanges: ["0-"],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      // 2. Mock chunk PUT
+      if (urlStr.includes("uploadSession?guid=123")) {
+        const headers = (init?.headers as Record<string, string>) || {};
+        chunkRequests.push({
+          range: headers["Content-Range"] || "",
+          length: headers["Content-Length"] || "",
+        });
+
+        const isLast = (headers["Content-Range"] || "").includes("10485759/10485760");
+        if (isLast) {
+          return new Response(
+            JSON.stringify({
+              id: "item_999",
+              webUrl: "https://mock.sharepoint.com/test.txt",
+              name: "large-file.txt",
+              parentReference: { driveId: "drive_888" },
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return new Response(JSON.stringify({ nextExpectedRanges: ["8192000-"] }), {
+          status: 202,
+        });
+      }
+
+      // 3. Mock resolveSpoBase64
+      if (urlStr.includes("/drive/list")) {
+        return new Response(
+          JSON.stringify({
+            id: "list_1",
+            parentReference: { siteId: "domain,site_2,web_3" },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return originalFetch(url, init);
+    }) as any;
+
+    try {
+      // 10MB test buffer (10 * 1024 * 1024 = 10,485,760 bytes)
+      const buffer = Buffer.alloc(10 * 1024 * 1024, "a");
+      const result = await SubstrateUploader.uploadDocumentToOneDrive(
+        "mock_token",
+        buffer,
+        "large-file.txt"
+      );
+
+      expect(sessionCreated).toBe(true);
+      expect(chunkRequests.length).toBe(2);
+      expect(chunkRequests[0].range).toBe("bytes 0-8191999/10485760");
+      expect(chunkRequests[1].range).toBe("bytes 8192000-10485759/10485760");
+      expect(result.driveItemId).toBe("item_999");
+      expect(result.annotation.id).toContain("item_999");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+```
+
+- [ ] **Step 2: 运行测试验证失败**
+
+运行: `bun test tests/transport/resumable-uploader.test.ts`  
+预期: FAIL with simple PUT failure or session not created
+
+- [ ] **Step 3: 在 `SubstrateUploader` 中实现分块断点上传流水线**
+
+在 `src/transport/substrate-uploader.ts` 中实现：
+```typescript
+  public static readonly CHUNK_SIZE = 8192000; // 8,192,000 bytes (320 KiB aligned)
+  public static readonly RESUMABLE_THRESHOLD = 4 * 1024 * 1024; // 4MB
+
+  public static async uploadDocumentToOneDrive(
+    graphAccessToken: string,
+    content: string | Buffer,
+    fileName: string,
+    customBaseUrl?: string
+  ): Promise<UploadDocumentResult> {
+    const rawBuffer = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+    const totalBytes = rawBuffer.length;
+
+    if (totalBytes < this.RESUMABLE_THRESHOLD) {
+      return this.uploadSmallDocument(graphAccessToken, rawBuffer, fileName, customBaseUrl);
+    }
+    return this.uploadLargeDocumentChunked(graphAccessToken, rawBuffer, fileName, customBaseUrl);
+  }
+```
+实现 `uploadLargeDocumentChunked`：
+1. `POST ...:/createUploadSession`
+2. 循环分块 PUT，携带 `Content-Range: bytes ${start}-${end}/${totalBytes}`
+3. 校验 `202 Accepted` 与 `201 Created`
+4. 构造标准 `AttachmentAnnotation` 并返回。
+
+- [ ] **Step 4: 运行测试验证通过**
+
+运行: `bun test tests/transport/resumable-uploader.test.ts`  
+预期: PASS
+
+- [ ] **Step 5: 提交代码**
+
+```bash
+git add src/transport/substrate-uploader.ts tests/transport/resumable-uploader.test.ts
+git commit -m "feat(transport): implement resumable chunked upload engine for large files via Graph API"
+```
+
+---
+
+### Task 1: 物理快照生成引擎 (`WorkspaceSnapshotGenerator`) 与单元测试
 
 **Files:**
 - Create: `src/workspace/snapshot-generator.ts`
@@ -26,9 +177,8 @@
 
 **Interfaces:**
 - Produces: `WorkspaceSnapshotGenerator.generate(workspaceRoot: string, options?: SnapshotOptions): Promise<SnapshotResult>`
-  - `SnapshotResult: { snapshotPath: string; sha256: string; totalFiles: number; totalBytes: number; relPaths: string[] }`
 
-- [ ] **Step 1: 编写失败的单元测试**
+- [ ] **Step 1: 编写单元测试**
 
 ```typescript
 // tests/workspace/snapshot-generator.test.ts
@@ -113,220 +263,22 @@ describe("WorkspaceSnapshotGenerator", () => {
 - [ ] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/workspace/snapshot-generator.test.ts`  
-预期: FAIL with "Cannot find module" 或 "WorkspaceSnapshotGenerator not defined"
+预期: FAIL with module not found
 
 - [ ] **Step 3: 编写核心实现**
 
-```typescript
-// src/workspace/snapshot-generator.ts
-import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
-
-export interface SnapshotOptions {
-  outputPath?: string;
-  maxTotalBytes?: number; // 默认 100MB 安全线
-  customExtensions?: string[];
-}
-
-export interface SnapshotResult {
-  snapshotPath: string;
-  sha256: string;
-  totalFiles: number;
-  totalBytes: number;
-  relPaths: string[];
-}
-
-export class WorkspaceSnapshotGenerator {
-  public static readonly DEFAULT_IGNORED_DIRS = new Set([
-    "node_modules",
-    "dist",
-    ".git",
-    ".cph",
-    ".vscode",
-    ".idea",
-    "bin",
-    "obj",
-    "coverage",
-    "build",
-    ".cache",
-    ".gemini",
-  ]);
-
-  public static readonly EXCLUDED_BINARY_EXTENSIONS = new Set([
-    ".exe",
-    ".dll",
-    ".so",
-    ".dylib",
-    ".bin",
-    ".pdb",
-    ".class",
-    ".pyc",
-    ".zip",
-    ".tar",
-    ".gz",
-    ".7z",
-    ".rar",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".ico",
-    ".svg",
-    ".pdf",
-    ".onnx",
-    ".model",
-    ".woff",
-    ".woff2",
-    ".ttf",
-    ".eot",
-  ]);
-
-  public static readonly DEFAULT_SOURCE_EXTENSIONS = new Set([
-    ".ps1",
-    ".psm1",
-    ".psd1",
-    ".py",
-    ".js",
-    ".mjs",
-    ".cjs",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".cs",
-    ".json",
-    ".md",
-    ".sql",
-    ".bat",
-    ".cmd",
-    ".html",
-    ".css",
-    ".yaml",
-    ".yml",
-    ".xml",
-    ".txt",
-    ".toml",
-    ".sh",
-    ".java",
-    ".go",
-    ".rs",
-    ".c",
-    ".cpp",
-    ".h",
-  ]);
-
-  public static async generate(
-    workspaceRoot: string,
-    options?: SnapshotOptions
-  ): Promise<SnapshotResult> {
-    const normRoot = path.resolve(workspaceRoot);
-    const maxBytes = options?.maxTotalBytes ?? 100 * 1024 * 1024; // 100MB
-    const allowedExts = options?.customExtensions
-      ? new Set(options.customExtensions.map((e) => (e.startsWith(".") ? e.toLowerCase() : `.${e.toLowerCase()}`)))
-      : this.DEFAULT_SOURCE_EXTENSIONS;
-
-    const collectedFiles: { absPath: string; relPath: string; size: number }[] = [];
-
-    function scanDir(dir: string) {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          if (!WorkspaceSnapshotGenerator.DEFAULT_IGNORED_DIRS.has(entry.name) && !entry.name.startsWith(".git")) {
-            scanDir(path.join(dir, entry.name));
-          }
-        } else if (entry.isFile()) {
-          const ext = path.extname(entry.name).toLowerCase();
-          if (WorkspaceSnapshotGenerator.EXCLUDED_BINARY_EXTENSIONS.has(ext)) {
-            continue;
-          }
-          if (allowedExts.has(ext)) {
-            const absPath = path.join(dir, entry.name);
-            const relPath = path.relative(normRoot, absPath).replace(/\\/g, "/");
-            try {
-              const stat = fs.statSync(absPath);
-              collectedFiles.push({ absPath, relPath, size: stat.size });
-            } catch {}
-          }
-        }
-      }
-    }
-
-    scanDir(normRoot);
-    collectedFiles.sort((a, b) => a.relPath.localeCompare(b.relPath));
-
-    const cacheDir = path.join(normRoot, ".cph", "cache");
-    fs.mkdirSync(cacheDir, { recursive: true });
-
-    const lines: string[] = [];
-    lines.push("======================================");
-    lines.push("WORKSPACE STRUCTURE (REL-PATHS)");
-    lines.push("======================================");
-    lines.push("");
-
-    for (const f of collectedFiles) {
-      lines.push(f.relPath);
-    }
-
-    lines.push("");
-    lines.push("======================================");
-    lines.push("FILE CONTENTS");
-    lines.push("======================================");
-
-    let currentTotalBytes = 0;
-    const relPathsList: string[] = [];
-
-    for (const f of collectedFiles) {
-      relPathsList.push(f.relPath);
-      lines.push("");
-      lines.push("##################################################");
-      try {
-        const raw = fs.readFileSync(f.absPath, "utf8");
-        const lineCount = raw.split(/\r?\n/).length;
-        lines.push(`FILE: ${f.relPath} (Lines: ${lineCount})`);
-        lines.push("##################################################");
-        lines.push("");
-        lines.push(raw);
-        currentTotalBytes += Buffer.byteLength(raw, "utf8");
-      } catch (err: any) {
-        lines.push(`FILE: ${f.relPath} (ERROR READING)`);
-        lines.push("##################################################");
-        lines.push("");
-        lines.push(`Error reading file: ${err?.message || "Unknown error"}`);
-      }
-
-      if (currentTotalBytes >= maxBytes) {
-        lines.push("\n[WARNING: Reached 100MB physical memory threshold, subsequent files omitted]");
-        break;
-      }
-    }
-
-    const fullContent = lines.join("\n");
-    const sha256 = crypto.createHash("sha256").update(fullContent).digest("hex");
-    const targetPath = options?.outputPath || path.join(cacheDir, `workspace-snapshot-${sha256.slice(0, 12)}.txt`);
-
-    fs.writeFileSync(targetPath, fullContent, "utf8");
-
-    return {
-      snapshotPath: targetPath,
-      sha256,
-      totalFiles: relPathsList.length,
-      totalBytes: Buffer.byteLength(fullContent, "utf8"),
-      relPaths: relPathsList,
-    };
-  }
-}
-```
+创建 `src/workspace/snapshot-generator.ts`，实现文本目录树与源码打平拼接、黑白名单过滤以及 100MB 安全线保护。
 
 - [ ] **Step 4: 运行测试验证通过**
 
 运行: `bun test tests/workspace/snapshot-generator.test.ts`  
-预期: PASS (3 pass)
+预期: PASS
 
 - [ ] **Step 5: 提交代码**
 
 ```bash
 git add src/workspace/snapshot-generator.ts tests/workspace/snapshot-generator.test.ts
-git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with full source preservation and binary pruning"
+git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with 100% source retention and binary pruning"
 ```
 
 ---
@@ -343,52 +295,16 @@ git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with full s
 
 - [ ] **Step 1: 编写单元测试**
 
-在 `tests/protocol/prompt-builder.test.ts` 中增加测试：
-```typescript
-it("should inject snapshot perception and no-scout action guidance when snapshotMeta provided", () => {
-  const prompt = PromptBuilder.buildDirectAgentPrompt(
-    "E:/my-repo",
-    "审查与修复系统缺陷",
-    undefined,
-    "- src/\n- package.json",
-    4,
-    { fileName: "workspace-snapshot-abc1234.txt", totalFiles: 28 }
-  );
-
-  expect(prompt).toContain("【全工作区无损源码快照已挂载送达】");
-  expect(prompt).toContain("workspace-snapshot-abc1234.txt");
-  expect(prompt).toContain("共 28 个源码文件");
-  expect(prompt).toContain("无需调派斥候");
-  expect(prompt).toContain("直接基于附件立桩精准的 plan.md");
-});
-```
+在 `tests/protocol/prompt-builder.test.ts` 增加针对快照感知指令与零盲读引导的断言。
 
 - [ ] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/protocol/prompt-builder.test.ts`  
-预期: FAIL with assertion error
+预期: FAIL
 
 - [ ] **Step 3: 修改 PromptBuilder**
 
-在 `src/protocol/prompt-builder.ts` 中增加 `snapshotMeta` 支持：
-```typescript
-export interface SnapshotMeta {
-  fileName: string;
-  totalFiles: number;
-}
-```
-并在 `buildDirectAgentPrompt` 中追加：
-```typescript
-if (snapshotMeta) {
-  prompt += `\n\n【全工作区无损源码快照已挂载送达】
-✔ 工作区全量源码（共 ${snapshotMeta.totalFiles} 个文件）与相对路径拓扑已封装为附件【${snapshotMeta.fileName}】挂载至本会话。
-✔ 云端文档引擎已对该快照建立全量索引，你天然具备全工作区完整代码视野。
-✔ 【高效攻坚行动指引】：
-1. 无需调派斥候子代理（Scout）或发起盲读类的 read_file / run_command 探查目录；
-2. 请直接基于附件中的完整代码与结构拓扑，在第一轮立桩精准的 plan.md 物理清单（格式为 - [ ] 步骤描述，精准定位至目标文件与核心关注点）；
-3. 计划立桩后，立即进入子任务调派或直接推进外科手术级局部修改！`;
-}
-```
+在 `src/protocol/prompt-builder.ts` 增加 `SnapshotMeta` 定义并在 `buildDirectAgentPrompt` 与 `buildTurn1Prompt` 中追加快照感知块。
 
 - [ ] **Step 4: 运行测试验证通过**
 
@@ -399,7 +315,7 @@ if (snapshotMeta) {
 
 ```bash
 git add src/protocol/prompt-builder.ts tests/protocol/prompt-builder.test.ts
-git commit -m "feat(protocol): enhance PromptBuilder with full workspace snapshot grounding and action guidance"
+git commit -m "feat(protocol): add snapshot perception and no-scout action guidance to PromptBuilder"
 ```
 
 ---
@@ -410,64 +326,19 @@ git commit -m "feat(protocol): enhance PromptBuilder with full workspace snapsho
 - Modify: `src/agent/orchestrator.ts`
 - Create: `tests/agent/orchestrator-snapshot-mounting.test.ts`
 
-**Interfaces:**
-- Consumes: `WorkspaceSnapshotGenerator.generate`, `SubstrateUploader.uploadDocumentToOneDrive`
-- Produces: 在 `Orchestrator.run()` 启动时，自动生成工作区快照并通过 `initialAnnotations` 直传挂载。
-
 - [ ] **Step 1: 编写测试验证 Orchestrator 在首轮挂载快照**
 
-```typescript
-// tests/agent/orchestrator-snapshot-mounting.test.ts
-import { describe, it, expect } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { Orchestrator } from "../../src/agent/orchestrator.ts";
-
-describe("Orchestrator Snapshot Auto-Mounting", () => {
-  it("should have enableWorkspaceSnapshot enabled by default and build snapshot artifact", async () => {
-    const tmpDir = path.join(os.tmpdir(), "cph-orch-snap-" + Date.now());
-    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
-    fs.writeFileSync(path.join(tmpDir, "src", "demo.ts"), "export const x = 1;");
-
-    const orch = new Orchestrator({
-      workspaceRoot: tmpDir,
-      enableWorkspaceSnapshot: true,
-      enableCloudAttachment: false, // 离线测试
-    });
-
-    const snapshot = await orch.prepareWorkspaceSnapshot();
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.totalFiles).toBe(1);
-    expect(fs.existsSync(snapshot!.snapshotPath)).toBe(true);
-
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
-  });
-});
-```
+在 `tests/agent/orchestrator-snapshot-mounting.test.ts` 验证 `enableWorkspaceSnapshot` 为 true 时自动准备快照制品。
 
 - [ ] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/agent/orchestrator-snapshot-mounting.test.ts`  
-预期: FAIL with "prepareWorkspaceSnapshot is not a function"
+预期: FAIL
 
 - [ ] **Step 3: 在 Orchestrator 中实现 `prepareWorkspaceSnapshot` 与自动挂载逻辑**
 
 在 `OrchestratorOptions` 增加 `enableWorkspaceSnapshot?: boolean;`（默认为 true）。  
-在 `src/agent/orchestrator.ts` 增加：
-```typescript
-  public async prepareWorkspaceSnapshot(): Promise<SnapshotResult | null> {
-    if (!this.enableWorkspaceSnapshot) return null;
-    try {
-      return await WorkspaceSnapshotGenerator.generate(this.workspaceRoot);
-    } catch {
-      return null;
-    }
-  }
-```
-并在 `run()` 方法开始处，如果 `this.enableCloudAttachment` 为真且获取到了 `graphToken`，自动上传该快照文件并压入 `currentAnnotations`！
+在 `run()` 方法开始处，如果 `enableCloudAttachment` 为真且获取到了 `graphToken`，通过 `SubstrateUploader.uploadDocumentToOneDrive` 直传该快照并压入 `currentAnnotations`。
 
 - [ ] **Step 4: 运行测试验证通过**
 
@@ -478,7 +349,7 @@ describe("Orchestrator Snapshot Auto-Mounting", () => {
 
 ```bash
 git add src/agent/orchestrator.ts tests/agent/orchestrator-snapshot-mounting.test.ts
-git commit -m "feat(orchestrator): integrate automated workspace snapshot generation and cloud mounting"
+git commit -m "feat(orchestrator): integrate automated snapshot generation and cloud mounting"
 ```
 
 ---
@@ -492,16 +363,13 @@ git commit -m "feat(orchestrator): integrate automated workspace snapshot genera
 - Modify: `tests/skills/tri-agent-prompts.test.ts`
 - Modify: `tests/protocol/prompt-builder-governance.test.ts`
 
-**Interfaces:**
-- Produces: 具有全新角色认知、零 Scout 机制、单点深度分析锤、闭环 Coder 以及严格因果依赖顺序的 Tri-Agent 提示词。
-
 - [ ] **Step 1: 编写针对新规范的测试**
 
 在 `tests/skills/tri-agent-prompts.test.ts` 中校验：
-1. `cph-main-agent-prompt.txt` 移除了 `Phase 1 Scout Dispatch Focus` 与两阶段斥候概念；
-2. `cph-main-agent-prompt.txt` 包含了“因果时序与防盲目并发铁律 (Causality & Anti-Blind-Concurrency)”；
-3. `cph-main-agent-prompt.txt` 明确 Coder 依赖 Researcher 时必须分阶段派发或经主控决策综合；
-4. `cph-researcher-agent-prompt.txt` 明确专职深度攻坚分析锤；
+1. `cph-main-agent-prompt.txt` 移除了所有两阶段斥候（Scout）相关描述；
+2. `cph-main-agent-prompt.txt` 明确因果时序：若 Coder 依赖 Researcher 成果，必须分阶段屏障派发或经主控决策综合，杜绝盲目并发；
+3. `cph-researcher-agent-prompt.txt` 明确单点深度分析锤定位；
+4. `cph-coder-agent-prompt.txt` 明确外科手术实施与自测闭环定位；
 5. 所有提示词不含负面禁止词（“严禁”、“切勿”、“不要”）。
 
 - [ ] **Step 2: 运行测试验证失败**
@@ -509,19 +377,11 @@ git commit -m "feat(orchestrator): integrate automated workspace snapshot genera
 运行: `bun test tests/skills/tri-agent-prompts.test.ts`  
 预期: FAIL
 
-- [ ] **Step 3: 全面重构三个系统提示词**
+- [ ] **Step 3: 全面重塑三个系统提示词**
 
-1. **重构 `cph-main-agent-prompt.txt`**：
-   - 确立上帝视角首轮立桩；
-   - 彻底删除所有两阶段斥候（Scout）的段落与描述；
-   - 强化因果依赖管理：明确阐述若 Worker 4 [Coder] 的实施依据是 Worker 2 [Researcher] 的审查报告，必须通过阶段屏障（`stage: 1` ➔ `stage: 2`）或在主控审阅报告综合决策后再派发 Coder，杜绝盲目并发；
-   - 保持 100% 正向建设性引导。
-2. **重构 `cph-researcher-agent-prompt.txt`**：
-   - 定位为纯粹的“单点深度攻坚分析锤”；
-   - 负责热核级审查、状态机死锁与漏洞深潜，输出深度报告落盘。
-3. **重构 `cph-coder-agent-prompt.txt`**：
-   - 定位为接单即改、自测自闭环实施专家；
-   - 专注外科手术级局部补丁与自动化测试验证。
+1. 重写 `cph-main-agent-prompt.txt`：确立上帝视角首轮立桩、纯粹统帅职责、因果时序控制（先研后改、跨 Stage 屏障、同 Stage 正交并发）；
+2. 重写 `cph-researcher-agent-prompt.txt`：聚焦热核代码审查、漏洞分析、状态机竞争条件深潜；
+3. 重写 `cph-coder-agent-prompt.txt`：聚焦局部精准补丁（`edit`/`patch`）与自动化测试验证命令。
 
 - [ ] **Step 4: 运行治理与提示词测试验证通过**
 
@@ -537,7 +397,70 @@ git commit -m "feat(prompts): overhaul Tri-Agent system prompts for snapshot sup
 
 ---
 
-### Task 5: 全量回归测试、构建打包与真实工作区验证
+### Task 5: 工作区专属 Skills (`subagent` & `handoff`) 重构与对齐
+
+**Files:**
+- Modify: `skills/subagent/SKILL.md`
+- Modify: `skills/handoff/SKILL.md`
+- Create: `tests/skills/subagent-skill-governance.test.ts`
+
+- [ ] **Step 1: 编写针对 Skills 重构的治理测试**
+
+```typescript
+// tests/skills/subagent-skill-governance.test.ts
+import { describe, it, expect } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+
+describe("Subagent & Handoff Skills Governance", () => {
+  it("should not contain scout protocol in subagent skill", () => {
+    const subagentPath = path.join(__dirname, "../../skills/subagent/SKILL.md");
+    const content = fs.readFileSync(subagentPath, "utf8");
+    expect(content).not.toContain("isScout");
+    expect(content).not.toContain("两阶段斥候领航协议");
+    expect(content).toContain("因果依赖与防盲目并发铁律");
+    expect(content).toContain("先研后改");
+  });
+
+  it("should contain successor anti-memory-drift contract in handoff skill", () => {
+    const handoffPath = path.join(__dirname, "../../skills/handoff/SKILL.md");
+    const content = fs.readFileSync(handoffPath, "utf8");
+    expect(content).toContain("天然继承工作区已有的 plan.md");
+    expect(content).toContain("无需重新向用户确认初始工程目标");
+  });
+});
+```
+
+- [ ] **Step 2: 运行测试验证失败**
+
+运行: `bun test tests/skills/subagent-skill-governance.test.ts`  
+预期: FAIL
+
+- [ ] **Step 3: 重构 `skills/subagent/SKILL.md` 与微调 `skills/handoff/SKILL.md`**
+
+1. 重构 `skills/subagent/SKILL.md`：
+   - 彻底删除第 143~150 行及后文所有“斥候角色 (isScout: true)”条目；
+   - 重塑 Gate 5：强化**因果依赖与防盲目并发铁律**，明确 Coder 依赖 Researcher 成果时必须分阶段屏障或经主控决策综合；
+   - 规范 Researcher 单点深度攻坚工单模板与 Coder 外科手术级实施模板。
+2. 微调 `skills/handoff/SKILL.md`：
+   - 在核心职责与待办事项中明确写入接力后继主控正向认知契约，杜绝代际失忆；
+   - 剔除斥候大纲交接等过渡性陈旧描述。
+
+- [ ] **Step 4: 运行治理测试验证通过**
+
+运行: `bun test tests/skills/subagent-skill-governance.test.ts`  
+预期: PASS
+
+- [ ] **Step 5: 提交代码**
+
+```bash
+git add skills/subagent/SKILL.md skills/handoff/SKILL.md tests/skills/subagent-skill-governance.test.ts
+git commit -m "feat(skills): overhaul subagent and handoff skills for causality-aware dispatch and anti-drift"
+```
+
+---
+
+### Task 6: 全量回归测试、构建打包与实战验证
 
 **Files:**
 - Modify: `package/bin/cph-pi.js`
@@ -552,12 +475,12 @@ git commit -m "feat(prompts): overhaul Tri-Agent system prompts for snapshot sup
 
 运行: `bun run package; bun run build:package`  
 预期:
-- `dist/copilot-agent-bundle.zip` 成功生成并包含重构后的最新提示词
+- `dist/copilot-agent-bundle.zip` 成功打包最新提示词与重构后的 `subagent`/`handoff` 技能
 - `package/bin/cph-pi.js` 重新编译成功
 
 - [ ] **Step 3: 最终 Git 提交**
 
 ```bash
 git add package/ dist/
-git commit -m "build: rebuild package binary and distribution bundle with snapshot supercharger"
+git commit -m "build: rebuild package binary and distribution bundle with snapshot supercharger and skills overhaul"
 ```
