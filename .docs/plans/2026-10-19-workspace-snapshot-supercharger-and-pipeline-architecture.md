@@ -295,7 +295,29 @@ git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with 100% s
 
 - [ ] **Step 1: 编写单元测试**
 
-在 `tests/protocol/prompt-builder.test.ts` 增加针对快照感知指令与零盲读引导的断言。
+在 `tests/protocol/prompt-builder.test.ts` 增加针对快照感知指令与正向行动指引的断言：
+```typescript
+it("should inject snapshot perception and constructive action guidance when snapshotMeta provided", () => {
+  const prompt = PromptBuilder.buildDirectAgentPrompt(
+    "E:/my-repo",
+    "审查与修复系统缺陷",
+    undefined,
+    "- src/\n- package.json",
+    4,
+    { fileName: "workspace-snapshot-abc1234.txt", totalFiles: 28 }
+  );
+
+  expect(prompt).toContain("【全工作区无损源码快照已挂载送达】");
+  expect(prompt).toContain("workspace-snapshot-abc1234.txt");
+  expect(prompt).toContain("共 28 个文件");
+  expect(prompt).toContain("直接基于附件中的完整代码与结构拓扑");
+  expect(prompt).toContain("立桩精准的 plan.md 物理清单");
+  expect(prompt).toContain("识别任务依赖拓扑");
+  expect(prompt).not.toContain("斥候");
+  expect(prompt).not.toContain("Scout");
+  expect(prompt).not.toContain("无需");
+});
+```
 
 - [ ] **Step 2: 运行测试验证失败**
 
@@ -304,7 +326,17 @@ git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with 100% s
 
 - [ ] **Step 3: 修改 PromptBuilder**
 
-在 `src/protocol/prompt-builder.ts` 增加 `SnapshotMeta` 定义并在 `buildDirectAgentPrompt` 与 `buildTurn1Prompt` 中追加快照感知块。
+在 `src/protocol/prompt-builder.ts` 增加 `SnapshotMeta` 定义并在 `buildDirectAgentPrompt` 与 `buildTurn1Prompt` 中追加纯正向快照感知块：
+```typescript
+if (snapshotMeta) {
+  prompt += `\n\n【全工作区无损源码快照已挂载送达】
+✔ 工作区全量源码（共 ${snapshotMeta.totalFiles} 个文件）与相对路径拓扑已封装为附件【${snapshotMeta.fileName}】挂载至本会话。
+✔ 云端文档引擎已对该快照建立全量索引，你天然具备全工作区完整代码视野。
+✔ 【高效攻坚行动指引】：
+1. 直接基于附件中的完整代码与结构拓扑，在第一轮立桩精准的 plan.md 物理清单（格式为 - [ ] 步骤描述，精准定位至目标文件、核心关注点与调用关系）；
+2. 识别任务依赖拓扑，按需分批调派专项子代理集群协同攻坚，或直接推进外科手术级局部修改！`;
+}
+```
 
 - [ ] **Step 4: 运行测试验证通过**
 
@@ -315,30 +347,34 @@ git commit -m "feat(workspace): implement WorkspaceSnapshotGenerator with 100% s
 
 ```bash
 git add src/protocol/prompt-builder.ts tests/protocol/prompt-builder.test.ts
-git commit -m "feat(protocol): add snapshot perception and no-scout action guidance to PromptBuilder"
+git commit -m "feat(protocol): add positive snapshot grounding and DAG action guidance to PromptBuilder"
 ```
 
 ---
 
-### Task 3: Orchestrator 集成快照生成与首轮云端附件直传挂载
+### Task 3: Orchestrator 集成快照生成、首轮直传与后继代次知行合一挂载
 
 **Files:**
 - Modify: `src/agent/orchestrator.ts`
 - Create: `tests/agent/orchestrator-snapshot-mounting.test.ts`
 
-- [ ] **Step 1: 编写测试验证 Orchestrator 在首轮挂载快照**
+- [ ] **Step 1: 编写测试验证 Orchestrator 在首轮及后继代次均挂载快照**
 
-在 `tests/agent/orchestrator-snapshot-mounting.test.ts` 验证 `enableWorkspaceSnapshot` 为 true 时自动准备快照制品。
+在 `tests/agent/orchestrator-snapshot-mounting.test.ts` 验证：
+1. `enableWorkspaceSnapshot` 为 true 时自动准备快照制品；
+2. 验证在跨会话代际唤醒后继主会话时，`currentAnnotations` 依然完好包含 `snapshotAnnotation`，保障知行合一。
 
 - [ ] **Step 2: 运行测试验证失败**
 
 运行: `bun test tests/agent/orchestrator-snapshot-mounting.test.ts`  
 预期: FAIL
 
-- [ ] **Step 3: 在 Orchestrator 中实现 `prepareWorkspaceSnapshot` 与自动挂载逻辑**
+- [ ] **Step 3: 在 Orchestrator 中实现 `prepareWorkspaceSnapshot` 与全生命周期自动挂载**
 
 在 `OrchestratorOptions` 增加 `enableWorkspaceSnapshot?: boolean;`（默认为 true）。  
-在 `run()` 方法开始处，如果 `enableCloudAttachment` 为真且获取到了 `graphToken`，通过 `SubstrateUploader.uploadDocumentToOneDrive` 直传该快照并压入 `currentAnnotations`。
+保存 `this.snapshotAnnotation` 属性；  
+在 `run()` 开始处生成并上传快照，挂载进 `currentAnnotations`；  
+在 801~840 行代际唤醒逻辑中，后继会话首轮消息构造时重新将 `this.snapshotAnnotation` 注入 `currentAnnotations`，确保后继主会话知行合一！
 
 - [ ] **Step 4: 运行测试验证通过**
 
@@ -349,12 +385,12 @@ git commit -m "feat(protocol): add snapshot perception and no-scout action guida
 
 ```bash
 git add src/agent/orchestrator.ts tests/agent/orchestrator-snapshot-mounting.test.ts
-git commit -m "feat(orchestrator): integrate automated snapshot generation and cloud mounting"
+git commit -m "feat(orchestrator): integrate automated snapshot mounting with successor grounding consistency"
 ```
 
 ---
 
-### Task 4: Tri-Agent 系统提示词推倒重塑与因果防盲目并发铁律
+### Task 4: Tri-Agent 系统提示词推倒重塑与通用 DAG 因果感知原则
 
 **Files:**
 - Modify: `cph-main-agent-prompt.txt`
@@ -366,11 +402,12 @@ git commit -m "feat(orchestrator): integrate automated snapshot generation and c
 - [ ] **Step 1: 编写针对新规范的测试**
 
 在 `tests/skills/tri-agent-prompts.test.ts` 中校验：
-1. `cph-main-agent-prompt.txt` 移除了所有两阶段斥候（Scout）相关描述；
-2. `cph-main-agent-prompt.txt` 明确因果时序：若 Coder 依赖 Researcher 成果，必须分阶段屏障派发或经主控决策综合，杜绝盲目并发；
-3. `cph-researcher-agent-prompt.txt` 明确单点深度分析锤定位；
-4. `cph-coder-agent-prompt.txt` 明确外科手术实施与自测闭环定位；
-5. 所有提示词不含负面禁止词（“严禁”、“切勿”、“不要”）。
+1. `cph-main-agent-prompt.txt` 彻底移除了“斥候”、“Scout”等历史包袱词汇；
+2. `cph-main-agent-prompt.txt` 明确通用 DAG 因果感知原则（契约先于实现、底座先于应用、研判先于重构、实施先于集成）；
+3. 明确跨阶段屏障与同阶段正交并发调度；
+4. `cph-researcher-agent-prompt.txt` 明确单点深度分析锤定位；
+5. `cph-coder-agent-prompt.txt` 明确外科手术实施与自测闭环定位；
+6. 所有提示词不含负面禁止词（“严禁”、“切勿”、“不要”）。
 
 - [ ] **Step 2: 运行测试验证失败**
 
@@ -379,7 +416,7 @@ git commit -m "feat(orchestrator): integrate automated snapshot generation and c
 
 - [ ] **Step 3: 全面重塑三个系统提示词**
 
-1. 重写 `cph-main-agent-prompt.txt`：确立上帝视角首轮立桩、纯粹统帅职责、因果时序控制（先研后改、跨 Stage 屏障、同 Stage 正交并发）；
+1. 重写 `cph-main-agent-prompt.txt`：确立上帝视角首轮立桩、纯粹统帅职责、通用 DAG 因果感知与阶段调度（契约/底座/研判/实施）；
 2. 重写 `cph-researcher-agent-prompt.txt`：聚焦热核代码审查、漏洞分析、状态机竞争条件深潜；
 3. 重写 `cph-coder-agent-prompt.txt`：聚焦局部精准补丁（`edit`/`patch`）与自动化测试验证命令。
 
@@ -392,7 +429,7 @@ git commit -m "feat(orchestrator): integrate automated snapshot generation and c
 
 ```bash
 git add cph-main-agent-prompt.txt cph-researcher-agent-prompt.txt cph-coder-agent-prompt.txt tests/skills/tri-agent-prompts.test.ts tests/protocol/prompt-builder-governance.test.ts
-git commit -m "feat(prompts): overhaul Tri-Agent system prompts for snapshot supercharging and causality-aware dispatch"
+git commit -m "feat(prompts): overhaul Tri-Agent system prompts for snapshot supercharging and DAG causality dispatch"
 ```
 
 ---
@@ -413,13 +450,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 describe("Subagent & Handoff Skills Governance", () => {
-  it("should not contain scout protocol in subagent skill", () => {
+  it("should not contain scout protocol in subagent skill and contain DAG causality principles", () => {
     const subagentPath = path.join(__dirname, "../../skills/subagent/SKILL.md");
     const content = fs.readFileSync(subagentPath, "utf8");
     expect(content).not.toContain("isScout");
     expect(content).not.toContain("两阶段斥候领航协议");
-    expect(content).toContain("因果依赖与防盲目并发铁律");
-    expect(content).toContain("先研后改");
+    expect(content).toContain("通用因果时序与依赖感知");
+    expect(content).toContain("正交并发");
   });
 
   it("should contain successor anti-memory-drift contract in handoff skill", () => {
@@ -439,12 +476,12 @@ describe("Subagent & Handoff Skills Governance", () => {
 - [ ] **Step 3: 重构 `skills/subagent/SKILL.md` 与微调 `skills/handoff/SKILL.md`**
 
 1. 重构 `skills/subagent/SKILL.md`：
-   - 彻底删除第 143~150 行及后文所有“斥候角色 (isScout: true)”条目；
-   - 重塑 Gate 5：强化**因果依赖与防盲目并发铁律**，明确 Coder 依赖 Researcher 成果时必须分阶段屏障或经主控决策综合；
+   - 彻底删除所有“斥候角色 (isScout: true)”条目；
+   - 重塑 Gate 5 为“通用因果依赖与阶段屏障门禁”：涵盖契约、底座、研判、实施等多维上下游关系；
    - 规范 Researcher 单点深度攻坚工单模板与 Coder 外科手术级实施模板。
 2. 微调 `skills/handoff/SKILL.md`：
-   - 在核心职责与待办事项中明确写入接力后继主控正向认知契约，杜绝代际失忆；
-   - 剔除斥候大纲交接等过渡性陈旧描述。
+   - 明确接力后继主控正向认知契约，天然继承 `plan.md` 与全景快照，杜绝代际失忆；
+   - 纯粹面向深度分析与代码实施交接。
 
 - [ ] **Step 4: 运行治理测试验证通过**
 
@@ -455,7 +492,7 @@ describe("Subagent & Handoff Skills Governance", () => {
 
 ```bash
 git add skills/subagent/SKILL.md skills/handoff/SKILL.md tests/skills/subagent-skill-governance.test.ts
-git commit -m "feat(skills): overhaul subagent and handoff skills for causality-aware dispatch and anti-drift"
+git commit -m "feat(skills): overhaul subagent and handoff skills for DAG causality dispatch and anti-drift"
 ```
 
 ---
