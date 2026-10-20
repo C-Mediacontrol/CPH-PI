@@ -2,12 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Bot,
   User,
-  Cpu,
-  Clock,
-  Sparkles,
   Copy,
   Check,
-  ChevronDown,
 } from "lucide-react";
 import type {
   AgentMessage,
@@ -60,16 +56,16 @@ const FormattedMarkdown: React.FC<{ content: string }> = ({ content }) => {
           return (
             <div
               key={idx}
-              className="my-2.5 rounded-lg border border-slate-800 bg-slate-950 overflow-hidden shadow-inner font-mono text-xs"
+              className="my-2.5 rounded-lg border border-border-base bg-surface-panel overflow-hidden shadow-inner font-mono text-xs"
             >
-              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-900 border-b border-slate-800 select-none text-slate-400">
-                <span className="text-[11px] font-medium text-slate-300">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-surface-card border-b border-border-base select-none text-neutral-400">
+                <span className="text-[11px] font-medium text-neutral-300">
                   {lang || "code"}
                 </span>
                 <button
                   type="button"
                   onClick={() => copyCode(code, idx)}
-                  className="flex items-center gap-1 hover:text-slate-200 transition-colors text-[11px]"
+                  className="flex items-center gap-1 hover:text-neutral-200 transition-colors text-[11px] cursor-pointer"
                 >
                   {copiedIndex === idx ? (
                     <>
@@ -84,7 +80,7 @@ const FormattedMarkdown: React.FC<{ content: string }> = ({ content }) => {
                   )}
                 </button>
               </div>
-              <pre className="p-3 text-[11.5px] text-slate-200 overflow-x-auto leading-relaxed">
+              <pre className="p-3 text-[11.5px] text-neutral-200 overflow-x-auto leading-relaxed">
                 {code}
               </pre>
             </div>
@@ -138,12 +134,12 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
     >
       {/* Empty State */}
       {messages.length === 0 && !currentDelta && !currentReasoning && toolCalls.length === 0 && (
-        <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-slate-500 py-16">
-          <div className="p-3 rounded-2xl bg-sky-950/40 border border-sky-800/40 text-sky-400 mb-3 shadow-inner">
+        <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-neutral-500 py-16">
+          <div className="p-3 rounded-2xl bg-deepseek-500/10 border border-deepseek-500/30 text-deepseek-400 mb-3 shadow-inner">
             <Bot className="w-8 h-8" />
           </div>
-          <p className="text-sm font-semibold text-slate-300">Ready for your prompt</p>
-          <p className="text-xs text-slate-500 mt-1 max-w-sm text-center">
+          <p className="text-sm font-semibold text-neutral-300">Ready for your prompt</p>
+          <p className="text-xs text-neutral-500 mt-1 max-w-sm text-center">
             Ask questions, run bash commands, edit code, or launch multi-turn reasoning workflows.
           </p>
         </div>
@@ -162,7 +158,7 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
           }`}
         >
           {msg.role === "assistant" && (
-            <div className="w-7 h-7 rounded-lg bg-sky-950/80 border border-sky-800/60 flex items-center justify-center shrink-0 text-sky-400 mt-1">
+            <div className="w-7 h-7 rounded-lg bg-surface-panel border border-border-base flex items-center justify-center shrink-0 text-deepseek-400 mt-1 shadow-sm">
               <Bot className="w-4 h-4" />
             </div>
           )}
@@ -170,10 +166,10 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
           <div
             className={`max-w-[85%] md:max-w-[78%] rounded-2xl px-4 py-3 shadow-md space-y-2.5 ${
               msg.role === "user"
-                ? "bg-sky-600 text-white rounded-br-none"
+                ? "bg-deepseek-500 text-white rounded-br-none shadow-deepseek-900/30"
                 : msg.role === "system"
-                ? "bg-slate-900/80 text-slate-400 border border-slate-800 text-xs text-center"
-                : "bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-none"
+                ? "bg-surface-panel text-neutral-400 border border-border-base text-xs text-center"
+                : "bg-surface-card border border-border-base text-neutral-200 rounded-bl-none"
             }`}
           >
             {/* Embedded Reasoning Block if this message has reasoning */}
@@ -182,6 +178,7 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
                 reasoning={msg.reasoning}
                 isStreaming={false}
                 defaultExpanded={false}
+                turn={msg.turn}
               />
             )}
 
@@ -194,14 +191,14 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
 
             {/* Metadata Footer */}
             {msg.turn !== undefined && (
-              <div className="text-[10px] font-mono text-slate-500 text-right pt-0.5">
+              <div className="text-[10px] font-mono text-neutral-500 text-right pt-0.5">
                 Turn #{msg.turn}
               </div>
             )}
           </div>
 
           {msg.role === "user" && (
-            <div className="w-7 h-7 rounded-lg bg-sky-600 flex items-center justify-center shrink-0 text-white mt-1 shadow">
+            <div className="w-7 h-7 rounded-lg bg-deepseek-500 flex items-center justify-center shrink-0 text-white mt-1 shadow shadow-deepseek-900/40">
               <User className="w-4 h-4" />
             </div>
           )}
@@ -211,10 +208,10 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
       {/* Streaming Reasoning Block */}
       {currentReasoning && (
         <div className="flex gap-3 justify-start">
-          <div className="w-7 h-7 rounded-lg bg-purple-950/80 border border-purple-800/60 flex items-center justify-center shrink-0 text-purple-400 mt-1">
-            <Sparkles className="w-4 h-4 animate-spin" />
+          <div className="w-7 h-7 rounded-lg bg-surface-panel border border-border-base flex items-center justify-center shrink-0 text-deepseek-400 mt-1 shadow-sm">
+            <Bot className="w-4 h-4 animate-pulse" />
           </div>
-          <div className="max-w-[85%] md:max-w-[78%] w-full">
+          <div className="max-w-[85%] md:max-w-[78%] w-full bg-surface-card border border-border-base rounded-2xl p-3 shadow-md">
             <ReasoningBlock
               reasoning={currentReasoning}
               isStreaming={isStreaming}
@@ -227,12 +224,12 @@ export const MessageStream: React.FC<MessageStreamProps> = ({
       {/* Streaming Delta Content */}
       {currentDelta && (
         <div className="flex gap-3 justify-start">
-          <div className="w-7 h-7 rounded-lg bg-sky-950/80 border border-sky-800/60 flex items-center justify-center shrink-0 text-sky-400 mt-1">
+          <div className="w-7 h-7 rounded-lg bg-surface-panel border border-border-base flex items-center justify-center shrink-0 text-deepseek-400 mt-1 shadow-sm">
             <Bot className="w-4 h-4 animate-pulse" />
           </div>
-          <div className="max-w-[85%] md:max-w-[78%] rounded-2xl px-4 py-3 bg-slate-900/90 border border-sky-800/40 text-slate-100 rounded-bl-none shadow-md">
+          <div className="max-w-[85%] md:max-w-[78%] rounded-2xl px-4 py-3 bg-surface-card border border-border-base text-neutral-100 rounded-bl-none shadow-md">
             <FormattedMarkdown content={currentDelta} />
-            <span className="inline-block w-2 h-4 bg-sky-400 ml-1.5 animate-pulse align-middle" />
+            <span className="inline-block w-2 h-4 bg-deepseek-400 ml-1.5 animate-pulse align-middle" />
           </div>
         </div>
       )}
