@@ -151,7 +151,7 @@ export function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div className="flex h-screen w-screen bg-[#0f1115] text-[#e5e7eb] overflow-hidden font-sans">
       {/* 1. Left Inspection Panel: Sidebar (260px - 280px) */}
       <Sidebar
         status={status}
@@ -164,22 +164,22 @@ export function App() {
       />
 
       {/* 2. Center Main Stage: Header + MessageStream + ActionDock */}
-      <div className="flex flex-col flex-1 min-w-0 bg-slate-950 overflow-hidden relative">
+      <div className="flex flex-col flex-1 min-w-0 bg-[#0f1115] overflow-hidden relative">
         {/* Top Header Bar */}
-        <header className="flex items-center justify-between px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 backdrop-blur-sm z-10">
+        <header className="flex items-center justify-between px-4 py-2 bg-[#0f1115] border-b border-[#2c2c2e] z-10">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="p-1.5 bg-sky-500/10 rounded-lg border border-sky-500/20 text-sky-400 shrink-0">
+            <div className="p-1.5 bg-deepseek-500/10 rounded-lg border border-deepseek-500/30 text-deepseek-400 shrink-0">
               <Cpu className="w-4 h-4" />
             </div>
             <div className="truncate">
-              <h1 className="text-xs font-semibold tracking-wide text-slate-100 flex items-center gap-2">
+              <h1 className="text-xs font-semibold tracking-wide text-neutral-100 flex items-center gap-2">
                 <span>CPH-PI Agent Workbench</span>
-                <span className="px-1.5 py-0.2 text-[9px] font-mono bg-sky-950/80 text-sky-300 border border-sky-800/60 rounded">
-                  Copilot Autonomous
+                <span className="px-1.5 py-0.5 text-[9px] font-mono bg-deepseek-500/15 text-deepseek-400 border border-deepseek-500/30 rounded font-medium">
+                  DeepSeek Design System
                 </span>
               </h1>
               <p
-                className="text-[10px] text-slate-500 truncate max-w-sm font-mono"
+                className="text-[10px] text-neutral-500 truncate max-w-sm font-mono"
                 title={url}
               >
                 {url || "Connecting to WebSocket..."}
@@ -190,7 +190,7 @@ export function App() {
           <div className="flex items-center gap-2 shrink-0">
             {/* Active Turn Counter */}
             {turnState.turn > 0 && (
-              <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-md bg-slate-800 border border-slate-700 text-slate-300 font-mono">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-md bg-[#1b1b1c] border border-[#2c2c2e] text-neutral-300 font-mono font-tabular">
                 <Zap className="w-3 h-3 text-amber-400" />
                 <span>Turn #{turnState.turn}</span>
                 {turnState.status === "running" && (
@@ -200,9 +200,9 @@ export function App() {
             )}
 
             {/* Connection badge */}
-            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-800/80 border border-slate-700/80 text-xs">
+            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#1b1b1c] border border-[#2c2c2e] text-xs">
               <span className={`w-2 h-2 rounded-full ${getStatusColor()}`} />
-              <span className="capitalize font-mono text-[11px] text-slate-300">
+              <span className="capitalize font-mono text-[11px] text-neutral-300">
                 {status}
               </span>
             </div>
@@ -212,7 +212,7 @@ export function App() {
               <button
                 onClick={disconnect}
                 title="Disconnect WebSocket"
-                className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-rose-400 transition"
+                className="p-1.5 rounded-md hover:bg-[#232326] text-neutral-400 hover:text-rose-400 transition"
               >
                 <Power className="w-3.5 h-3.5" />
               </button>
@@ -220,7 +220,7 @@ export function App() {
               <button
                 onClick={reconnect}
                 title="Reconnect"
-                className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-sky-400 transition"
+                className="p-1.5 rounded-md hover:bg-[#232326] text-neutral-400 hover:text-deepseek-400 transition"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
@@ -230,7 +230,7 @@ export function App() {
             <button
               onClick={clearMessages}
               title="Clear Messages"
-              className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+              className="p-1.5 rounded-md hover:bg-[#232326] text-neutral-400 hover:text-neutral-200 transition"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -239,9 +239,9 @@ export function App() {
             <button
               onClick={() => interrupt("soft")}
               title="Interrupt Softly (Stop at next turn)"
-              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-amber-950/40 text-amber-300 border border-amber-800/60 hover:bg-amber-900/40 transition"
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition"
             >
-              <Square className="w-2.5 h-2.5 fill-amber-300" />
+              <Square className="w-2.5 h-2.5 fill-amber-400" />
               <span>Interrupt</span>
             </button>
           </div>
@@ -264,27 +264,27 @@ export function App() {
 
           {/* Optional File Preview Drawer */}
           {selectedFile && (
-            <div className="absolute inset-x-0 bottom-0 max-h-72 bg-slate-900/95 border-t border-slate-700/80 backdrop-blur-md shadow-2xl z-20 flex flex-col animate-in slide-in-from-bottom duration-200">
-              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-950 border-b border-slate-800 text-xs">
-                <div className="flex items-center gap-1.5 text-sky-400 font-mono">
+            <div className="absolute inset-x-0 bottom-0 max-h-72 bg-[#1b1b1c] border-t border-[#2c2c2e] shadow-2xl z-20 flex flex-col animate-in slide-in-from-bottom duration-200">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-[#151517] border-b border-[#2c2c2e] text-xs">
+                <div className="flex items-center gap-1.5 text-deepseek-400 font-mono">
                   <FileCode className="w-3.5 h-3.5" />
-                  <span className="font-semibold text-slate-200">{selectedFile}</span>
+                  <span className="font-semibold text-neutral-200">{selectedFile}</span>
                 </div>
                 <button
                   onClick={() => {
                     setSelectedFile(null);
                     setFileContent(null);
                   }}
-                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                  className="p-1 rounded hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
-              <div className="flex-1 overflow-auto p-3 font-mono text-[11px] text-slate-300 bg-slate-950/70">
+              <div className="flex-1 overflow-auto p-3 font-mono text-[11px] text-neutral-200 bg-[#0f1115]">
                 {fileContent !== null ? (
                   <pre className="whitespace-pre-wrap leading-relaxed">{fileContent}</pre>
                 ) : (
-                  <div className="py-6 text-center text-slate-500">
+                  <div className="py-6 text-center text-neutral-500">
                     Loading file contents from workspace...
                   </div>
                 )}
@@ -294,7 +294,7 @@ export function App() {
         </div>
 
         {/* Bottom Action Dock with Slash Commands & Two-Stage Interrupt */}
-        <div className="p-3.5 bg-slate-900/90 border-t border-slate-800 backdrop-blur-sm z-10">
+        <div className="p-3.5 bg-[#0f1115] border-t border-[#2c2c2e] z-10">
           <ActionDock
             onSend={sendPrompt}
             onInterrupt={(abort) => interrupt(abort ? "hard" : "soft")}

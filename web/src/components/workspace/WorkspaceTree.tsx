@@ -97,15 +97,15 @@ export function WorkspaceTree({
       return <FileEdit className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
     }
     if (status === "read") {
-      return <FileCheck className="w-3.5 h-3.5 text-sky-400 shrink-0" />;
+      return <FileCheck className="w-3.5 h-3.5 text-deepseek-400 shrink-0" />;
     }
     if (/\.(ts|tsx|js|jsx|json)$/i.test(fileName)) {
-      return <FileCode className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+      return <FileCode className="w-3.5 h-3.5 text-neutral-400 shrink-0" />;
     }
     if (/\.(md|txt|log)$/i.test(fileName)) {
-      return <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+      return <FileText className="w-3.5 h-3.5 text-neutral-400 shrink-0" />;
     }
-    return <File className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+    return <File className="w-3.5 h-3.5 text-neutral-400 shrink-0" />;
   };
 
   // Render a node recursively
@@ -133,24 +133,24 @@ export function WorkspaceTree({
           <div
             onClick={() => toggleExpand(node.path)}
             style={{ paddingLeft }}
-            className="flex items-center gap-1.5 py-1 px-2 rounded hover:bg-slate-800/60 text-slate-300 hover:text-slate-100 cursor-pointer text-xs group transition"
+            className="flex items-center gap-1.5 py-1 px-2 rounded hover:bg-[#1b1b1c] text-neutral-300 hover:text-white cursor-pointer text-xs group transition"
           >
             {isExpanded ? (
-              <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+              <ChevronDown className="w-3.5 h-3.5 text-neutral-500" />
             ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+              <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
             )}
             {isExpanded ? (
-              <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+              <FolderOpen className="w-3.5 h-3.5 text-deepseek-400" />
             ) : (
-              <Folder className="w-3.5 h-3.5 text-sky-400/80" />
+              <Folder className="w-3.5 h-3.5 text-deepseek-400/80" />
             )}
             <span className="font-mono truncate">{node.name}</span>
             {node.status === "modified" && (
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-auto" title="Contains modified files" />
             )}
             {node.status === "read" && (
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 ml-auto" title="Contains read files" />
+              <span className="w-1.5 h-1.5 rounded-full bg-deepseek-400 ml-auto" title="Contains read files" />
             )}
           </div>
           {isExpanded && node.children && (
@@ -168,8 +168,8 @@ export function WorkspaceTree({
         style={{ paddingLeft }}
         className={`flex items-center justify-between py-1 px-2 rounded cursor-pointer text-xs transition font-mono ${
           isSelected
-            ? "bg-sky-950/60 border border-sky-700/60 text-sky-200"
-            : "hover:bg-slate-800/50 text-slate-300 hover:text-slate-100"
+            ? "bg-deepseek-500/20 border border-deepseek-500/50 text-deepseek-300"
+            : "hover:bg-[#1b1b1c] text-neutral-300 hover:text-white"
         }`}
         title={node.path}
       >
@@ -185,7 +185,7 @@ export function WorkspaceTree({
           </span>
         )}
         {node.status === "read" && (
-          <span className="text-[9px] font-bold px-1 rounded bg-sky-950 text-sky-400 border border-sky-800/70 shrink-0">
+          <span className="text-[9px] font-bold px-1 rounded bg-deepseek-500/20 text-deepseek-400 border border-deepseek-500/40 shrink-0">
             READ
           </span>
         )}
@@ -194,30 +194,30 @@ export function WorkspaceTree({
   };
 
   return (
-    <div className={`flex flex-col h-full text-slate-300 ${className}`}>
+    <div className={`flex flex-col h-full text-neutral-300 ${className}`}>
       {/* Search and Tree Controls */}
-      <div className="p-2 border-b border-slate-800 flex items-center gap-2">
+      <div className="p-2 border-b border-[#2c2c2e] flex items-center gap-2">
         <div className="relative flex-1">
-          <Search className="w-3.5 h-3.5 absolute left-2 top-2.5 text-slate-500" />
+          <Search className="w-3.5 h-3.5 absolute left-2 top-2.5 text-neutral-500" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter files..."
-            className="w-full bg-slate-950 border border-slate-800 rounded pl-7 pr-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono"
+            className="w-full bg-[#1b1b1c] border border-[#2c2c2e] rounded-lg pl-7 pr-2 py-1 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-deepseek-500 font-mono"
           />
         </div>
         <button
           onClick={expandAll}
           title="Expand All"
-          className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+          className="p-1 rounded hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
         >
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={collapseAll}
           title="Collapse All"
-          className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+          className="p-1 rounded hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
         >
           <Minimize2 className="w-3.5 h-3.5" />
         </button>
@@ -226,7 +226,7 @@ export function WorkspaceTree({
       {/* Tree Content */}
       <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
         {fullTree.length === 0 ? (
-          <div className="py-8 text-center text-slate-500 text-xs">
+          <div className="py-8 text-center text-neutral-500 text-xs">
             No files in workspace
           </div>
         ) : (
@@ -235,14 +235,14 @@ export function WorkspaceTree({
       </div>
 
       {/* Footer Summary */}
-      <div className="px-3 py-1.5 border-t border-slate-800/80 bg-slate-950/40 text-[10px] text-slate-500 flex items-center justify-between font-mono">
+      <div className="px-3 py-1.5 border-t border-[#2c2c2e] bg-[#151517] text-[10px] text-neutral-500 flex items-center justify-between font-mono font-tabular">
         <span>Files: {files.length}</span>
         <div className="flex items-center gap-2">
           {modifiedFiles.length > 0 && (
             <span className="text-emerald-400">{modifiedFiles.length} modified</span>
           )}
           {readFiles.length > 0 && (
-            <span className="text-sky-400">{readFiles.length} read</span>
+            <span className="text-deepseek-400">{readFiles.length} read</span>
           )}
         </div>
       </div>

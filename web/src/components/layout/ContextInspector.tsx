@@ -76,18 +76,18 @@ export function ContextInspector({
   if (isCollapsed) {
     return (
       <aside
-        className={`w-12 flex flex-col items-center py-3 bg-slate-900/90 border-l border-slate-800 text-slate-400 select-none ${className}`}
+        className={`w-12 flex flex-col items-center py-3 bg-[#151517] border-l border-[#2c2c2e] text-neutral-400 select-none ${className}`}
       >
         {/* Expand button */}
         <button
           onClick={toggleCollapse}
           title="Expand Context Inspector"
-          className="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-sky-300 transition"
+          className="p-2 rounded-lg hover:bg-[#232326] text-neutral-400 hover:text-deepseek-400 transition"
         >
           <PanelRightOpen className="w-5 h-5" />
         </button>
 
-        <div className="w-6 h-px bg-slate-800 my-2" />
+        <div className="w-6 h-px bg-[#2c2c2e] my-2" />
 
         {/* Vertical Tab Quick Launchers */}
         <div className="flex flex-col gap-2">
@@ -96,8 +96,8 @@ export function ContextInspector({
             title={`Files (${files.length})`}
             className={`p-2 rounded-lg transition relative ${
               activeTab === "files"
-                ? "bg-sky-950 text-sky-400 border border-sky-800"
-                : "hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                ? "bg-deepseek-500/20 text-deepseek-400 border border-deepseek-500/40"
+                : "hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
             }`}
           >
             <FolderTree className="w-4 h-4" />
@@ -111,8 +111,8 @@ export function ContextInspector({
             title={`Ledger WAL (${ledger.length})`}
             className={`p-2 rounded-lg transition ${
               activeTab === "ledger"
-                ? "bg-sky-950 text-sky-400 border border-sky-800"
-                : "hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                ? "bg-deepseek-500/20 text-deepseek-400 border border-deepseek-500/40"
+                : "hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
             }`}
           >
             <Database className="w-4 h-4" />
@@ -123,13 +123,13 @@ export function ContextInspector({
             title={`Subagents (${subagents.length})`}
             className={`p-2 rounded-lg transition relative ${
               activeTab === "subagents"
-                ? "bg-sky-950 text-sky-400 border border-sky-800"
-                : "hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                ? "bg-deepseek-500/20 text-deepseek-400 border border-deepseek-500/40"
+                : "hover:bg-[#232326] text-neutral-400 hover:text-neutral-200"
             }`}
           >
             <Layers className="w-4 h-4" />
             {activeSubagentsCount > 0 && (
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 absolute top-1 right-1 animate-pulse" />
+              <span className="w-1.5 h-1.5 rounded-full bg-deepseek-400 absolute top-1 right-1 animate-pulse" />
             )}
           </button>
         </div>
@@ -140,18 +140,18 @@ export function ContextInspector({
   // Render Full 3-tab Inspector Panel (320px - 360px)
   return (
     <aside
-      className={`w-80 md:w-88 flex flex-col h-full bg-slate-900/95 border-l border-slate-800 text-slate-200 select-none overflow-hidden ${className}`}
+      className={`w-80 md:w-88 flex flex-col h-full bg-[#151517] border-l border-[#2c2c2e] text-neutral-200 select-none overflow-hidden ${className}`}
     >
       {/* Top Tab Bar & Collapse Button */}
-      <div className="flex items-center justify-between border-b border-slate-800/80 bg-slate-950/40 text-xs px-2">
+      <div className="flex items-center justify-between border-b border-[#2c2c2e] bg-[#151517] text-xs px-2">
         <div className="flex items-center gap-1">
           {/* Files Tab */}
           <button
             onClick={() => setActiveTab("files")}
             className={`flex items-center gap-1.5 px-3 py-2.5 font-medium border-b-2 transition ${
               activeTab === "files"
-                ? "border-sky-500 text-sky-400 bg-slate-900/40"
-                : "border-transparent text-slate-400 hover:text-slate-300"
+                ? "border-deepseek-500 text-deepseek-400 bg-[#1b1b1c]"
+                : "border-transparent text-neutral-400 hover:text-neutral-200 hover:bg-[#1b1b1c]"
             }`}
           >
             <FolderTree className="w-3.5 h-3.5" />
@@ -166,13 +166,13 @@ export function ContextInspector({
             onClick={() => setActiveTab("ledger")}
             className={`flex items-center gap-1.5 px-3 py-2.5 font-medium border-b-2 transition ${
               activeTab === "ledger"
-                ? "border-sky-500 text-sky-400 bg-slate-900/40"
-                : "border-transparent text-slate-400 hover:text-slate-300"
+                ? "border-deepseek-500 text-deepseek-400 bg-[#1b1b1c]"
+                : "border-transparent text-neutral-400 hover:text-neutral-200 hover:bg-[#1b1b1c]"
             }`}
           >
             <Database className="w-3.5 h-3.5" />
             <span>Ledger</span>
-            <span className="text-[10px] font-mono text-slate-500">
+            <span className="text-[10px] font-mono font-tabular text-neutral-500">
               {ledger.length}
             </span>
           </button>
@@ -182,18 +182,18 @@ export function ContextInspector({
             onClick={() => setActiveTab("subagents")}
             className={`flex items-center gap-1.5 px-3 py-2.5 font-medium border-b-2 transition ${
               activeTab === "subagents"
-                ? "border-sky-500 text-sky-400 bg-slate-900/40"
-                : "border-transparent text-slate-400 hover:text-slate-300"
+                ? "border-deepseek-500 text-deepseek-400 bg-[#1b1b1c]"
+                : "border-transparent text-neutral-400 hover:text-neutral-200 hover:bg-[#1b1b1c]"
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
             <span>Subagents</span>
             {activeSubagentsCount > 0 ? (
-              <span className="px-1 py-0.2 rounded-full text-[9px] font-mono bg-sky-950 text-sky-300 border border-sky-800">
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-mono font-tabular bg-deepseek-500/20 text-deepseek-400 border border-deepseek-500/40">
                 {activeSubagentsCount}
               </span>
             ) : (
-              <span className="text-[10px] font-mono text-slate-500">
+              <span className="text-[10px] font-mono font-tabular text-neutral-500">
                 {subagents.length}
               </span>
             )}
@@ -204,7 +204,7 @@ export function ContextInspector({
         <button
           onClick={toggleCollapse}
           title="Collapse Inspector"
-          className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+          className="p-1.5 rounded hover:bg-[#232326] text-neutral-400 hover:text-neutral-200 transition"
         >
           <PanelRightClose className="w-4 h-4" />
         </button>

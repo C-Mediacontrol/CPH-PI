@@ -37,25 +37,25 @@ export function AccountPoolCard({
 
   return (
     <div
-      className={`rounded-lg border border-slate-800 bg-slate-900/80 p-3 text-xs shadow-sm flex flex-col gap-2 ${className}`}
+      className={`rounded-xl border border-[#2c2c2e] bg-[#1b1b1c] p-3 text-xs shadow-sm flex flex-col gap-2 ${className}`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-        <div className="flex items-center gap-1.5 font-medium text-slate-200">
-          <Users className="w-3.5 h-3.5 text-sky-400" />
+      <div className="flex items-center justify-between border-b border-[#2c2c2e] pb-2">
+        <div className="flex items-center gap-1.5 font-medium text-neutral-200">
+          <Users className="w-3.5 h-3.5 text-deepseek-400" />
           <span>Copilot Accounts</span>
-          <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400">
+          <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-mono font-tabular bg-[#232326] text-neutral-400 border border-[#2c2c2e]">
             {accounts.length}
           </span>
         </div>
 
         {throttledCount > 0 ? (
-          <span className="flex items-center gap-1 text-[10px] font-mono text-rose-400 bg-rose-950/60 border border-rose-900/60 px-1.5 py-0.5 rounded">
+          <span className="flex items-center gap-1 text-[10px] font-mono font-tabular text-rose-400 bg-rose-500/15 border border-rose-500/30 px-1.5 py-0.5 rounded">
             <AlertTriangle className="w-2.5 h-2.5" />
             {throttledCount} throttled
           </span>
         ) : (
-          <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-900/40 px-1.5 py-0.5 rounded">
+          <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 rounded">
             <CheckCircle2 className="w-2.5 h-2.5" />
             Healthy
           </span>
@@ -65,7 +65,7 @@ export function AccountPoolCard({
       {/* Account List */}
       <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
         {accounts.length === 0 ? (
-          <div className="py-3 text-center text-slate-500 text-[11px]">
+          <div className="py-3 text-center text-neutral-500 text-[11px]">
             No accounts in pool
           </div>
         ) : (
@@ -80,10 +80,10 @@ export function AccountPoolCard({
               <div
                 key={acc.email}
                 onClick={() => onSelectAccount?.(acc.email)}
-                className={`group flex items-center justify-between p-2 rounded-md transition border cursor-pointer ${
+                className={`group flex items-center justify-between p-2 rounded-lg transition border cursor-pointer ${
                   isActive
-                    ? "bg-sky-950/30 border-sky-800/60 text-sky-200"
-                    : "bg-slate-950/60 border-slate-800/70 hover:bg-slate-800/50 text-slate-300"
+                    ? "bg-deepseek-500/15 border-deepseek-500/40 text-deepseek-300"
+                    : "bg-[#151517] border-[#2c2c2e] hover:bg-[#232326] text-neutral-300"
                 }`}
                 title={acc.email}
               >
@@ -92,7 +92,7 @@ export function AccountPoolCard({
                   <span
                     className={`w-2 h-2 rounded-full shrink-0 ${
                       isActive
-                        ? "bg-sky-400 ring-2 ring-sky-500/30"
+                        ? "bg-deepseek-400 ring-2 ring-deepseek-500/30"
                         : isThrottled
                         ? "bg-rose-500"
                         : "bg-emerald-500"
@@ -103,7 +103,7 @@ export function AccountPoolCard({
                       {maskEmail(acc.email)}
                     </span>
                     {isActive && (
-                      <span className="ml-1.5 px-1 py-0.2 rounded text-[9px] uppercase font-bold tracking-wider bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                      <span className="ml-1.5 px-1 py-0.2 rounded text-[9px] uppercase font-bold tracking-wider bg-deepseek-500/25 text-deepseek-300 border border-deepseek-500/40">
                         Active
                       </span>
                     )}
@@ -113,18 +113,18 @@ export function AccountPoolCard({
                 {/* Status Badge & Countdown */}
                 <div className="flex items-center gap-1.5 shrink-0">
                   {isThrottled ? (
-                    <span className="flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-950/70 border border-rose-800/60 text-rose-300">
+                    <span className="flex items-center gap-1 text-[10px] font-mono font-tabular px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300">
                       <Clock className="w-2.5 h-2.5 animate-spin" />
                       {countdown.formatted || "Throttled"}
                     </span>
                   ) : (
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/50 border border-emerald-800/50 text-emerald-300">
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
                       Ready
                     </span>
                   )}
 
                   {acc.totalRequests !== undefined && acc.totalRequests > 0 && (
-                    <span className="text-[10px] font-mono text-slate-500 hidden group-hover:inline">
+                    <span className="text-[10px] font-mono font-tabular text-neutral-500 hidden group-hover:inline">
                       {acc.totalRequests} reqs
                     </span>
                   )}
