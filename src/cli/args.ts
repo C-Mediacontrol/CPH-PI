@@ -11,6 +11,10 @@ import {
 export interface ParsedCliArgs {
   help: boolean;
   version: boolean;
+  subcommand?: string;
+  web?: boolean;
+  webPort?: number;
+  noOpen?: boolean;
   workspaceRoot?: string;
   modelTone?: string;
   hasExplicitModel?: boolean;
@@ -218,6 +222,28 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
     } else if (arg.startsWith("--task=")) {
       result.task = arg.slice("--task=".length);
       i++;
+    } else if (arg === "--web") {
+      result.web = true;
+      i++;
+    } else if (arg === "--no-open") {
+      result.noOpen = true;
+      i++;
+    } else if (arg === "--port" || arg === "-p") {
+      const nextArg = args[++i];
+      const val = nextArg !== undefined ? parseInt(nextArg, 10) : NaN;
+      if (!isNaN(val)) result.webPort = val;
+      i++;
+    } else if (arg.startsWith("--port=")) {
+      const val = parseInt(arg.slice("--port=".length), 10);
+      if (!isNaN(val)) result.webPort = val;
+      i++;
+    } else if (arg.startsWith("-p=")) {
+      const val = parseInt(arg.slice("-p=".length), 10);
+      if (!isNaN(val)) result.webPort = val;
+      i++;
+    } else if (arg === "web" && !result.subcommand) {
+      result.subcommand = "web";
+      i++;
     } else if (!arg.startsWith("-")) {
       positional.push(arg);
       i++;
@@ -284,11 +310,18 @@ export function getHelpText(): string {
     "",
     chalk.bold("用法 (Usage):"),
     `  cph-pi [选项] [任务描述...]`,
+    `  cph-pi web [选项]`,
     `  bun run src/cli.ts [选项] [任务描述...]`,
+    "",
+    chalk.bold("子命令 (Subcommands):"),
+    `  ${chalk.cyan("web")}                      独立启动 CPH-PI Web GUI 服务端 (全功能 Web/WebSocket 交互)`,
     "",
     chalk.bold("选项 (Options):"),
     `  ${chalk.green("-h, --help")}              显示帮助信息并退出`,
     `  ${chalk.green("-v, --version")}           显示版本号并退出`,
+    `  ${chalk.green("--web")}                   启用 Web GUI 伴生模式 (与终端 TUI 并行运行)`,
+    `  ${chalk.green("-p, --port <port>")}       指定 Web GUI HTTP/WS 服务端口 (默认: 3080)`,
+    `  ${chalk.green("--no-open")}               启动 Web 服务时不自动打开浏览器`,
     `  ${chalk.green("-c, --continue")}          接续最近活跃的会话`,
     `  ${chalk.green("-r, --resume <id>")}       恢复指定 ID 的历史会话`,
     `  ${chalk.green("-w, --workspace <path>")}   指定工作区根目录 (默认: 当前目录)`,

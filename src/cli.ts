@@ -1,7 +1,10 @@
 import readline from "node:readline";
 import path from "node:path";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import chalk from "chalk";
+import { WebServer } from "./server/web-server.ts";
+import { WebUiBridge } from "./server/web-ui-bridge.ts";
 import { CopilotOrchestrator, type IOrchestratorChatClient } from "./agent/orchestrator.ts";
 import { InterruptController } from "./agent/interrupt-controller.ts";
 import { TuiRenderer, type SessionStatusInfo, type ActiveSubagentState, type SubagentLiveState } from "./ui/tui-renderer.ts";
@@ -100,6 +103,8 @@ export interface CphPiCliOptions {
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
   graphTokenProvider?: () => Promise<string>;
+  webBridge?: WebUiBridge;
+  webServer?: WebServer;
 }
 
 export type CliOptions = CphPiCliOptions;
@@ -139,6 +144,8 @@ export class CphPiCli {
   private graphTokenProvider?: () => Promise<string>;
   private debug: boolean = false;
   private debugLogPath?: string;
+  private webBridge?: WebUiBridge;
+  private webServer?: WebServer;
 
   constructor(options: CphPiCliOptions = {}) {
     this.workspaceRoot = path.resolve(
@@ -246,6 +253,31 @@ export class CphPiCli {
         logFilePath: this.debugLogPath,
         workspaceRoot: this.workspaceRoot,
       });
+    }
+
+    this.webBridge = options.webBridge;
+    this.webServer = options.webServer;
+    if (this.webServer && !this.webBridge) {
+      this.webBridge = this.webServer.getBridge();
+    }
+  }
+
+  public getWebBridge(): WebUiBridge | undefined {
+    return this.webBridge;
+  }
+
+  public setWebBridge(bridge?: WebUiBridge): void {
+    this.webBridge = bridge;
+  }
+
+  public getWebServer(): WebServer | undefined {
+    return this.webServer;
+  }
+
+  public setWebServer(server?: WebServer): void {
+    this.webServer = server;
+    if (server) {
+      this.webBridge = server.getBridge();
     }
   }
 
@@ -763,6 +795,9 @@ export class CphPiCli {
     this.isInteractive = false;
     this.interruptController.detach();
     TerminalLogger.getInstance().stop();
+    if (this.webServer) {
+      this.webServer.stop().catch(() => {});
+    }
   }
 
   /**
@@ -1165,17 +1200,33 @@ export class CphPiCli {
           initialAnnotations: currentInitialAnnotations,
           rootUserPrompt: rootTaskPrompt,
           events: {
-            onDelta: (d) => this.renderer.renderTextChunk(d),
-            onReasoning: (r) => this.renderer.renderReasoningChunk(r),
+            onDelta: (d) => {
+              this.renderer.renderTextChunk(d);
+              this.webBridge?.onDelta(d);
+            },
+            onReasoning: (r) => {
+              this.renderer.renderReasoningChunk(r);
+              this.webBridge?.onReasoning(r);
+            },
             onTurnStart: (turn) => {
               if (this.pool?.getSessionLease) {
                 const leased = this.pool.getSessionLease(currentSession.id);
                 if (leased) currentSession.currentAccount = leased;
               }
               this.renderer.renderTurnHeader(turn);
+              this.webBridge?.onTurnStart(turn);
             },
-            onToolStart: (action) => this.renderer.renderToolBadge(action),
-            onToolEnd: (result) => this.renderer.renderToolResult(result),
+            onTurnEnd: (turn, resp) => {
+              this.webBridge?.onTurnEnd?.(turn, resp);
+            },
+            onToolStart: (action) => {
+              this.renderer.renderToolBadge(action);
+              this.webBridge?.onToolStart(action);
+            },
+            onToolEnd: (result) => {
+              this.renderer.renderToolResult(result);
+              this.webBridge?.onToolEnd(result);
+            },
             onSubagentStart: (id, role, spec, initialHop, account) => {
               subagentStartTimes.set(id, Date.now());
               const hop = initialHop || 1;
@@ -1192,6 +1243,7 @@ export class CphPiCli {
                 handoffCount: Math.max(0, hop - 1),
               });
               this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+              this.webBridge?.onSubagentStart(id, role, spec, initialHop, account);
             },
             onSubagentProgress: (id, turn, _delta, action, hopCount, account) => {
               const state = activeSubagents.get(id);
@@ -1222,6 +1274,7 @@ export class CphPiCli {
               if (changed) {
                 this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
               }
+              this.webBridge?.onSubagentProgress(id, turn, _delta, action, hopCount, account);
             },
             onSubagentEnd: (report) => {
               const state = activeSubagents.get(report.id);
@@ -1239,19 +1292,30 @@ export class CphPiCli {
                   : `异常中断: ${report.error || "执行未完成"}`;
               }
               this.renderer.renderSubagentMatrix(Array.from(activeSubagents.values()));
+              this.webBridge?.onSubagentEnd(report);
             },
-            onRefusalIntercepted: (refusal, attempt) =>
-              this.renderer.renderRefusalWarning(refusal, attempt),
+            onRefusalIntercepted: (refusal, attempt) => {
+              this.renderer.renderRefusalWarning(refusal, attempt);
+              this.webBridge?.onRefusalIntercepted(refusal, attempt);
+            },
             onCompacted: (cleared, ratio) => {
               this.lastCompactionRatio = ratio;
               this.renderer.renderCompactedNotice(cleared, ratio);
+              this.webBridge?.onCompacted(cleared, ratio);
             },
             onAccountSwitched: (oldEmail, newEmail) => {
               currentSession.currentAccount = newEmail;
               this.renderer.renderAccountSwitchedNotice(oldEmail, newEmail);
+              this.webBridge?.onAccountSwitched(oldEmail, newEmail);
             },
-            onCompleted: (ans) => this.renderer.renderFinalAnswer(ans),
-            onError: (err) => this.renderer.renderError(err),
+            onCompleted: (ans) => {
+              this.renderer.renderFinalAnswer(ans);
+              this.webBridge?.onCompleted(ans);
+            },
+            onError: (err) => {
+              this.renderer.renderError(err);
+              this.webBridge?.onError(err);
+            },
             onDisasterOccurred: (blackbox, err) =>
               this.renderer.renderDisasterBlackboxBanner(currentSession.id, err),
             onArbitratorHandoffStart: (arbId, email) =>
@@ -1503,19 +1567,41 @@ export const CPH_PI_VERSION = "0.1.0";
 
 export interface RunCliResult {
   exitCode: number;
-  mode: "help" | "version" | "task" | "interactive";
+  mode: "help" | "version" | "task" | "interactive" | "web";
   output?: string;
+  server?: WebServer;
 }
 
 /**
- * CLI direct execution entry point supporting flags, tasks, and interactive mode
+ * Cross-platform helper to launch user default web browser.
+ */
+export function openBrowser(url: string): void {
+  try {
+    const platform = process.platform;
+    if (platform === "win32") {
+      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+    } else if (platform === "darwin") {
+      spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+    } else {
+      spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    }
+  } catch {
+    // Graceful fallback: ignore spawn errors in headless/CI environments
+  }
+}
+
+/**
+ * CLI direct execution entry point supporting flags, tasks, standalone web mode, and companion mode
  */
 export async function runCli(
   args: string[] = process.argv.slice(2),
   customOptions: CliOptions = {},
   isDirectRun: boolean = false
 ): Promise<RunCliResult> {
-  const parsed = parseCliArgs(args);
+  const parsed = {
+    ...parseCliArgs(args),
+    ...(customOptions.parsedArgs || {}),
+  };
 
   if (parsed.help) {
     const helpText = printHelp();
@@ -1528,6 +1614,159 @@ export async function runCli(
     process.stdout.write(versionText + "\n");
     if (isDirectRun) process.exit(0);
     return { exitCode: 0, mode: "version", output: versionText };
+  }
+
+  // 1. Standalone Web Subcommand Mode: cph-pi web [--port <n>] [--no-open]
+  if (parsed.subcommand === "web") {
+    const webPort = parsed.webPort !== undefined ? parsed.webPort : 3080;
+    const server =
+      customOptions.webServer ||
+      new WebServer({
+        port: webPort,
+        host: "127.0.0.1",
+      });
+
+    const { url, port, token } = await server.start();
+
+    process.stdout.write(
+      chalk.bold.cyan("\n============================================================\n") +
+      chalk.bold.green(`  🌐 CPH-PI Web GUI Server started at: `) + chalk.underline.cyan(url) + "\n" +
+      chalk.gray(`     Port: ${port} | Host: 127.0.0.1 | Auth Token: ${token.slice(0, 8)}...\n`) +
+      chalk.bold.cyan("============================================================\n\n")
+    );
+
+    if (!parsed.noOpen) {
+      openBrowser(url);
+    }
+
+    const options: CliOptions = {
+      ...customOptions,
+      workspaceRoot: parsed.workspaceRoot || customOptions.workspaceRoot,
+      modelTone: parsed.hasExplicitModel ? parsed.modelTone : customOptions.modelTone,
+      maxTurns: parsed.maxTurns ?? customOptions.maxTurns,
+      timeoutSec: parsed.timeoutSec ?? customOptions.timeoutSec,
+      maxAutonomousHandoffHops:
+        parsed.maxAutonomousHandoffHops ?? customOptions.maxAutonomousHandoffHops,
+      continueLast: parsed.continueLast ?? customOptions.continueLast,
+      resumeSessionId: parsed.resumeSessionId || customOptions.resumeSessionId,
+      customAgentId:
+        customOptions.customAgentId !== undefined
+          ? customOptions.customAgentId
+          : (customOptions.chatClient && !parsed.hasExplicitAgent ? undefined : parsed.customAgentId),
+      coderAgentId: parsed.coderAgentId || customOptions.coderAgentId,
+      researcherAgentId: parsed.researcherAgentId || customOptions.researcherAgentId,
+      allowedAccounts: parsed.allowedAccounts || customOptions.allowedAccounts,
+      debug: parsed.debug ?? customOptions.debug,
+      debugLogPath: parsed.debugLogPath || customOptions.debugLogPath,
+      cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
+      cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
+      graphTokenProvider: customOptions.graphTokenProvider,
+      webServer: server,
+    };
+
+    const cli = new CphPiCli(options);
+    cli.setWebServer(server);
+
+    const bridge = server.getBridge();
+    bridge.setDispatchHandlers({
+      onPrompt: async (text: string, attachments?: string[]) => {
+        try {
+          if (text.startsWith("/")) {
+            if (isBuiltinSlashCommand(text)) {
+              await cli.handleCommand(text);
+              return;
+            }
+            const parsedSlash = cli.getSkillRegistry().parseSlashCommand(text);
+            if (parsedSlash.skill) {
+              cli.getSkillRegistry().activateSkill(parsedSlash.skill.name);
+              cli.getRenderer().renderSkillActivated(parsedSlash.skill.name);
+              await cli.executeTask(parsedSlash.task || text, [parsedSlash.skill]);
+              return;
+            }
+          }
+          await cli.executeTask(text);
+        } catch (err: any) {
+          bridge.onError(err);
+        }
+      },
+      onInterrupt: (_mode?: "soft" | "hard") => {
+        cli.getInterruptController().handleSigint();
+      },
+      onSyncSnapshot: async (sessionId?: string, lastTurn?: number) => {
+        const currentSession = cli.getCurrentSession() || cli.initSession();
+        const targetId = sessionId || currentSession.id;
+        const session =
+          targetId === currentSession.id
+            ? currentSession
+            : cli.getSessionManager().loadSession(targetId);
+        return {
+          sessionId: session?.id || currentSession.id,
+          title: session?.title,
+          status: session?.status,
+          turns: session?.turns || [],
+          turnCount: session?.turnCount || 0,
+          modelTone: cli.getModelTone(),
+          customAgentId: cli.customAgentId,
+          workspaceRoot: cli.getWorkspaceRoot(),
+        };
+      },
+      onSwitchSession: async (sessionId: string) => {
+        const loaded = cli.getSessionManager().loadSession(sessionId);
+        if (loaded) {
+          cli.setCurrentSession(loaded);
+          if (loaded.turns && loaded.turns.length > 0) {
+            cli.getOrchestrator().completeHandshake();
+          }
+        }
+      },
+      onReadFile: async (relativePath: string) => {
+        try {
+          const fullPath = path.resolve(cli.getWorkspaceRoot(), relativePath);
+          if (fs.existsSync(fullPath)) {
+            return await fs.promises.readFile(fullPath, "utf-8");
+          }
+          return "";
+        } catch {
+          return "";
+        }
+      },
+    });
+
+    if (isDirectRun) {
+      process.on("SIGINT", async () => {
+        process.stdout.write(chalk.yellow("\n正在关闭 CPH-PI Web GUI 服务端...\n"));
+        await server.stop();
+        cli.close();
+        process.exit(0);
+      });
+      // Keep process listening
+      await new Promise<void>(() => {});
+    }
+
+    return { exitCode: 0, mode: "web", server };
+  }
+
+  // 2. Companion Mode: cph-pi --web [--port <n>] [--no-open]
+  let companionServer: WebServer | undefined;
+  if (parsed.web) {
+    const webPort = parsed.webPort !== undefined ? parsed.webPort : 3080;
+    companionServer =
+      customOptions.webServer ||
+      new WebServer({
+        port: webPort,
+        host: "127.0.0.1",
+      });
+
+    const { url, port } = await companionServer.start();
+    process.stdout.write(
+      chalk.green(`\n🌐 [Web Companion] CPH-PI Web GUI started at: `) +
+        chalk.underline.cyan(url) +
+        "\n\n"
+    );
+
+    if (!parsed.noOpen) {
+      openBrowser(url);
+    }
   }
 
   const options: CliOptions = {
@@ -1552,9 +1791,78 @@ export async function runCli(
     cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
     cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
     graphTokenProvider: customOptions.graphTokenProvider,
+    webServer: companionServer || customOptions.webServer,
   };
 
   const cli = new CphPiCli(options);
+
+  if (companionServer) {
+    cli.setWebServer(companionServer);
+    const bridge = companionServer.getBridge();
+    bridge.setDispatchHandlers({
+      onPrompt: async (text: string, attachments?: string[]) => {
+        try {
+          if (text.startsWith("/")) {
+            if (isBuiltinSlashCommand(text)) {
+              await cli.handleCommand(text);
+              return;
+            }
+            const parsedSlash = cli.getSkillRegistry().parseSlashCommand(text);
+            if (parsedSlash.skill) {
+              cli.getSkillRegistry().activateSkill(parsedSlash.skill.name);
+              cli.getRenderer().renderSkillActivated(parsedSlash.skill.name);
+              await cli.executeTask(parsedSlash.task || text, [parsedSlash.skill]);
+              return;
+            }
+          }
+          await cli.executeTask(text);
+        } catch (err: any) {
+          bridge.onError(err);
+        }
+      },
+      onInterrupt: (_mode?: "soft" | "hard") => {
+        cli.getInterruptController().handleSigint();
+      },
+      onSyncSnapshot: async (sessionId?: string, lastTurn?: number) => {
+        const currentSession = cli.getCurrentSession() || cli.initSession();
+        const targetId = sessionId || currentSession.id;
+        const session =
+          targetId === currentSession.id
+            ? currentSession
+            : cli.getSessionManager().loadSession(targetId);
+        return {
+          sessionId: session?.id || currentSession.id,
+          title: session?.title,
+          status: session?.status,
+          turns: session?.turns || [],
+          turnCount: session?.turnCount || 0,
+          modelTone: cli.getModelTone(),
+          customAgentId: cli.customAgentId,
+          workspaceRoot: cli.getWorkspaceRoot(),
+        };
+      },
+      onSwitchSession: async (sessionId: string) => {
+        const loaded = cli.getSessionManager().loadSession(sessionId);
+        if (loaded) {
+          cli.setCurrentSession(loaded);
+          if (loaded.turns && loaded.turns.length > 0) {
+            cli.getOrchestrator().completeHandshake();
+          }
+        }
+      },
+      onReadFile: async (relativePath: string) => {
+        try {
+          const fullPath = path.resolve(cli.getWorkspaceRoot(), relativePath);
+          if (fs.existsSync(fullPath)) {
+            return await fs.promises.readFile(fullPath, "utf-8");
+          }
+          return "";
+        } catch {
+          return "";
+        }
+      },
+    });
+  }
 
   if (parsed.task) {
     try {
@@ -1572,16 +1880,16 @@ export async function runCli(
       }
       cli.close();
       if (isDirectRun) process.exit(0);
-      return { exitCode: 0, mode: "task" };
+      return { exitCode: 0, mode: "task", server: companionServer };
     } catch (err: any) {
       cli.close();
       if (isDirectRun) process.exit(1);
-      return { exitCode: 1, mode: "task" };
+      return { exitCode: 1, mode: "task", server: companionServer };
     }
   }
 
   await cli.start();
-  return { exitCode: 0, mode: "interactive" };
+  return { exitCode: 0, mode: "interactive", server: companionServer };
 }
 
 if (import.meta.main) {
