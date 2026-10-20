@@ -23,7 +23,11 @@ import {
   Layers,
   ChevronRight,
   Database,
+  Trash2,
 } from "lucide-react";
+import { MessageStream } from "./components/chat/MessageStream.tsx";
+import { ActionDock } from "./components/interaction/ActionDock.tsx";
+
 
 export function App() {
   const {
@@ -51,30 +55,7 @@ export function App() {
     clearMessages,
   }: UseAgentSocketReturn = useAgentSocket();
 
-  const [inputPrompt, setInputPrompt] = useState("");
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, any>>({});
-  const [rejectReason, setRejectReason] = useState("");
   const [activeTab, setActiveTab] = useState<"subagents" | "tools" | "accounts" | "ledger">("subagents");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll on new stream content
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, currentDelta, currentReasoning]);
-
-  const handleSendPrompt = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!inputPrompt.trim()) return;
-    sendPrompt(inputPrompt.trim());
-    setInputPrompt("");
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendPrompt();
-    }
-  };
 
   const getStatusColor = () => {
     switch (status) {
@@ -147,6 +128,15 @@ export function App() {
             </button>
           )}
 
+          {/* Clear chat history */}
+          <button
+            onClick={clearMessages}
+            title="Clear Chat History"
+            className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+
           {/* Interrupt controls */}
           <button
             onClick={() => interrupt("soft")}
@@ -162,257 +152,29 @@ export function App() {
       {/* Main Container */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Column: Chat & Streaming View */}
-        <div className="flex flex-col flex-1 border-r border-slate-800 relative bg-slate-950">
-          {/* Scrollable Transcript */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {messages.length === 0 && !currentDelta && !currentReasoning && (
-              <div className="flex flex-col items-center justify-center h-full text-slate-500 py-20">
-                <Bot className="w-12 h-12 mb-3 stroke-slate-600" />
-                <p className="text-sm font-medium">Ready for your prompt</p>
-                <p className="text-xs text-slate-600 mt-1">
-                  Connect to CPH-PI runtime, execute tools, and inspect subagents in real-time.
-                </p>
-              </div>
-            )}
+        <div className="flex flex-col flex-1 border-r border-slate-800 relative bg-slate-950 overflow-hidden">
+          {/* Scrollable Message History with Deep Thinking, Unified Diffs, Tool Cards, and HITL */}
+          <MessageStream
+            messages={messages}
+            currentReasoning={currentReasoning}
+            currentDelta={currentDelta}
+            turnState={turnState}
+            toolCalls={toolCalls}
+            pendingApproval={pendingApproval}
+            pendingQuestion={pendingQuestion}
+            onApprove={approveTool}
+            onReject={rejectTool}
+            onAnswerQuestion={answerQuestion}
+          />
 
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex gap-3 text-sm ${
-                  msg.role === "user"
-                    ? "justify-end"
-                    : msg.role === "system"
-                    ? "justify-center"
-                    : "justify-start"
-                }`}
-              >
-                {msg.role === "assistant" && (
-                  <div className="w-7 h-7 rounded-lg bg-sky-950 border border-sky-800/80 flex items-center justify-center shrink-0 text-sky-400">
-                    <Bot className="w-4 h-4" />
-                  </div>
-                )}
-
-                <div
-                  className={`max-w-[85%] rounded-lg px-4 py-2.5 leading-relaxed shadow-sm ${
-                    msg.role === "user"
-                      ? "bg-sky-600 text-white rounded-br-none"
-                      : msg.role === "system"
-                      ? "bg-slate-900/80 text-slate-400 border border-slate-800 text-xs text-center"
-                      : "bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-none"
-                  }`}
-                >
-                  {/* Reasoning box if available */}
-                  {msg.reasoning && (
-                    <details className="mb-2.5 pb-2 border-b border-slate-800 text-xs text-slate-400 cursor-pointer">
-                      <summary className="font-mono text-[11px] text-amber-400/90 select-none flex items-center gap-1.5">
-                        <Activity className="w-3.5 h-3.5" />
-                        <span>Reasoning Chain</span>
-                      </summary>
-                      <pre className="mt-2 p-2 bg-slate-950/70 rounded border border-slate-850 font-mono text-[11px] text-slate-400 whitespace-pre-wrap break-words">
-                        {msg.reasoning}
-                      </pre>
-                    </details>
-                  )}
-
-                  <div className="whitespace-pre-wrap break-words font-sans">{msg.content}</div>
-
-                  {msg.turn !== undefined && (
-                    <div className="mt-1 text-[10px] text-slate-500 font-mono text-right">
-                      Turn #{msg.turn}
-                    </div>
-                  )}
-                </div>
-
-                {msg.role === "user" && (
-                  <div className="w-7 h-7 rounded-lg bg-sky-600 flex items-center justify-center shrink-0 text-white">
-                    <User className="w-4 h-4" />
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* In-flight streaming reasoning */}
-            {currentReasoning && (
-              <div className="flex gap-3 text-sm">
-                <div className="w-7 h-7 rounded-lg bg-amber-950/80 border border-amber-800/60 flex items-center justify-center shrink-0 text-amber-400">
-                  <Activity className="w-4 h-4 animate-spin" />
-                </div>
-                <div className="max-w-[85%] rounded-lg px-3.5 py-2.5 bg-slate-900/90 border border-amber-900/40 text-amber-200/90 text-xs">
-                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-amber-400 mb-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-                    <span>Agent Reasoning...</span>
-                  </div>
-                  <pre className="whitespace-pre-wrap font-mono text-[11px] text-slate-400 max-h-48 overflow-y-auto">
-                    {currentReasoning}
-                  </pre>
-                </div>
-              </div>
-            )}
-
-            {/* In-flight streaming delta */}
-            {currentDelta && (
-              <div className="flex gap-3 text-sm">
-                <div className="w-7 h-7 rounded-lg bg-sky-950 border border-sky-800/80 flex items-center justify-center shrink-0 text-sky-400">
-                  <Bot className="w-4 h-4 animate-pulse" />
-                </div>
-                <div className="max-w-[85%] rounded-lg px-4 py-2.5 bg-slate-900 border border-sky-900/60 text-slate-200">
-                  <div className="whitespace-pre-wrap break-words font-sans">
-                    {currentDelta}
-                    <span className="inline-block w-2 h-4 bg-sky-400 ml-1 animate-pulse" />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* HITL Alerts Banners */}
-          {/* 1. Pending Tool Approval */}
-          {pendingApproval && (
-            <div className="p-3 bg-amber-950/50 border-t border-amber-850/80 flex flex-col gap-2 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-amber-300 text-xs font-semibold">
-                  <ShieldAlert className="w-4 h-4" />
-                  <span>Approval Required for Tool Action:</span>
-                  <code className="px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-200 font-mono text-[11px]">
-                    {pendingApproval.action.tool || pendingApproval.action.action || "command"}
-                  </code>
-                </div>
-                <span className="text-[10px] text-amber-400/80 font-mono">
-                  {new Date(pendingApproval.timestamp).toLocaleTimeString()}
-                </span>
-              </div>
-
-              {pendingApproval.action.command && (
-                <pre className="p-2 bg-slate-950 rounded text-xs font-mono text-amber-200/90 overflow-x-auto">
-                  $ {pendingApproval.action.command}
-                </pre>
-              )}
-              {pendingApproval.action.path && (
-                <div className="text-xs text-slate-300 font-mono">
-                  Target: {pendingApproval.action.path}
-                </div>
-              )}
-
-              <div className="flex items-center gap-2 mt-1">
-                <button
-                  onClick={() => approveTool(pendingApproval.approvalId)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition shadow"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Approve & Execute</span>
-                </button>
-                <div className="flex-1 flex gap-2">
-                  <input
-                    type="text"
-                    value={rejectReason}
-                    onChange={(e) => setRejectReason(e.target.value)}
-                    placeholder="Rejection reason (optional)..."
-                    className="flex-1 px-2.5 py-1 text-xs bg-slate-900 border border-slate-750 rounded text-slate-300 placeholder-slate-600 focus:outline-none focus:border-rose-500"
-                  />
-                  <button
-                    onClick={() => {
-                      rejectTool(pendingApproval.approvalId, rejectReason || "Rejected by user");
-                      setRejectReason("");
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-rose-600/80 hover:bg-rose-500 text-white transition shadow"
-                  >
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>Reject</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 2. Pending Question Request */}
-          {pendingQuestion && (
-            <div className="p-3 bg-indigo-950/50 border-t border-indigo-850/80 flex flex-col gap-2">
-              <div className="flex items-center gap-2 text-indigo-300 text-xs font-semibold">
-                <HelpCircle className="w-4 h-4" />
-                <span>Agent Inquired Information:</span>
-              </div>
-              {pendingQuestion.questions.map((q, qIdx) => (
-                <div key={qIdx} className="space-y-1.5">
-                  <p className="text-xs text-slate-200">{q.question}</p>
-                  {q.options && q.options.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {q.options.map((opt, oIdx) => (
-                        <button
-                          key={oIdx}
-                          onClick={() =>
-                            setSelectedAnswers((prev) => ({
-                              ...prev,
-                              [q.question]: opt,
-                            }))
-                          }
-                          className={`px-2.5 py-1 text-xs rounded border transition ${
-                            selectedAnswers[q.question] === opt
-                              ? "bg-indigo-600 text-white border-indigo-500"
-                              : "bg-slate-900 text-slate-300 border-slate-700 hover:border-indigo-500"
-                          }`}
-                        >
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <input
-                      type="text"
-                      placeholder="Type your answer..."
-                      onChange={(e) =>
-                        setSelectedAnswers((prev) => ({
-                          ...prev,
-                          [q.question]: e.target.value,
-                        }))
-                      }
-                      className="w-full px-2.5 py-1 text-xs bg-slate-900 border border-slate-750 rounded text-slate-300 focus:outline-none"
-                    />
-                  )}
-                </div>
-              ))}
-              <div className="flex justify-end mt-1">
-                <button
-                  onClick={() => answerQuestion(pendingQuestion.questionId, selectedAnswers)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-md bg-indigo-600 hover:bg-indigo-500 text-white transition"
-                >
-                  Submit Answer
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Bottom Prompt Input */}
-          <div className="p-3 bg-slate-900 border-t border-slate-800">
-            <form onSubmit={handleSendPrompt} className="flex gap-2">
-              <textarea
-                value={inputPrompt}
-                onChange={(e) => setInputPrompt(e.target.value)}
-                onKeyDown={handleKeyDown}
-                rows={2}
-                placeholder="Ask CPH-PI Agent to code, refactor, or investigate (Enter to send, Shift+Enter for new line)..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 resize-none font-sans"
-              />
-              <div className="flex flex-col gap-1.5 justify-end">
-                <button
-                  type="submit"
-                  disabled={!isConnected || !inputPrompt.trim()}
-                  className="flex items-center justify-center p-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:hover:bg-sky-600 text-white transition shadow"
-                  title="Send Prompt"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={clearMessages}
-                  className="p-1.5 rounded text-slate-500 hover:text-slate-300 text-[10px] text-center"
-                  title="Clear Chat History"
-                >
-                  Clear
-                </button>
-              </div>
-            </form>
+          {/* Bottom Action Dock with Slash Commands & Two-Stage Interrupt */}
+          <div className="p-3.5 bg-slate-900/90 border-t border-slate-800 backdrop-blur-sm">
+            <ActionDock
+              onSend={sendPrompt}
+              onInterrupt={(abort) => interrupt(abort ? "hard" : "soft")}
+              isRunning={turnState.status === "running"}
+              disabled={!isConnected}
+            />
           </div>
         </div>
 
