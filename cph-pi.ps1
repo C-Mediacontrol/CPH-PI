@@ -25,31 +25,22 @@ if ($ScriptDir) {
 
 # 3. Detect runtime and pass through arguments
 try {
-    if (Get-Command bun -ErrorAction SilentlyContinue) {
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        if ($CliArgs -and $CliArgs.Count -gt 0) {
+            node --import tsx src/cli.ts @CliArgs
+        } else {
+            node --import tsx src/cli.ts
+        }
+        exit $LASTEXITCODE
+    } elseif (Get-Command bun -ErrorAction SilentlyContinue) {
         if ($CliArgs -and $CliArgs.Count -gt 0) {
             bun run src/cli.ts @CliArgs
         } else {
             bun run src/cli.ts
         }
         exit $LASTEXITCODE
-    } elseif (Get-Command node -ErrorAction SilentlyContinue) {
-        if (Get-Command npx -ErrorAction SilentlyContinue) {
-            if ($CliArgs -and $CliArgs.Count -gt 0) {
-                npx tsx src/cli.ts @CliArgs
-            } else {
-                npx tsx src/cli.ts
-            }
-            exit $LASTEXITCODE
-        } else {
-            if ($CliArgs -and $CliArgs.Count -gt 0) {
-                node --loader ts-node/esm src/cli.ts @CliArgs
-            } else {
-                node --loader ts-node/esm src/cli.ts
-            }
-            exit $LASTEXITCODE
-        }
     } else {
-        Write-Error "[CPH-PI Error] Neither Bun nor Node.js runtime was found in PATH. Please install Bun (https://bun.sh) or Node.js."
+        Write-Error "[CPH-PI Error] Neither Node.js nor Bun runtime was found in PATH. Please install Node.js (https://nodejs.org) or Bun (https://bun.sh)."
         exit 1
     }
 } catch {

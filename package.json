@@ -4,11 +4,11 @@
   "description": "基于 Pi 极简防臃肿基座的 Microsoft Copilot 自主编程 Agent Harness",
   "type": "module",
   "scripts": {
-    "start": "bun run src/cli.ts",
-    "web": "bun run src/cli.ts web",
-    "web:dev": "cd web && bun run dev",
-    "web:build": "cd web && bun run build",
-    "build:all": "bun run web:build && bun run build:package",
+    "start": "node --import tsx src/cli.ts",
+    "web": "node --import tsx src/cli.ts web",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "build:all": "npm run web:build && npm run build:package",
     "check:accounts": "bun run scripts/probe-agent-access.ts",
     "check:accounts:apply": "bun run scripts/probe-agent-access.ts --apply",
     "package": "bun run scripts/package-agent-bundle.ts",
@@ -26,6 +26,7 @@
   "devDependencies": {
     "@types/diff": "^5.2.3",
     "@types/node": "^22.10.0",
-    "@types/ws": "^8.5.13"
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.23.15"
   }
 }
