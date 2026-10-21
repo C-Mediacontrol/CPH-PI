@@ -1,0 +1,111 @@
+.markdownBody {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--dsw-alias-label-primary, #f9fafb);
+  word-break: break-word;
+}
+
+.paragraph {
+  margin: 0 0 10px 0;
+}
+
+.paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.heading1 {
+  font: var(--dsw-font-markdown-h2, 700 18px / 26px var(--dsw-font-family));
+  margin: 16px 0 8px 0;
+  color: var(--dsw-alias-label-primary, #f9fafb);
+}
+
+.heading2 {
+  font: var(--dsw-font-markdown-h3, 700 16px / 24px var(--dsw-font-family));
+  margin: 14px 0 6px 0;
+  color: var(--dsw-alias-label-primary, #f9fafb);
+}
+
+.heading3 {
+  font: var(--dsw-font-markdown-h4, 600 14px / 22px var(--dsw-font-family));
+  margin: 12px 0 6px 0;
+  color: var(--dsw-alias-label-secondary, #cfd3d6);
+}
+
+.listItem {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.listBullet {
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.codeBlock {
+  margin: 12px 0;
+  border-radius: var(--dsw-radius-sm, 8px);
+  background: #08090b;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+}
+
+.codeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--dsw-alias-bg-layer-2, #212123);
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(255, 255, 255, 0.05));
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-caption, #81858c);
+}
+
+.codeLang {
+  font-family: var(--ds-font-family-code, monospace);
+  font-weight: 500;
+  text-transform: uppercase;
+  color: var(--dsw-static-deepseek-300, #b7c8fe);
+}
+
+.copyBtn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--dsw-alias-label-caption, #81858c);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.copyBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dsw-alias-label-primary, #f9fafb);
+}
+
+.codePre {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: var(--ds-font-family-code, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #e2e8f0;
+  background: #08090b;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.inlineCode {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--dsw-alias-markdown-inline-code, rgba(255, 255, 255, 0.08));
+  color: var(--dsw-static-deepseek-300, #b7c8fe);
+  font-family: var(--ds-font-family-code, monospace);
+  font-size: 12px;
+}

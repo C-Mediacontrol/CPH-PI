@@ -1,0 +1,107 @@
+@import './tokens.css';
+
+:root {
+  --dsw-text-primary: var(--dsw-alias-label-primary);
+  --dsw-text-secondary: var(--dsw-alias-label-secondary);
+  --dsw-text-muted: var(--dsw-alias-label-caption);
+  --dsw-surface-raised: var(--dsw-surface-layer-2);
+  --dsw-specific-sidebar-fill: var(--dsw-surface-layer-1);
+  --dsh-radius-sm: var(--dsw-radius-sm);
+  --dsh-radius-md: var(--dsw-radius-md);
+  --ds-transition-normal: var(--ds-transition-duration, 0.2s);
+  --ds-transition-fast: var(--ds-transition-duration-fast, 0.1s);
+}
+
+/* ==========================================================================
+   CSS Reset & Base Rules
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: var(--dsh-content-font-size);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================================================
+   Custom Scrollbar (Matches DeepSeek-Harness scrollbar.css)
+   ========================================================================== */
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--dsh-scrollbar-thumb) transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: var(--dsh-scrollbar-width);
+  height: var(--dsh-scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--dsh-scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dsh-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ==========================================================================
+   Standard Element Defaults
+   ========================================================================== */
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  outline: none;
+  border: none;
+  background: none;
+}
+
+a {
+  color: var(--dsw-alias-link);
+  text-decoration: none;
+}
+
+code,
+pre {
+  font-family: var(--ds-font-family-code);
+}

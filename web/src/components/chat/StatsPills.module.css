@@ -1,0 +1,43 @@
+.container {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 6px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--dsw-alias-border-l1, rgba(255, 255, 255, 0.06));
+  color: var(--dsw-alias-label-caption, #81858c);
+  font-size: 11px;
+  font-family: var(--ds-font-family-code, monospace);
+  user-select: none;
+  transition: all var(--ds-transition-duration-fast, 0.1s);
+}
+
+.pill:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dsw-alias-label-secondary, #cfd3d6);
+  border-color: var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.12));
+}
+
+.icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
+}
+
+.modelBadge {
+  background: rgba(65, 118, 230, 0.12);
+  border-color: rgba(65, 118, 230, 0.3);
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+  font-weight: 500;
+}

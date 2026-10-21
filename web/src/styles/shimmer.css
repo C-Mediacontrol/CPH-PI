@@ -1,0 +1,84 @@
+/**
+ * Shimmer animation for DeepSeek reasoning stream & dynamic badges
+ */
+
+@keyframes dsw-text-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Direct gradient-clipped text shimmer for thinking / reasoning process */
+.text-shimmer {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--dsw-alias-label-caption, #81858c) 0%,
+    var(--dsw-alias-label-primary, #f9fafb) 50%,
+    var(--dsw-alias-label-caption, #81858c) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: dsw-text-shimmer 2s ease-in-out infinite;
+}
+
+/* Deep diving shimmer (DeepSeek reason/think header shimmer) */
+.text-shimmer-deep-diving {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--dsw-alias-label-deep-diving, #5b7999) 0%,
+    var(--dsw-alias-label-deep-diving-shimmer, #93c5fd) 50%,
+    var(--dsw-alias-label-deep-diving, #5b7999) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: dsw-text-shimmer 2s ease-in-out infinite;
+}
+
+/* DeepSeek Harness Dual-Layer TextShimmer primitives */
+.dsh-shimmer-sweep {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-shimmer);
+  mask-image: linear-gradient(105deg, transparent 0%, black 40% 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(105deg, transparent 0%, black 40% 60%, transparent 100%);
+  transform: translateX(-100%);
+  animation: dsh-row-shimmer-sweep 1.5s steps(48, end) 0.3s infinite;
+}
+
+.dsh-shimmer-highlight {
+  width: 100%;
+  height: 100%;
+  transform: translateX(100%);
+  animation: dsh-row-shimmer-highlight 1.5s steps(48, end) 0.3s infinite;
+}
+
+@keyframes dsh-row-shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  66.6667%, 100% { transform: translateX(100%); }
+}
+
+@keyframes dsh-row-shimmer-highlight {
+  0% { transform: translateX(100%); }
+  66.6667%, 100% { transform: translateX(-100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer,
+  .text-shimmer-deep-diving,
+  .dsh-shimmer-sweep,
+  .dsh-shimmer-highlight {
+    animation: none;
+    -webkit-text-fill-color: currentColor;
+    background: none;
+  }
+}
