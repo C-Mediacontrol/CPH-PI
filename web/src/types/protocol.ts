@@ -155,6 +155,7 @@ export interface AccountInfo {
   cooldownRemainingSec: number;
   totalRequests: number;
   throttledCount: number;
+  throttleReason?: 'daily' | 'burst' | 'agent_ineligible';
 }
 
 export interface CustomAgentItem {

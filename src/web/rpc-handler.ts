@@ -94,6 +94,7 @@ export interface AccountInfo {
   cooldownRemainingSec: number;
   totalRequests: number;
   throttledCount: number;
+  throttleReason?: "daily" | "burst" | "agent_ineligible";
 }
 
 export interface CustomAgentItem {
@@ -1217,6 +1218,7 @@ export class RpcHandler {
       cooldownRemainingSec: Math.max(0, Math.ceil((s.cooldownUntil - now) / 1000)),
       totalRequests: s.totalRequests,
       throttledCount: s.throttledCount,
+      throttleReason: s.throttleReason,
     }));
     return { accounts, allowedAccounts: allowed ?? null };
   }
