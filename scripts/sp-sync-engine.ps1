@@ -137,7 +137,43 @@ function Append-DirtyLog {
     [System.IO.File]::AppendAllText($Path, $jsonLine, [System.Text.UTF8Encoding]::new($false))
 }
 
-# 7. 文件推送到 SharePoint (带 3 次重试与 Mock 支持)
+# 7. 确保目标文件夹在 SharePoint 存在 (CSOM 递归)
+function Ensure-SharePointFolder {
+    param(
+        $Context,
+        [string]$TargetFolder,
+        [string]$RelativeDir
+    )
+    $folder = $Context.Web.GetFolderByServerRelativeUrl($TargetFolder)
+    $Context.Load($folder)
+    $Context.ExecuteQuery()
+    
+    if ([string]::IsNullOrWhiteSpace($RelativeDir)) {
+        return $folder.ServerRelativeUrl
+    }
+
+    $currentFolder = $folder
+    $currentRel = $folder.ServerRelativeUrl
+
+    $parts = $RelativeDir.Replace('\', '/').Trim('/').Split('/')
+    foreach ($part in $parts) {
+        if ([string]::IsNullOrWhiteSpace($part)) { continue }
+        $currentRel = "$currentRel/$part"
+        try {
+            $f = $Context.Web.GetFolderByServerRelativeUrl($currentRel)
+            $Context.Load($f)
+            $Context.ExecuteQuery()
+            $currentFolder = $f
+        } catch {
+            $currentFolder = $currentFolder.Folders.Add($part)
+            $Context.Load($currentFolder)
+            $Context.ExecuteQuery()
+        }
+    }
+    return $currentRel
+}
+
+# 8. 文件推送到 SharePoint (带 3 次重试与 Mock 支持，纯 CSOM 规避 PnP ambient context 缺失)
 function Push-FileToSharePoint {
     param(
         [string]$LocalFullPath,
@@ -168,10 +204,18 @@ function Push-FileToSharePoint {
                 if (-not $ctx) {
                     throw "Unable to acquire SharePoint client context for $SiteUrl"
                 }
-                $relDir = [System.IO.Path]::GetDirectoryName($RelativePath).Replace('\', '/')
-                $remoteFolder = if ([string]::IsNullOrEmpty($relDir)) { $TargetFolder } else { "$TargetFolder/$relDir" }
-                Add-PnPFile -Path $LocalFullPath -Folder $remoteFolder -Values @{} -ErrorAction Stop | Out-Null
-                return $true
+                $relDir = [System.IO.Path]::GetDirectoryName($RelativePath).Replace('\', '/').Trim('/')
+                $serverRelFolder = Ensure-SharePointFolder -Context $ctx -TargetFolder $TargetFolder -RelativeDir $relDir
+                $fileName = [System.IO.Path]::GetFileName($LocalFullPath)
+                $targetFileUrl = "$serverRelFolder/$fileName"
+
+                $stream = [System.IO.File]::OpenRead($LocalFullPath)
+                try {
+                    [Microsoft.SharePoint.Client.File]::SaveBinaryDirect($ctx, $targetFileUrl, $stream, $true) | Out-Null
+                    return $true
+                } finally {
+                    $stream.Dispose()
+                }
             }
         } catch {
             $lastError = $_.Exception.Message
@@ -250,6 +294,11 @@ switch ($Action) {
                 $localFiles += $rel
             }
         }
+
+        # 核心防泄漏过滤：无论来自 git 还是文件遍历，严禁同步 .cph / .git / node_modules 等内部物理状态
+        $localFiles = @($localFiles | Where-Object {
+            $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
+        })
 
         $localSet = @{}
         $results = @()
@@ -448,8 +497,26 @@ switch ($Action) {
         if ($MockTransport) {
             [System.IO.File]::WriteAllText($fullDest, "MOCK PULL CONTENT", [System.Text.UTF8Encoding]::new($false))
         } else {
-            $remoteFile = "$TargetFolder/$($SourceFile.Replace('\', '/').TrimStart('/'))"
-            Get-PnPFile -Url $remoteFile -Path $destDir -Filename ([System.IO.Path]::GetFileName($fullDest)) -AsFile -Force
+            if (-not $SiteUrl) {
+                throw "SiteUrl is required when not in MockTransport mode"
+            }
+            $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+            if (-not $ctx) {
+                throw "Unable to acquire SharePoint client context for $SiteUrl"
+            }
+            $folder = $ctx.Web.GetFolderByServerRelativeUrl($TargetFolder)
+            $ctx.Load($folder)
+            $ctx.ExecuteQuery()
+            $cleanSource = $SourceFile.Replace('\', '/').TrimStart('/')
+            $targetFileUrl = "$($folder.ServerRelativeUrl)/$cleanSource"
+            $fileInfo = [Microsoft.SharePoint.Client.File]::OpenBinaryDirect($ctx, $targetFileUrl)
+            $destStream = [System.IO.File]::Create($fullDest)
+            try {
+                $fileInfo.Stream.CopyTo($destStream)
+            } finally {
+                $destStream.Dispose()
+                $fileInfo.Stream.Dispose()
+            }
         }
 
         $report = @{
@@ -486,6 +553,11 @@ switch ($Action) {
                 $files += $rel
             }
         }
+
+        # 核心防泄漏过滤：无论来自 git 还是文件遍历，严禁同步 .cph / .git / node_modules 等内部物理状态
+        $files = @($files | Where-Object {
+            $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
+        })
 
         foreach ($file in $files) {
             if ([string]::IsNullOrWhiteSpace($file)) { continue }
