@@ -225,7 +225,41 @@ function Push-FileToSharePoint {
     throw $lastError
 }
 
-# 8. 单个文件增量判定与同步
+# 8. 递归枚举云端实际存在的所有文件 (实现严格镜像对账)
+function Get-SharePointCloudFiles {
+    param(
+        $Context,
+        [string]$TargetFolder
+    )
+    $folder = $Context.Web.GetFolderByServerRelativeUrl($TargetFolder)
+    $Context.Load($folder)
+    $Context.ExecuteQuery()
+    $rootServerRel = $folder.ServerRelativeUrl.TrimEnd('/')
+
+    $cloudFiles = @{}
+
+    function Enumerate-FolderRecursively($currentFolder) {
+        $Context.Load($currentFolder.Files)
+        $Context.Load($currentFolder.Folders)
+        $Context.ExecuteQuery()
+
+        foreach ($f in $currentFolder.Files) {
+            $fRel = $f.ServerRelativeUrl.Substring($rootServerRel.Length).TrimStart('/')
+            if ($fRel -eq '.cph-mirror.json') { continue }
+            $cloudFiles[$fRel] = $f
+        }
+
+        foreach ($sub in $currentFolder.Folders) {
+            if ($sub.Name.StartsWith("_") -or $sub.Name -eq "Forms") { continue }
+            Enumerate-FolderRecursively($sub)
+        }
+    }
+
+    Enumerate-FolderRecursively($folder)
+    return $cloudFiles
+}
+
+# 9. 单个文件增量判定与同步
 function Sync-Item {
     param(
         [string]$RelativePath,
@@ -248,7 +282,7 @@ function Sync-Item {
 
     $sha256 = Get-FileSha256 -FilePath $fullPath
     $existing = $Manifest.files[$normalizedRel]
-    if ($existing -and $existing.sha256 -eq $sha256) {
+    if ($existing -and $existing.sha256 -eq $sha256 -and ($MockTransport -or $cloudFiles.ContainsKey($norm))) {
         Write-Output "[SKIP] $normalizedRel"
         return
     }
@@ -300,6 +334,19 @@ switch ($Action) {
             $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
         })
 
+        # 1. 递归枚举云端实际存在的所有文件 (实现严格镜像对账)
+        $cloudFiles = @{}
+        if (-not $MockTransport -and $SiteUrl) {
+            try {
+                $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                if ($ctx) {
+                    $cloudFiles = Get-SharePointCloudFiles -Context $ctx -TargetFolder $TargetFolder
+                }
+            } catch {
+                Write-Warning "Failed to enumerate cloud files: $($_.Exception.Message)"
+            }
+        }
+
         $localSet = @{}
         $results = @()
         $syncedCount = 0
@@ -317,7 +364,7 @@ switch ($Action) {
             $fileSize = (Get-Item $fullPath).Length
             $existing = $manifest.files[$norm]
 
-            if ($existing -and $existing.sha256 -eq $sha256) {
+            if ($existing -and $existing.sha256 -eq $sha256 -and ($MockTransport -or $cloudFiles.ContainsKey($norm))) {
                 $skippedCount++
                 $results += @{
                     relativePath = $norm
@@ -362,31 +409,76 @@ switch ($Action) {
             }
         }
 
-        # Orphan pruning
+        # 规则 2 真实清理：云端有本地没有，把云端文件移入回收站
         $prunedCount = 0
-        $allManifestKeys = @($manifest.files.Keys)
-        foreach ($mk in $allManifestKeys) {
+        $orphansToRecycle = @{}
+
+        # 真实模式：来自云端实际扫描出的非本地文件
+        foreach ($ck in $cloudFiles.Keys) {
+            if (-not $localSet.ContainsKey($ck)) {
+                $orphansToRecycle[$ck] = $cloudFiles[$ck]
+            }
+        }
+
+        # 同时也清理 manifest 中历史记录但本地已删除的项 (兼容 Mock 测试与历史遗留)
+        foreach ($mk in @($manifest.files.Keys)) {
             if (-not $localSet.ContainsKey($mk)) {
-                if (-not $MockTransport) {
-                    try {
-                        $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
-                        if ($ctx) {
-                            $remoteFile = "$TargetFolder/$($mk.Replace('\', '/').TrimStart('/'))"
-                            $spFile = $ctx.Web.GetFileByServerRelativeUrl($remoteFile)
-                            $spFile.Recycle() | Out-Null
-                            $ctx.ExecuteQuery()
-                        }
-                    } catch {
-                        Write-Warning "Failed to recycle cloud orphan file $mk : $($_.Exception.Message)"
-                    }
-                }
-                $manifest.files.Remove($mk)
-                $prunedCount++
-                $results += @{
-                    relativePath = $mk
-                    status = 'recycled'
+                if (-not $orphansToRecycle.ContainsKey($mk)) {
+                    $orphansToRecycle[$mk] = $null
                 }
             }
+        }
+
+        foreach ($mk in @($orphansToRecycle.Keys)) {
+            if (-not $MockTransport) {
+                try {
+                    $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                    if ($ctx) {
+                        $targetSpFile = $orphansToRecycle[$mk]
+                        if (-not $targetSpFile) {
+                            $folder = $ctx.Web.GetFolderByServerRelativeUrl($TargetFolder)
+                            $ctx.Load($folder)
+                            $ctx.ExecuteQuery()
+                            $remoteFile = "$($folder.ServerRelativeUrl)/$($mk.Replace('\', '/').TrimStart('/'))"
+                            $targetSpFile = $ctx.Web.GetFileByServerRelativeUrl($remoteFile)
+                        }
+                        $targetSpFile.Recycle() | Out-Null
+                        $ctx.ExecuteQuery()
+                    }
+                } catch {
+                    Write-Warning "Failed to recycle cloud orphan file $mk : $($_.Exception.Message)"
+                }
+            }
+            if ($manifest.files.ContainsKey($mk)) {
+                $manifest.files.Remove($mk)
+            }
+            $prunedCount++
+            $results += @{
+                relativePath = $mk
+                status = 'recycled'
+            }
+        }
+
+        # 清理全空子目录 (例如 test/ 目录内文件全部移入回收站后清理空目录)
+        if (-not $MockTransport -and $SiteUrl -and $prunedCount -gt 0) {
+            try {
+                $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                if ($ctx) {
+                    $rootFolder = $ctx.Web.GetFolderByServerRelativeUrl($TargetFolder)
+                    $ctx.Load($rootFolder.Folders)
+                    $ctx.ExecuteQuery()
+                    foreach ($sub in $rootFolder.Folders) {
+                        if ($sub.Name.StartsWith("_") -or $sub.Name -eq "Forms") { continue }
+                        $ctx.Load($sub.Files)
+                        $ctx.Load($sub.Folders)
+                        $ctx.ExecuteQuery()
+                        if ($sub.Files.Count -eq 0 -and $sub.Folders.Count -eq 0) {
+                            $sub.Recycle() | Out-Null
+                            $ctx.ExecuteQuery()
+                        }
+                    }
+                }
+            } catch { }
         }
 
         $manifest.lastPrewarmAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
