@@ -7,3 +7,6 @@ profiles/
 .superpowers/
 **/*tokens.json
 .worktrees/
+web/dist/
+web/node_modules/
+.cph-mirror.json

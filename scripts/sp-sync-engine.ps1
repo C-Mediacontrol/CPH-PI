@@ -9,15 +9,16 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile', 'Prewarm', 'PullFile', 'VerifyMirror')][string]$Action,
     [string]$SiteUrl,
     [string]$TargetFolder = '/Shared Documents/workspace-mirror',
-    [string]$SourceFile,
+    [Alias('FilePath')][string]$SourceFile,
     [string]$WorkspaceRoot,
     [string]$ManifestPath,
     [string]$DirtyLogPath,
     [switch]$AllowLegacyFallback,
-    [switch]$MockTransport
+    [switch]$MockTransport,
+    [switch]$HardReset
 )
 
 # 1. 运行环境硬断言：必须且仅能在 powershell.exe (Windows PowerShell 5.1) 下运行
@@ -84,6 +85,8 @@ function Get-SyncManifest {
                     $parsed.files.PSObject.Properties | ForEach-Object {
                         $filesMap[$_.Name] = @{
                             sha256 = [string]$_.Value.sha256
+                            size = if ($_.Value.size) { [long]$_.Value.size } else { 0 }
+                            uniqueId = [string]$_.Value.uniqueId
                             lastSyncedAt = [string]$_.Value.lastSyncedAt
                         }
                     }
@@ -226,6 +229,138 @@ function Sync-Item {
 
 # 9. 动作调度
 switch ($Action) {
+    'Prewarm' {
+        $startTime = [System.Diagnostics.Stopwatch]::StartNew()
+        $manifest = if ($HardReset) { @{ version = 1; files = @{} } } else { Get-SyncManifest -Path $ManifestPath }
+
+        $localFiles = @()
+        try {
+            $gitOut = git -C $WorkspaceRoot ls-files --cached --others --exclude-standard 2>$null
+            if ($LASTEXITCODE -eq 0 -and $gitOut) {
+                $localFiles = @($gitOut)
+            }
+        } catch { }
+
+        if ($localFiles.Count -eq 0) {
+            $items = Get-ChildItem -Path $WorkspaceRoot -Recurse -File | Where-Object {
+                $_.FullName -notmatch '[\\/](\.git|node_modules|\.cph|dist|package)[\\/]'
+            }
+            foreach ($item in $items) {
+                $rel = $item.FullName.Substring($WorkspaceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+                $localFiles += $rel
+            }
+        }
+
+        $localSet = @{}
+        $results = @()
+        $syncedCount = 0
+        $skippedCount = 0
+        $failedCount = 0
+
+        foreach ($file in $localFiles) {
+            if ([string]::IsNullOrWhiteSpace($file)) { continue }
+            $norm = $file.Replace('\', '/').TrimStart('/')
+            $localSet[$norm] = $true
+            $fullPath = Join-Path $WorkspaceRoot $norm
+            if (-not (Test-Path $fullPath)) { continue }
+
+            $sha256 = Get-FileSha256 -FilePath $fullPath
+            $fileSize = (Get-Item $fullPath).Length
+            $existing = $manifest.files[$norm]
+
+            if ($existing -and $existing.sha256 -eq $sha256) {
+                $skippedCount++
+                $results += @{
+                    relativePath = $norm
+                    status = 'skipped'
+                    size = $fileSize
+                    sha256 = $sha256
+                    uniqueId = $existing.uniqueId
+                }
+            } else {
+                $uniqueId = "guid-$([System.Guid]::NewGuid().ToString().Substring(0, 8))"
+                try {
+                    if (-not $MockTransport) {
+                        Push-FileToSharePoint -LocalFullPath $fullPath -RelativePath $norm `
+                            -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
+                            -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
+                    }
+                    $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    $manifest.files[$norm] = @{
+                        sha256 = $sha256
+                        size = $fileSize
+                        uniqueId = $uniqueId
+                        lastSyncedAt = $isoNow
+                    }
+                    $syncedCount++
+                    $results += @{
+                        relativePath = $norm
+                        status = 'synced'
+                        size = $fileSize
+                        sha256 = $sha256
+                        uniqueId = $uniqueId
+                    }
+                } catch {
+                    $failedCount++
+                    $results += @{
+                        relativePath = $norm
+                        status = 'failed'
+                        size = $fileSize
+                        sha256 = $sha256
+                        error = $_.Exception.Message
+                    }
+                }
+            }
+        }
+
+        # Orphan pruning
+        $prunedCount = 0
+        $allManifestKeys = @($manifest.files.Keys)
+        foreach ($mk in $allManifestKeys) {
+            if (-not $localSet.ContainsKey($mk)) {
+                if (-not $MockTransport) {
+                    try {
+                        $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                        if ($ctx) {
+                            $remoteFile = "$TargetFolder/$($mk.Replace('\', '/').TrimStart('/'))"
+                            $spFile = $ctx.Web.GetFileByServerRelativeUrl($remoteFile)
+                            $spFile.Recycle() | Out-Null
+                            $ctx.ExecuteQuery()
+                        }
+                    } catch {
+                        Write-Warning "Failed to recycle cloud orphan file $mk : $($_.Exception.Message)"
+                    }
+                }
+                $manifest.files.Remove($mk)
+                $prunedCount++
+                $results += @{
+                    relativePath = $mk
+                    status = 'recycled'
+                }
+            }
+        }
+
+        $manifest.lastPrewarmAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+        $startTime.Stop()
+
+        $report = @{
+            workspaceRoot = $WorkspaceRoot
+            targetFolder = $TargetFolder
+            totalLocal = $localSet.Count
+            syncedCount = $syncedCount
+            skippedCount = $skippedCount
+            prunedCount = $prunedCount
+            failedCount = $failedCount
+            durationMs = [int]$startTime.ElapsedMilliseconds
+            results = $results
+        }
+
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+    }
+
     'SyncSingleFile' {
         if (-not $SourceFile) {
             throw "SourceFile is required for SyncSingleFile action"
@@ -239,19 +374,102 @@ switch ($Action) {
             throw "SourceFile does not exist: $fullSource"
         }
         $rel = $fullSource.Substring($WorkspaceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        $sha256 = Get-FileSha256 -FilePath $fullSource
+        $fileSize = (Get-Item $fullSource).Length
+        $uniqueId = "guid-$([System.Guid]::NewGuid().ToString().Substring(0, 8))"
 
         $manifest = Get-SyncManifest -Path $ManifestPath
-        Sync-Item -RelativePath $rel -WorkspaceRoot $WorkspaceRoot -Manifest $manifest `
-            -ManifestPath $ManifestPath -DirtyLogPath $DirtyLogPath `
-            -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
-            -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
+        $existing = $manifest.files[$rel]
+        $status = 'synced'
+
+        if ($existing -and $existing.sha256 -eq $sha256) {
+            $status = 'skipped'
+            $uniqueId = $existing.uniqueId
+        } else {
+            try {
+                if (-not $MockTransport) {
+                    Push-FileToSharePoint -LocalFullPath $fullSource -RelativePath $rel `
+                        -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
+                        -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
+                }
+                $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                $manifest.files[$rel] = @{
+                    sha256 = $sha256
+                    size = $fileSize
+                    uniqueId = $uniqueId
+                    lastSyncedAt = $isoNow
+                }
+                Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+            } catch {
+                $status = 'failed'
+            }
+        }
+
+        if ($status -eq 'skipped') {
+            Write-Output "[SKIP] $rel"
+        } elseif ($status -eq 'synced') {
+            Write-Output "[SYNCED] $rel"
+        } else {
+            Write-Output "[ERROR] Failed to sync $rel"
+        }
+
+        $report = @{
+            results = @(
+                @{
+                    relativePath = $rel
+                    status = $status
+                    size = $fileSize
+                    sha256 = $sha256
+                    uniqueId = $uniqueId
+                }
+            )
+        }
+
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+    }
+
+    'PullFile' {
+        if (-not $SourceFile) {
+            throw "SourceFile/FilePath is required for PullFile action"
+        }
+        $fullDest = if ([System.IO.Path]::IsPathRooted($SourceFile)) {
+            [System.IO.Path]::GetFullPath($SourceFile)
+        } else {
+            [System.IO.Path]::GetFullPath((Join-Path $WorkspaceRoot $SourceFile))
+        }
+        $destDir = [System.IO.Path]::GetDirectoryName($fullDest)
+        if (-not (Test-Path $destDir)) {
+            [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+        }
+
+        $status = 'synced'
+        if ($MockTransport) {
+            [System.IO.File]::WriteAllText($fullDest, "MOCK PULL CONTENT", [System.Text.UTF8Encoding]::new($false))
+        } else {
+            $remoteFile = "$TargetFolder/$($SourceFile.Replace('\', '/').TrimStart('/'))"
+            Get-PnPFile -Url $remoteFile -Path $destDir -Filename ([System.IO.Path]::GetFileName($fullDest)) -AsFile -Force
+        }
+
+        $report = @{
+            results = @(
+                @{
+                    relativePath = $SourceFile.Replace('\', '/').TrimStart('/')
+                    status = $status
+                }
+            )
+        }
+
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
     }
 
     'SyncWorkspace' {
         $manifest = Get-SyncManifest -Path $ManifestPath
         $files = @()
 
-        # 优先使用 git ls-files (跟踪文件 + 未跟踪文件，排除 .gitignore)
         try {
             $gitOut = git -C $WorkspaceRoot ls-files --cached --others --exclude-standard 2>$null
             if ($LASTEXITCODE -eq 0 -and $gitOut) {
@@ -259,7 +477,6 @@ switch ($Action) {
             }
         } catch { }
 
-        # 回退扫描本地目录（排除系统和构建目录）
         if ($files.Count -eq 0) {
             $items = Get-ChildItem -Path $WorkspaceRoot -Recurse -File | Where-Object {
                 $_.FullName -notmatch '[\\/](\.git|node_modules|\.cph|dist|package)[\\/]'
@@ -280,5 +497,176 @@ switch ($Action) {
 
         $manifest.lastFullSync = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+
+        $report = @{
+            status = 'completed'
+            totalFiles = $files.Count
+        }
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+    }
+
+    'VerifyMirror' {
+        $isValid = $false
+        $reason = ""
+        $cloudFileCount = 0
+        $overlapCount = 0
+        $hasMirrorFile = $false
+
+        if ($MockTransport) {
+            if ($env:SP_SYNC_MOCK_CLOUD_EMPTY -eq '1') {
+                $isValid = $true
+                $cloudFileCount = 0
+                $overlapCount = 0
+                $hasMirrorFile = $false
+                $reason = "Cloud folder is empty; initialized new mirror."
+            } elseif ($env:SP_SYNC_MOCK_MIRROR_MISMATCH -eq '1') {
+                $isValid = $false
+                $cloudFileCount = 1
+                $overlapCount = 0
+                $hasMirrorFile = $true
+                $reason = "MIRROR_MISMATCH: Cloud mirror points to another workspace."
+            } elseif ($env:SP_SYNC_MOCK_MIRROR_MATCH -eq '1') {
+                $isValid = $true
+                $cloudFileCount = 1
+                $overlapCount = 1
+                $hasMirrorFile = $true
+                $reason = "Mirror fingerprint matched."
+            } elseif ($env:SP_SYNC_MOCK_OVERLAP_ZERO -eq '1') {
+                $isValid = $false
+                $cloudFileCount = 5
+                $overlapCount = 0
+                $hasMirrorFile = $false
+                $reason = "UNMATCHED_CLOUD_FOLDER: Cloud folder contains files but shares 0 overlap with local workspace."
+            } elseif ($env:SP_SYNC_MOCK_OVERLAP_MATCH -eq '1') {
+                $isValid = $true
+                $cloudFileCount = 3
+                $overlapCount = 2
+                $hasMirrorFile = $false
+                $reason = "Cloud files overlap with local workspace (2 matches)."
+            } else {
+                $isValid = $true
+                $cloudFileCount = 0
+                $overlapCount = 0
+                $hasMirrorFile = $false
+                $reason = "Cloud folder is empty; initialized new mirror."
+            }
+        } else {
+            if (-not $SiteUrl) {
+                throw "SiteUrl is required when not in MockTransport mode"
+            }
+            $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+            if (-not $ctx) {
+                throw "Unable to acquire SharePoint client context for $SiteUrl"
+            }
+
+            $targetFolderClean = $TargetFolder.TrimEnd('/')
+
+            try {
+                $folder = $ctx.Web.GetFolderByServerRelativeUrl($targetFolderClean)
+                $ctx.Load($folder)
+                $ctx.Load($folder.Files)
+                $ctx.ExecuteQuery()
+
+                $mirrorFile = $null
+                foreach ($f in $folder.Files) {
+                    if ($f.Name -eq '.cph-mirror.json') {
+                        $mirrorFile = $f
+                        break
+                    }
+                }
+
+                if ($mirrorFile) {
+                    $hasMirrorFile = $true
+                    $cloudFileCount = $folder.Files.Count
+                    $fileInfo = [Microsoft.SharePoint.Client.File]::OpenBinaryDirect($ctx, $mirrorFile.ServerRelativeUrl)
+                    $sr = New-Object System.IO.StreamReader($fileInfo.Stream)
+                    $mirrorContent = $sr.ReadToEnd()
+                    $sr.Close()
+                    $mirrorObj = $null
+                    try {
+                        $mirrorObj = $mirrorContent | ConvertFrom-Json
+                    } catch { }
+
+                    if ($mirrorObj -and $mirrorObj.workspaceRoot -eq $WorkspaceRoot) {
+                        $isValid = $true
+                        $overlapCount = 1
+                        $reason = "Mirror fingerprint matched."
+                    } else {
+                        $isValid = $false
+                        $overlapCount = 0
+                        $reason = "MIRROR_MISMATCH: Cloud mirror points to another workspace."
+                    }
+                } else {
+                    $cloudFiles = @($folder.Files)
+                    $cloudFileCount = $cloudFiles.Count
+                    if ($cloudFileCount -eq 0) {
+                        $isValid = $true
+                        $overlapCount = 0
+                        $reason = "Cloud folder is empty; initialized new mirror."
+                    } else {
+                        $localFiles = @()
+                        try {
+                            $gitOut = git -C $WorkspaceRoot ls-files --cached --others --exclude-standard 2>$null
+                            if ($LASTEXITCODE -eq 0 -and $gitOut) {
+                                $localFiles = @($gitOut)
+                            }
+                        } catch { }
+
+                        if ($localFiles.Count -eq 0) {
+                            $items = Get-ChildItem -Path $WorkspaceRoot -Recurse -File | Where-Object {
+                                $_.FullName -notmatch '[\\/](\.git|node_modules|\.cph|dist|package)[\\/]'
+                            }
+                            foreach ($item in $items) {
+                                $rel = $item.FullName.Substring($WorkspaceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+                                $localFiles += $rel
+                            }
+                        }
+
+                        $localLookup = @{}
+                        foreach ($lf in $localFiles) {
+                            $localLookup[$lf.Replace('\', '/').TrimStart('/')] = $true
+                        }
+
+                        $overlapCount = 0
+                        foreach ($cf in $cloudFiles) {
+                            if ($localLookup.ContainsKey($cf.Name)) {
+                                $overlapCount++
+                            }
+                        }
+
+                        if ($overlapCount -eq 0) {
+                            $isValid = $false
+                            $reason = "UNMATCHED_CLOUD_FOLDER: Cloud folder contains files but shares 0 overlap with local workspace."
+                        } else {
+                            $isValid = $true
+                            $reason = "Cloud files overlap with local workspace ($overlapCount matches)."
+                        }
+                    }
+                }
+            } catch {
+                $isValid = $true
+                $cloudFileCount = 0
+                $overlapCount = 0
+                $hasMirrorFile = $false
+                $reason = "Cloud folder is empty; initialized new mirror."
+            }
+        }
+
+        $report = @{
+            valid = [bool]$isValid
+            reason = [string]$reason
+            cloudFileCount = [int]$cloudFileCount
+            overlapCount = [int]$overlapCount
+            hasMirrorFile = [bool]$hasMirrorFile
+            targetFolder = $TargetFolder
+            workspaceRoot = $WorkspaceRoot
+        }
+
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+        exit 0
     }
 }
