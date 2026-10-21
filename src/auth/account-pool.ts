@@ -14,6 +14,23 @@ export interface AccountStatus {
   totalRequests: number;
   throttledCount: number;
   ineligibleAgents?: string[];
+  throttleReason?: "daily" | "burst" | "agent_ineligible";
+  consecutiveFailures?: number;
+}
+
+/**
+ * Calculates the timestamp of 00:00:00.000 UTC of the next day,
+ * ensuring the resulting timestamp is at least Date.now() + floorMs.
+ */
+export function getNextUtcMidnight(floorMs = 15 * 60 * 1000): number {
+  const now = Date.now();
+  const minTarget = now + floorMs;
+  const d = new Date(now);
+  let midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+  while (midnight < minTarget) {
+    midnight += 24 * 60 * 60 * 1000;
+  }
+  return midnight;
 }
 
 export interface AccountPoolOptions {
@@ -167,6 +184,8 @@ export class AccountPool {
           lastUsedAt: 0,
           totalRequests: 0,
           throttledCount: 0,
+          throttleReason: undefined,
+          consecutiveFailures: 0,
         });
       } else {
         const st = this.statuses.get(key)!;
@@ -188,6 +207,8 @@ export class AccountPool {
       if (st.isThrottled && now >= st.cooldownUntil) {
         st.isThrottled = false;
         st.cooldownUntil = 0;
+        st.throttleReason = undefined;
+        st.consecutiveFailures = 0;
       }
       st.isAllowed = this.isAccountAllowed(st.email);
       const lower = st.email.toLowerCase();
@@ -354,9 +375,25 @@ export class AccountPool {
   }
 
   /**
-   * Mark an account as throttled/rate-limited and schedule cooldown in milliseconds
+   * Helper to compute next UTC midnight timestamp with floorMs guard
    */
-  public markThrottled(email: string, durationMs?: number): void {
+  public getNextUtcMidnight(floorMs = 15 * 60 * 1000): number {
+    return getNextUtcMidnight(floorMs);
+  }
+
+  public static getNextUtcMidnight(floorMs = 15 * 60 * 1000): number {
+    return getNextUtcMidnight(floorMs);
+  }
+
+  /**
+   * Mark an account as throttled/rate-limited and schedule cooldown in milliseconds.
+   * Monotonic: preserves the maximum cooldownUntil and preserves 'daily' status from being downgraded.
+   */
+  public markThrottled(
+    email: string,
+    durationMs?: number,
+    reason: "daily" | "burst" = "burst"
+  ): void {
     const key = email.toLowerCase();
     let status = this.statuses.get(key);
     if (!status) {
@@ -364,18 +401,30 @@ export class AccountPool {
       status = this.statuses.get(key);
     }
     if (status) {
-      const cooldown = durationMs ?? this.defaultCooldownMs;
+      const defaultMs =
+        reason === "daily"
+          ? Math.max(getNextUtcMidnight() - Date.now(), 15 * 60 * 1000)
+          : this.defaultCooldownMs;
+      const cooldown = durationMs ?? defaultMs;
+      const target = Date.now() + cooldown;
+
       status.isThrottled = true;
-      status.cooldownUntil = Date.now() + cooldown;
+      status.cooldownUntil = Math.max(status.cooldownUntil ?? 0, target);
+      status.throttleReason = status.throttleReason === "daily" ? "daily" : reason;
       status.throttledCount = (status.throttledCount || 0) + 1;
+      status.consecutiveFailures = (status.consecutiveFailures || 0) + 1;
     }
   }
 
   /**
    * Backward-compatible alias for markThrottled accepting seconds
    */
-  public markAccountThrottled(email: string, cooldownSeconds = 180): void {
-    this.markThrottled(email, cooldownSeconds * 1000);
+  public markAccountThrottled(
+    email: string,
+    cooldownSeconds = 180,
+    reason: "daily" | "burst" = "burst"
+  ): void {
+    this.markThrottled(email, cooldownSeconds * 1000, reason);
   }
 
   /**
@@ -387,6 +436,8 @@ export class AccountPool {
     if (status) {
       status.isThrottled = false;
       status.cooldownUntil = 0;
+      status.throttleReason = undefined;
+      status.consecutiveFailures = 0;
     }
   }
 

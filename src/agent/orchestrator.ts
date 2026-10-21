@@ -30,9 +30,10 @@ import {
   saveMainPlanSnapshot,
   formatSuccessorTurn1Prompt,
 } from "../session/main-plan-snapshot.ts";
+import { getNextUtcMidnight } from "../auth/account-pool.ts";
 
 export interface IAccountPool {
-  markThrottled(email: string, durationMs?: number): void;
+  markThrottled(email: string, durationMs?: number, reason?: "daily" | "burst"): void;
   getNextAvailableToken(options?: any): Promise<any>;
   refreshAccountList?(): any[];
   getPoolStatus?(): any[];
@@ -72,6 +73,7 @@ export interface OrchestratorOptions {
     options: { modelTone?: string; customAgentId?: string }
   ) => IOrchestratorChatClient;
   activeSkills?: Skill[] | string;
+  skillRegistry?: SkillRegistry;
   isHandshakePending?: boolean;
   customAgentId?: string;
   coderAgentId?: string;
@@ -190,6 +192,7 @@ export class Orchestrator {
     options: { modelTone?: string; customAgentId?: string }
   ) => IOrchestratorChatClient;
   private activeSkills?: Skill[] | string;
+  public skillRegistry?: SkillRegistry;
   public customAgentId?: string;
   public coderAgentId?: string;
   public researcherAgentId?: string;
@@ -226,6 +229,7 @@ export class Orchestrator {
     this.arbitratorChatClient = options.arbitratorChatClient;
     this.chatClientFactory = options.chatClientFactory;
     this.activeSkills = options.activeSkills;
+    this.skillRegistry = options.skillRegistry;
     this.customAgentId = options.customAgentId;
     this.coderAgentId = options.coderAgentId;
     this.researcherAgentId = options.researcherAgentId;
@@ -395,7 +399,7 @@ export class Orchestrator {
     if (typeof skills === "string") return skills;
     if (Array.isArray(skills)) {
       if (skills.length === 0) return "";
-      const registry = new SkillRegistry();
+      const registry = this.skillRegistry || new SkillRegistry();
       return registry.buildPromptSection(skills);
     }
     return "";
@@ -1678,17 +1682,40 @@ export class Orchestrator {
   }
 
   /**
-   * Identifies explicit 429 rate limit errors (excluding URLs containing 429 in GUIDs).
+   * Categorizes error object or message into 'daily' limit, 'burst' limit, or 'none'.
    */
-  public isExplicitRateLimitError(err: any): boolean {
-    if (!err) return false;
-    const msg = String(err?.message || err || "").toLowerCase();
-    const cleanMsg = msg.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "");
+  public classifyRateLimitError(err: any): {
+    isRateLimit: boolean;
+    kind: "daily" | "burst" | "none";
+  } {
+    if (!err) return { isRateLimit: false, kind: "none" };
+    if (err.name === "AbortError" || err.message?.includes("aborted")) {
+      return { isRateLimit: false, kind: "none" };
+    }
+
+    const rawMsg = String(err?.message || err || "");
+    const textClass = Orchestrator.classifyRateLimitText(rawMsg);
+    if (textClass.isRateLimit) {
+      return textClass;
+    }
+
+    const cleanMsg = rawMsg.replace(/https?:\/\/[^\s]+|wss?:\/\/[^\s]+/g, "").toLowerCase();
     const code = String(
       err?.code || err?.statusCode || err?.status || err?.errorCode || ""
     ).toLowerCase();
 
-    return (
+    const isDaily =
+      cleanMsg.includes("daily limit") ||
+      cleanMsg.includes("daily message limit") ||
+      cleanMsg.includes("今日上限") ||
+      cleanMsg.includes("今天的消息上限") ||
+      cleanMsg.includes("每日消息上限") ||
+      cleanMsg.includes("今日消息上限");
+    if (isDaily) {
+      return { isRateLimit: true, kind: "daily" };
+    }
+
+    const isBurst =
       code === "429" ||
       code === "ratelimit" ||
       /\b429\b/.test(cleanMsg) ||
@@ -1697,8 +1724,20 @@ export class Orchestrator {
       cleanMsg.includes("too many requests") ||
       /\bquota\s*(?:exceeded|reached|limit)\b/i.test(cleanMsg) ||
       cleanMsg.includes("配额已达上限") ||
-      cleanMsg.includes("请求过于频繁")
-    );
+      cleanMsg.includes("请求过于频繁") ||
+      cleanMsg.includes("暂时无法响应这么多请求");
+    if (isBurst) {
+      return { isRateLimit: true, kind: "burst" };
+    }
+
+    return { isRateLimit: false, kind: "none" };
+  }
+
+  /**
+   * Identifies explicit 429 rate limit errors (excluding URLs containing 429 in GUIDs).
+   */
+  public isExplicitRateLimitError(err: any): boolean {
+    return this.classifyRateLimitError(err).isRateLimit;
   }
 
   /**
@@ -1746,32 +1785,78 @@ export class Orchestrator {
     return this.isExplicitRateLimitError(err);
   }
 
-  public isRateLimitResponseText(text: string): boolean {
-    if (!text) return false;
+  /**
+   * Categorizes text into 'daily' message quota limit, 'burst' rate limit, or 'none'.
+   */
+  public static classifyRateLimitText(text: string): {
+    isRateLimit: boolean;
+    kind: "daily" | "burst" | "none";
+  } {
+    if (!text) return { isRateLimit: false, kind: "none" };
     const trimmed = text.trim();
     if (trimmed.length === 0 || trimmed.length > 300) {
-      return false;
+      return { isRateLimit: false, kind: "none" };
     }
     if (trimmed.includes("```action") || trimmed.includes("FINAL_ANSWER")) {
-      return false;
+      return { isRateLimit: false, kind: "none" };
     }
 
-    // Line-initial, status code, or explicit 429 error signaling
+    // 1. Daily message quota limits (higher precedence, resets next UTC midnight)
+    const isDaily =
+      /reached\s+(?:your\s+)?daily\s+(?:message\s+)?limit/i.test(trimmed) ||
+      /daily\s+(?:message\s+)?limit(?:\s+(?:reached|exceeded))?/i.test(trimmed) ||
+      /daily\s+quota\s+(?:exceeded|reached)/i.test(trimmed) ||
+      /daily\s+limit\s+reached/i.test(trimmed) ||
+      trimmed.includes("已达到今天的消息上限") ||
+      trimmed.includes("达到今天的消息上限") ||
+      trimmed.includes("今日消息上限") ||
+      trimmed.includes("今日上限") ||
+      trimmed.includes("每日消息上限") ||
+      trimmed.includes("每日请求上限") ||
+      trimmed.includes("每日配额已达上限") ||
+      /今天(?:的)?(?:消息|请求)?(?:已达|达到)?上限/.test(trimmed);
+
+    if (isDaily) {
+      return { isRateLimit: true, kind: "daily" };
+    }
+
+    // 2. Line-initial, status code, or explicit 429 error signaling
     const isExplicit429 =
       /(?:^|\n|\bstatus\s*code\s*:?\s*|\berror\s*:?\s*)429(?:\s+too\s+many\s+requests|\b)/i.test(
         trimmed
       );
 
-    // Platform rate limit signaling (standalone or line-initial error phrases)
+    // 3. Platform burst rate limit signaling (standalone or line-initial error phrases)
     const isRateLimitPhrase =
       /(?:^|\n|\berror\s*:?\s*)too\s+many\s+requests\b/i.test(trimmed) ||
       /\brate[_\s-]?limit[_\s-]?exceeded\b/i.test(trimmed) ||
       /\b(?:account|request|client|user)\s+(?:has\s+been|was|is)\s+throttled\b/i.test(trimmed) ||
       /(?:^|\n|\berror\s*:?\s*)throttled\b/i.test(trimmed) ||
       trimmed.includes("配额已达上限") ||
-      trimmed.includes("请求过于频繁");
+      trimmed.includes("请求过于频繁") ||
+      trimmed.includes("暂时无法响应这么多请求") ||
+      trimmed.includes("暂时无法处理这么多请求");
 
-    return isExplicit429 || isRateLimitPhrase;
+    if (isExplicit429 || isRateLimitPhrase) {
+      return { isRateLimit: true, kind: "burst" };
+    }
+
+    return { isRateLimit: false, kind: "none" };
+  }
+
+  public classifyRateLimitText(text: string): {
+    isRateLimit: boolean;
+    kind: "daily" | "burst" | "none";
+  } {
+    return Orchestrator.classifyRateLimitText(text);
+  }
+
+  public static isRateLimitResponseText(text: string): boolean {
+    return Orchestrator.classifyRateLimitText(text).isRateLimit;
+  }
+
+  public isRateLimitResponseText(text: string): boolean {
+    return Orchestrator.isRateLimitResponseText(text);
   }
 
 
@@ -1821,9 +1906,17 @@ export class Orchestrator {
     }
 
     // 2. Mark victim account throttled in pool ONLY when genuine rate limit occurred
-    const isRateLimitIncident =
+    const errClassification = this.classifyRateLimitError(lastError);
+    const textClassification = this.classifyRateLimitText(lastError);
+    const isDaily = errClassification.kind === "daily" || textClassification.kind === "daily";
+    const isBurst =
+      errClassification.kind === "burst" ||
+      textClassification.kind === "burst" ||
       this.isExplicitRateLimitError(lastError) ||
       this.isRateLimitResponseText(lastError);
+
+    const isRateLimitIncident = isDaily || isBurst;
+    const throttleReason: "daily" | "burst" = isDaily ? "daily" : "burst";
 
     let victimEmail =
       (client as any)?.token?.email ||
@@ -1836,7 +1929,11 @@ export class Orchestrator {
       }
     }
     if (isRateLimitIncident && victimEmail && this.pool) {
-      this.pool.markThrottled(victimEmail);
+      const durationMs =
+        throttleReason === "daily"
+          ? Math.max(getNextUtcMidnight() - Date.now(), 15 * 60 * 1000)
+          : undefined;
+      this.pool.markThrottled(victimEmail, durationMs, throttleReason);
     }
 
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
