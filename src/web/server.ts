@@ -18,6 +18,10 @@ export interface WebServerOptions {
   pool?: any;
   cliApp?: any;
   skillRegistry?: any;
+  debug?: boolean;
+  debugLogPath?: string;
+  maxAutonomousHandoffHops?: number;
+  graphTokenProvider?: () => Promise<string>;
 }
 
 export interface WebServerInstance {
@@ -127,6 +131,13 @@ export function startWebServer(options: WebServerOptions): WebServerResult {
       pool: options.pool,
       cliApp: options.cliApp,
       skillRegistry: options.skillRegistry,
+      debug: options.debug,
+      debugLogPath: options.debugLogPath,
+      maxAutonomousHandoffHops:
+        options.maxAutonomousHandoffHops ??
+        options.cliApp?.maxAutonomousHandoffHops,
+      graphTokenProvider:
+        options.graphTokenProvider ?? options.cliApp?.graphTokenProvider,
     });
   });
 

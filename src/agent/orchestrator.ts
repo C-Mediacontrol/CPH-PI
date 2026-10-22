@@ -339,6 +339,27 @@ export class Orchestrator {
     return this.workspaceRoot;
   }
 
+  /**
+   * Dynamically update workspaceRoot and synchronize tool bridge working directory.
+   */
+  public setWorkspaceRoot(newRoot: string, skillRegistry?: SkillRegistry): void {
+    this.workspaceRoot = path.resolve(newRoot);
+    if (this.bridge && typeof (this.bridge as any).setCwd === "function") {
+      (this.bridge as any).setCwd(this.workspaceRoot);
+    } else {
+      this.bridge = new ToolBridge(this.workspaceRoot);
+    }
+    if (skillRegistry) {
+      this.skillRegistry = skillRegistry;
+    } else {
+      this.skillRegistry = new SkillRegistry(new SkillLoader(this.workspaceRoot));
+      try {
+        this.skillRegistry.loadSkills();
+      } catch {}
+    }
+    this.activeSkills = this.skillRegistry.getActiveSkills();
+  }
+
   public getSessionId(): string {
     return this.sessionId;
   }

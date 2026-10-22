@@ -64,7 +64,7 @@ describe("Tool Large Output Persistence & Snapshot Bypass Unit Tests", () => {
   });
 
   describe("2. Large Output Persistence (> 3000 chars or > 50 lines)", () => {
-    it("should persist output exceeding 50 lines and return head/tail 20 lines preview", async () => {
+    it("should persist output exceeding 50 lines and return lossless displayOutput without truncation notice", async () => {
       // 60 lines
       const originalLines = Array.from({ length: 60 }, (_, i) => `Line ${i + 1}: detailed log entry`);
       const fullOutput = originalLines.join("\n");
@@ -80,24 +80,13 @@ describe("Tool Large Output Persistence & Snapshot Bypass Unit Tests", () => {
       const diskContent = await readFile(fullPath, "utf-8");
       expect(diskContent).toBe(fullOutput);
 
-      // Verify head 20 lines and tail 20 lines preview in displayOutput
-      const previewLines = result.displayOutput.split("\n");
-      expect(result.displayOutput).toContain("Line 1: detailed log entry");
-      expect(result.displayOutput).toContain("Line 20: detailed log entry");
-      expect(result.displayOutput).toContain("Line 41: detailed log entry");
-      expect(result.displayOutput).toContain("Line 60: detailed log entry");
-
-      // Verify middle lines (21..40) are omitted from preview
-      expect(result.displayOutput).not.toContain("Line 30: detailed log entry");
-
-      // Verify truncation notice details
-      expect(result.displayOutput).toContain(result.persistedFile!);
-      expect(result.displayOutput).toContain("60 行");
-      expect(result.displayOutput).toContain("本地审计归档");
+      // Verify displayOutput retains 100% full content without artificial local truncation (AGENTS.md Rule 9)
+      expect(result.displayOutput).toBe(fullOutput);
+      expect(result.displayOutput).not.toContain("工具输出过大已自动截断");
       expect(result.displayOutput).not.toContain("请调用 tool: read_file");
     });
 
-    it("should persist output exceeding 3000 characters (even if <= 50 lines)", async () => {
+    it("should persist output exceeding 3000 characters (even if <= 50 lines) and return lossless displayOutput", async () => {
       // 10 lines, but 400 chars each = 4000 chars
       const longLines = Array.from({ length: 10 }, (_, i) =>
         `Line ${i + 1}: ${"ABCDEFGHIJ".repeat(40)}`
@@ -113,10 +102,10 @@ describe("Tool Large Output Persistence & Snapshot Bypass Unit Tests", () => {
       const diskContent = await readFile(fullPath, "utf-8");
       expect(diskContent).toBe(fullOutput);
 
-      expect(result.displayOutput).toContain(result.persistedFile!);
-      expect(result.displayOutput).toContain("本地审计归档");
+      // Verify lossless delivery without truncation notice
+      expect(result.displayOutput).toBe(fullOutput);
+      expect(result.displayOutput).not.toContain("工具输出过大已自动截断");
       expect(result.displayOutput).not.toContain("请调用 tool: read_file");
-      expect(result.displayOutput).toContain(`${fullOutput.length} 字符`);
     });
 
     it("should allow Pi native read_file tool to read the persisted artifact file", async () => {
@@ -160,18 +149,15 @@ describe("Tool Large Output Persistence & Snapshot Bypass Unit Tests", () => {
       expect(diskContent).toContain("BashRow 35");
       expect(diskContent).toContain("BashRow 70");
 
-      // Verify returned result.output contains preview and relative file guidance
+      // Verify returned result.output delivers 100% full content
       expect(result.output).toContain("BashRow 1");
-      expect(result.output).toContain("BashRow 20");
+      expect(result.output).toContain("BashRow 35");
       expect(result.output).toContain("BashRow 70");
-      expect(result.output).not.toContain("BashRow 35");
-      expect(result.output).toContain(result.persistedFile!);
-      expect(result.output).toContain("本地审计归档");
+      expect(result.output).not.toContain("工具输出过大已自动截断");
       expect(result.output).not.toContain("请调用 tool: read_file");
 
-      // Verify formatResult wraps formatted model context with preview and file guidance
+      // Verify formatResult wraps formatted model context with tool result block
       expect(result.formatted).toContain("【TOOL_RESULT: run_command");
-      expect(result.formatted).toContain(result.persistedFile!);
       expect(result.formatted).toContain("【END_TOOL_RESULT】");
     });
 
@@ -200,9 +186,9 @@ describe("Tool Large Output Persistence & Snapshot Bypass Unit Tests", () => {
       expect(persistedContent).toContain("Diff:\n");
       expect(persistedContent).toContain("const val_50 = 5000;");
 
-      // Returned output for Copilot is trimmed
-      expect(result.output).toContain(result.persistedFile!);
-      expect(result.output).toContain("本地审计归档");
+      // Returned output for Copilot delivers full output without artificial truncation
+      expect(result.output).toContain("const val_50 = 5000;");
+      expect(result.output).not.toContain("工具输出过大已自动截断");
       expect(result.output).not.toContain("请调用 tool: read_file");
 
       // Disk target file was correctly modified

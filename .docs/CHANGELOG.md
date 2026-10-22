@@ -2,6 +2,37 @@
 
 本文档记录 CPH-PI 核心调度核、协议层、会话治理与展现层的关键变更历史，严格遵循《AGENTS.md》开发与治理准则。
 
+## [2026-10-22] Web RPC 与 CLI 工业级执行管线全量对齐、Handoff 自主接力闭环与云端无损附件直传治理 (Web Pipeline Alignment & Autonomous Handoff)
+
+### 概述
+完成 `CR-2026-10-22-01` 实施。排查并解决真实运行日志中 Web 模式下主会话 Handoff 后无下文停顿、工具重复调用死循环（连续 28 轮读取临时 log 和 `plan.md`）以及 Web 与 CLI 执行管线的 10 余处架构漂移。严格遵循《AGENTS.md》开发与治理准则，废除 ToolBridge 的 3000 字符虚假截断与诱导读 log 提示，实现 100% 无损交付并与云端附件直传打通；在 Web RPC 中引入 `while (hopCount < maxAutonomousHandoffHops)` 自主接力闭环；打通 `initialAnnotations` 交接资产挂载、`rootUserPrompt` 终极目标锁定、Slash 技能常驻保活与内建核心技能搜索保障。全仓测试用例由 782 项增至 **788 项（3587 个断言，102 个测试文件）**，100% 绿灯全通，前端 Vite 构建 0 错误。
+
+### 变更分类明细
+
+#### 1. Web RPC 自主多跳接力与会话生命周期治理 (`src/web/rpc-handler.ts`, `src/web/server.ts`, `src/cli.ts`)
+- **自主接力循环**: 引入 `while (true)` 与 `hopCount < this.maxAutonomousHandoffHops` 接力循环，当 `runResult.handedOff` 发生时，自动归档前序会话、生成接力桩卡片、创建承接会话并无缝推进下一代际自主攻坚；
+- **配置与代际继承**: 废除硬编码 `Creative` 与 `maxTurns: 25`，改为动态继承 `cliApp` 与 Orchestrator 实际配置的 `modelTone`（默认 `Gpt_61_Sol_Reasoning`）与 `maxTurns`（默认 30）；
+- **参数与状态透传**: `WebServerOptions` 与 `RpcHandlerOptions` 补齐 `maxAutonomousHandoffHops` 与 `graphTokenProvider`，由 `cli.ts` 集中注入。
+
+#### 2. 云端无损附件直传与虚假截断废除 (`src/protocol/tool-bridge.ts`, `tests/protocol/large-output-persistence.test.ts`)
+- **废除虚假截断陷阱**: 废除 `persistLargeOutputIfNeeded` 对 `displayOutput` 强行截取 40 行及注入读取 `.cph/artifacts/tool-output-xxx.log` 的诱导提示，彻底消除模型因提示词引导而陷入死循环读取临时 log 的问题；
+- **纯粹审计归档与无损交付**: 工具超大输出仍物理写入 `.cph/artifacts/` 供审计与预写日志查验，但 `displayOutput` 保持 100% 原始字节保真与结构完整，严格践行 AGENTS.md 规则 9；超出阈值部分由 Orchestrator 统一通过 OneDrive/SharePoint 云端附件无损送达模型。
+
+#### 3. 跨代交接成果 Pass-by-Reference 云端挂载与目标基线锁定 (`src/web/rpc-handler.ts`)
+- **云端附件挂载**: 当 Handoff 发生并伴随阶段交接快照时，通过 `SubstrateUploader` 将其上传为 OneDrive 附件，并在接力轮次以 `initialAnnotations` 挂载给模型，彻底避免向用户聊天窗口或 Prompt 前置机械倾倒大段 Markdown；
+- **终极目标锁定**: 无论会话经历多少次自主 Handoff 跃迁，`orchestrator.run` 始终显式传入原始用户指令 `rootUserPrompt: rootTaskPrompt`，确保模型长程目标不发生漂移。
+
+#### 4. 常驻 Agent 技能保活与内建技能搜索链路加固 (`src/web/rpc-handler.ts`, `src/skills/skill-loader.ts`, `src/protocol/prompt-builder.ts`)
+- **智能技能合并**: 修复触发 Slash 技能时只加载单个技能而冲刷常驻技能的缺陷，强制将 `subagent` 与 `handoff` 与目标技能合并生效；
+- **内建核心技能路径注入**: `SkillLoader.getSearchPaths()` 主动注册 CPH-PI 内建核心技能路径，保证在任意外部工作区启动时均可可靠发现并加载 `subagent` 与 `handoff` 专属指南；
+- **协议契约补齐**: `PromptBuilder.PROTOCOL_REMINDER` 补齐 `invoke_subagent` 调用规范，移除 Turn 1 提示词中过时的单次 100 行硬编码限制。
+
+#### 5. 全量事件监听与交互式提问打通 (`src/web/rpc-handler.ts`)
+- **事件打通**: 补齐 `onRefusalIntercepted`（Sydney 触发实时系统告警）、`onCompacted`（历史压实通知与比率回传）、`onAccountSwitched`（多账号轮换感知）监听；
+- **提问通道**: `ToolBridge` 接入 Web 端 `onQuestion` 回调，支持交互式选择确认。
+
+---
+
 ## [2026-10-20] 全工作区源码快照增压、大文件分块直传、SharePoint 物理镜像与子代理微切片隔离体系 (Unified Workspace Supercharger, Resumable Upload & PnP Mirror)
 
 ### 概述

@@ -11,7 +11,7 @@ import {
   type BashOperations,
   type BashToolOptions,
   type Tool,
-} from "../../pi/packages/coding-agent/src/core/tools/index.ts";
+} from "../tools/index.ts";
 
 import { FilePorter } from "../transport/file-porter.ts";
 
@@ -194,7 +194,9 @@ export interface PersistOutputResult {
 /**
  * Checks if tool output exceeds inline limits (3000 chars or 50 lines).
  * If it does, automatically persists 100% full content to <workspaceRoot>/.cph/artifacts/tool-output-<timestamp>-<hash>.log
- * and formats a compact snapshot preview (head 20 lines + notice with relative path and read_file hint + tail 20 lines).
+ * for audit ledger purposes.
+ * Strictly complies with AGENTS.md Rule 9: Abolishes artificial local truncation and misleading notices,
+ * delivering 100% full lossless output so downstream Orchestrator can upload to Cloud Attachment.
  */
 export function persistLargeOutputIfNeeded(
   output: string,
@@ -213,47 +215,30 @@ export function persistLargeOutputIfNeeded(
     return { displayOutput: output };
   }
 
-  // 1. Ensure artifacts directory exists in workspace
-  const artifactsDir = path.join(workspaceRoot, ".cph", "artifacts");
-  fs.mkdirSync(artifactsDir, { recursive: true });
+  // 1. Ensure artifacts directory exists in workspace for audit archiving
+  let relPath: string | undefined = undefined;
+  try {
+    const artifactsDir = path.join(workspaceRoot, ".cph", "artifacts");
+    fs.mkdirSync(artifactsDir, { recursive: true });
 
-  // 2. Generate unique filename: tool-output-<timestamp>-<hash>.log
-  const timestamp = Date.now();
-  const hash = crypto.createHash("sha256").update(output).digest("hex").slice(0, 8);
-  const fileName = `tool-output-${timestamp}-${hash}.log`;
-  const absolutePath = path.join(artifactsDir, fileName);
+    // 2. Generate unique filename: tool-output-<timestamp>-<hash>.log
+    const timestamp = Date.now();
+    const hash = crypto.createHash("sha256").update(output).digest("hex").slice(0, 8);
+    const fileName = `tool-output-${timestamp}-${hash}.log`;
+    const absolutePath = path.join(artifactsDir, fileName);
 
-  // 3. Write 100% full original content
-  fs.writeFileSync(absolutePath, output, "utf-8");
+    // 3. Write 100% full original content
+    fs.writeFileSync(absolutePath, output, "utf-8");
 
-  // Relative path with forward slashes for cross-platform model readability
-  const relPath = path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
-
-  // 4. Construct compact preview
-  let headLines: string[];
-  let tailLines: string[];
-  let omittedLines: number;
-
-  if (lines.length > PREVIEW_HEAD_LINES + PREVIEW_TAIL_LINES) {
-    headLines = lines.slice(0, PREVIEW_HEAD_LINES);
-    tailLines = lines.slice(-PREVIEW_TAIL_LINES);
-    omittedLines = lines.length - PREVIEW_HEAD_LINES - PREVIEW_TAIL_LINES;
-  } else {
-    const half = Math.floor(lines.length / 2);
-    headLines = lines.slice(0, half);
-    tailLines = lines.slice(half);
-    omittedLines = 0;
+    // Relative path with forward slashes for cross-platform model readability
+    relPath = path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
+  } catch {
+    // Audit archiving failure should never block execution
   }
 
-  const noticeLines = [
-    `... [工具输出过大已自动截断: 共 ${lines.length} 行 / ${output.length} 字符${omittedLines > 0 ? `，已省略中间 ${omittedLines} 行` : ""}] ...`,
-    `... [完整输出已备份保存至工作区本地文件: ${relPath} (仅供本地审计归档)] ...`,
-  ];
-
-  const displayOutput = `${headLines.join("\n")}\n\n${noticeLines.join("\n")}\n\n${tailLines.join("\n")}`;
-
+  // Strictly adhere to AGENTS.md Rule 9: 100% lossless output delivery
   return {
-    displayOutput,
+    displayOutput: output,
     persistedFile: relPath,
   };
 }
@@ -463,6 +448,25 @@ export class ToolBridge {
 
   public getCwd(): string {
     return this.cwd;
+  }
+
+  /**
+   * Dynamically update the current working directory and rebind Pi coding tools.
+   */
+  public setCwd(newCwd: string, ledger?: any): void {
+    this.cwd = path.resolve(newCwd);
+    if (ledger !== undefined) {
+      this.ledger = ledger;
+    }
+    const bashOps = createEncodingSelfHealingBashOperations();
+    (this as any).bashOperations = bashOps;
+    const piTools = createCodingTools(this.cwd, {
+      bash: { operations: bashOps },
+    });
+    this.tools.clear();
+    for (const t of piTools) {
+      this.tools.set(t.name, t);
+    }
   }
 
   public getTool(name: string): Tool | undefined {

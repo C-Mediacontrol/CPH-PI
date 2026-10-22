@@ -27,11 +27,12 @@ export interface Turn2TaskPromptOptions {
 export class PromptBuilder {
   public static readonly PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
-   - 读取文件: tool: read_file \\n path: <path> \\n start_line: 1 \\n end_line: 100
+   - 读取文件: tool: read_file \\n path: <path>
    - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
+   - 调派子代理: tool: invoke_subagent \\n subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
 2. 当所有目标已达成且验证充分时，直接在独立一行输出最终交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
 
@@ -52,13 +53,11 @@ export class PromptBuilder {
 ${gitStatus}
 ${treePreview}
 【可用工具格式 (Tool Calling)】
-当你需要读取文件、修改代码、创建文件、运行测试命令或向用户提问时，请输出 \`\`\`action 块：
-1. 读取文件内容 (每次最多读取 100 行)：
+当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
+1. 读取文件内容：
 \`\`\`action
 tool: read_file
 path: <文件路径>
-start_line: 1
-end_line: 100
 \`\`\`
 2. 局部精准编辑文件（推荐！仅替换指定代码段，避免全量覆写导致大文件截断）：
 \`\`\`action
@@ -83,6 +82,11 @@ command: <命令字符串>
 tool: ask_question
 question: <问题内容>
 options: 选项A | 选项B (可选)
+\`\`\`
+6. 调派子代理并发执行独立切片审查或研发任务：
+\`\`\`action
+tool: invoke_subagent
+subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
 \`\`\`
 
 ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${options.skillsSection}\n\n` : ""}${options.task ? `【当前用户任务】\n${options.task}\n\n` : ""}${this.PROTOCOL_REMINDER}`;

@@ -14,6 +14,7 @@ import {
   DEFAULT_RESEARCHER_AGENT_ID,
 } from "../agent/subagent-runner.ts";
 import { PnPWorkspaceSyncEngine } from "../workspace/pnp-sync-engine.ts";
+import { SubstrateUploader, type AttachmentAnnotation } from "../transport/substrate-uploader.ts";
 
 export interface CloudWorkspaceConfig {
   siteUrl: string;
@@ -59,6 +60,7 @@ export interface Turn {
     durationMs: number;
     tokensIn?: number;
     tokensOut?: number;
+    tokens?: number;
     tps?: number;
     model: string;
   };
@@ -130,6 +132,10 @@ export interface RpcHandlerOptions {
   cliApp?: any;
   skillRegistry?: SkillRegistry;
   skillLoader?: SkillLoader;
+  debug?: boolean;
+  debugLogPath?: string;
+  maxAutonomousHandoffHops?: number;
+  graphTokenProvider?: () => Promise<string>;
 }
 
 export class RpcHandler {
@@ -148,6 +154,12 @@ export class RpcHandler {
   private agentConfig: AgentConfig;
   private skillRegistry: SkillRegistry;
   private activeAbortController?: AbortController;
+  private debug: boolean = false;
+  private debugLogPath?: string;
+  private activeSubagentToolId: string | null = null;
+  private pendingHandoffSnapshot: string | null = null;
+  private maxAutonomousHandoffHops: number = 3;
+  private graphTokenProvider?: () => Promise<string>;
 
   public static getGlobalConfigPath(): string {
     if (process.env.CPH_GLOBAL_CONFIG_PATH) {
@@ -185,6 +197,14 @@ export class RpcHandler {
   constructor(ws: WebSocket, options: RpcHandlerOptions = {}) {
     this.ws = ws;
     this.options = options;
+    this.debug = options.debug ?? options.cliApp?.isDebugModeEnabled?.() ?? false;
+    this.debugLogPath = options.debugLogPath ?? options.cliApp?.getDebugLogPath?.();
+    this.maxAutonomousHandoffHops =
+      options.maxAutonomousHandoffHops ??
+      options.cliApp?.maxAutonomousHandoffHops ??
+      3;
+    this.graphTokenProvider =
+      options.graphTokenProvider ?? options.cliApp?.graphTokenProvider;
 
     if (typeof options.workspaceRoot === "string") {
       this.workspaceRoot = path.resolve(options.workspaceRoot);
@@ -249,6 +269,19 @@ export class RpcHandler {
     this.agentConfig = this.loadAgentConfig();
 
     if (this.workspaceRoot) {
+      if (this.options.cliApp && typeof this.options.cliApp.setWorkspaceRoot === "function") {
+        this.options.cliApp.setWorkspaceRoot(this.workspaceRoot);
+      }
+      if (this.options.orchestrator) {
+        if (typeof this.options.orchestrator.setWorkspaceRoot === "function") {
+          this.options.orchestrator.setWorkspaceRoot(this.workspaceRoot, this.skillRegistry);
+        } else {
+          this.options.orchestrator.workspaceRoot = this.workspaceRoot;
+          if (this.options.orchestrator.bridge && typeof this.options.orchestrator.bridge.setCwd === "function") {
+            this.options.orchestrator.bridge.setCwd(this.workspaceRoot);
+          }
+        }
+      }
       try {
         this.sessionManager =
           options.sessionManager || new SessionManager(this.workspaceRoot);
@@ -259,10 +292,12 @@ export class RpcHandler {
       this.sessionManager = undefined;
     }
 
-    this.ws.on("message", (data: RawData) => this.handleMessage(data));
-    this.ws.on("error", (err) => {
-      console.warn("[RpcHandler] WebSocket error:", err.message);
-    });
+    if (this.ws && typeof this.ws.on === "function") {
+      this.ws.on("message", (data: RawData) => this.handleMessage(data));
+      this.ws.on("error", (err) => {
+        console.warn("[RpcHandler] WebSocket error:", err.message);
+      });
+    }
 
     // Send initial snapshot on client connection
     this.sendSnapshot();
@@ -274,6 +309,15 @@ export class RpcHandler {
   public send<T = unknown>(type: string, payload: T = {} as T): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
+        if (this.debug) {
+          if (type === "terminal:chunk" && payload && typeof (payload as any).content === "string") {
+            process.stdout.write((payload as any).content);
+          } else if (type !== "assistant:chunk") {
+            const timeStr = new Date().toISOString().slice(11, 19);
+            const preview = payload ? JSON.stringify(payload).slice(0, 120) : "";
+            process.stdout.write(`[${timeStr}] [Web RPC ==> ${type}] ${preview}\n`);
+          }
+        }
         this.ws.send(JSON.stringify({ type, payload }));
       } catch (err: any) {
         console.warn(`[RpcHandler] Failed to send packet ${type}:`, err.message);
@@ -289,6 +333,12 @@ export class RpcHandler {
       const rawStr = typeof data === "string" ? data : data.toString("utf-8");
       const packet = JSON.parse(rawStr) as WsPacket<any>;
       if (!packet || typeof packet.type !== "string") return;
+
+      if (this.debug) {
+        const timeStr = new Date().toISOString().slice(11, 19);
+        const preview = packet.payload ? JSON.stringify(packet.payload).slice(0, 120) : "";
+        process.stdout.write(`[${timeStr}] [Web RPC <== ${packet.type}] ${preview}\n`);
+      }
 
       switch (packet.type) {
         case "session:new":
@@ -433,7 +483,7 @@ export class RpcHandler {
     }
 
     if (this.inMemorySessions.length === 0) {
-      const defaultId = `ses_${Date.now()}`;
+      const defaultId = this.activeSessionId || `ses_${Date.now()}`;
       this.inMemorySessions.push({
         id: defaultId,
         title: "默认会话",
@@ -442,7 +492,9 @@ export class RpcHandler {
         messageCount: 0,
         cwd: this.options.workspaceRoot || process.cwd(),
       });
-      this.activeSessionId = defaultId;
+      if (!this.activeSessionId) {
+        this.activeSessionId = defaultId;
+      }
     }
 
     return this.inMemorySessions;
@@ -479,6 +531,183 @@ export class RpcHandler {
     } catch {
       this.turns = [];
     }
+  }
+
+  /**
+   * Persist current turns and metadata to active session JSON
+   */
+  public async persistActiveSession(): Promise<void> {
+    if (!this.sessionManager || !this.activeSessionId) return;
+    try {
+      const modelTone =
+        this.options.cliApp?.getModelTone?.() ||
+        this.options.orchestrator?.modelTone ||
+        this.agentConfig?.modelTone ||
+        "Gpt_61_Sol_Reasoning";
+      const maxTurns =
+        this.options.cliApp?.getMaxTurns?.() ||
+        this.options.orchestrator?.maxTurns ||
+        30;
+
+      const record = this.sessionManager.loadSession(this.activeSessionId) || {
+        id: this.activeSessionId,
+        title: "当前会话",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        workspaceRoot: this.workspaceRoot || process.cwd(),
+        status: "active",
+        maxTurns,
+        modelTone,
+        turnCount: 0,
+        turns: [],
+      };
+      if (this.options.cliApp?.getModelTone?.()) {
+        record.modelTone = this.options.cliApp.getModelTone();
+      }
+      if (this.options.cliApp?.getMaxTurns?.()) {
+        record.maxTurns = this.options.cliApp.getMaxTurns();
+      }
+
+      record.turns = this.turns.map((t) => ({
+        turnNumber: t.turnNumber,
+        userInput: t.userMessage?.text || "",
+        modelReasoning: t.reasoning?.text,
+        modelResponse: t.assistantText || "",
+        toolCalls: (t.tools || []).map((tc) => ({
+          tool: tc.name,
+          args: tc.args,
+          output: tc.output,
+          success: tc.status !== "failed",
+        })),
+        timestamp: Date.now(),
+        durationMs: t.metrics?.durationMs,
+      }));
+      record.turnCount = record.turns.length;
+
+      this.sessionManager.saveSession(record);
+    } catch (err: any) {
+      console.warn("[RpcHandler] Failed to persist active session:", err.message);
+    }
+  }
+
+  /**
+   * Persist subagent record in isolated storage (.cph/subagents/<cleanMainId>/<cleanSubId>.json)
+   */
+  public persistSubagentRecord(subagentId: string, data: any): void {
+    if (!subagentId || !this.workspaceRoot || !this.activeSessionId) return;
+    try {
+      const cleanMain = this.activeSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const cleanSub = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const subDir = path.join(this.workspaceRoot, ".cph", "subagents", cleanMain);
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(subDir, `${cleanSub}.json`),
+        JSON.stringify(
+          { ...data, parentSessionId: this.activeSessionId, updatedAt: Date.now() },
+          null,
+          2
+        ),
+        "utf-8"
+      );
+    } catch (err: any) {
+      console.warn("[RpcHandler] Failed to persist subagent record:", err.message);
+    }
+  }
+
+  /**
+   * Handle subagent start event
+   */
+  public handleSubagentStart(
+    id: string,
+    role: string,
+    spec: any,
+    hop?: number,
+    account?: string
+  ): void {
+    this.send("subagent:start", {
+      toolId: this.activeSubagentToolId,
+      subagentId: id,
+      role,
+      spec,
+      hopCount: hop ?? 0,
+      account,
+    });
+  }
+
+  /**
+   * Handle subagent progress event
+   */
+  public handleSubagentProgress(
+    id: string,
+    turn: number,
+    delta?: string,
+    action?: any,
+    hopCount?: number,
+    account?: string
+  ): void {
+    this.send("subagent:progress", {
+      subagentId: id,
+      turn,
+      delta,
+      action,
+      hopCount: hopCount ?? 0,
+      account,
+    });
+  }
+
+  /**
+   * Handle subagent end event and persist isolated record
+   */
+  public handleSubagentEnd(report: any): void {
+    this.persistSubagentRecord(report?.id, report);
+    this.send("subagent:end", {
+      subagentId: report?.id,
+      report,
+    });
+  }
+
+  /**
+   * Handle handoff occurrence, broadcast session:handoff, and retain snapshot for generational continuity
+   */
+  public handleHandoffOccurred(snapshot: string, docPath?: string): void {
+    const memoSnippet = snapshot ? snapshot.slice(0, 300) : "";
+    const genMatch = this.activeSessionId ? this.activeSessionId.match(/_gen(\d+)/) : null;
+    const currentGen = genMatch ? parseInt(genMatch[1], 10) : 1;
+
+    this.pendingHandoffSnapshot = snapshot;
+
+    this.send("session:handoff", {
+      predecessorSessionId: this.activeSessionId,
+      successorSessionId: this.activeSessionId,
+      handoffDocPath: docPath,
+      memoSnippet,
+      generation: currentGen,
+    });
+  }
+
+  /**
+   * Handle successor awakening event during generational virtualization transition
+   */
+  public handleSuccessorAwakened(newSessionId: string, generation: number): void {
+    const prevId = this.activeSessionId;
+    this.activeSessionId = newSessionId;
+
+    const existing = this.inMemorySessions.find((s) => s.id === prevId);
+    if (existing) {
+      existing.id = newSessionId;
+      existing.title = `会话 Gen ${generation}`;
+      existing.updatedAt = Date.now();
+    }
+
+    this.send("session:handoff", {
+      predecessorSessionId: prevId,
+      successorSessionId: newSessionId,
+      generation,
+      handoffDocPath: undefined,
+      memoSnippet: this.pendingHandoffSnapshot ? this.pendingHandoffSnapshot.slice(0, 300) : "",
+    });
+
+    this.sendSnapshot();
   }
 
   /**
@@ -600,6 +829,25 @@ export class RpcHandler {
           this.skillRegistry.loadSkills();
         } catch {
           // ignore
+        }
+
+        // Synchronize with cliApp
+        if (this.options.cliApp && typeof this.options.cliApp.setWorkspaceRoot === "function") {
+          this.options.cliApp.setWorkspaceRoot(this.workspaceRoot);
+        }
+
+        // Synchronize with orchestrator
+        if (this.options.orchestrator) {
+          if (typeof this.options.orchestrator.setWorkspaceRoot === "function") {
+            this.options.orchestrator.setWorkspaceRoot(this.workspaceRoot, this.skillRegistry);
+          } else {
+            this.options.orchestrator.workspaceRoot = this.workspaceRoot;
+            if (this.options.orchestrator.bridge && typeof this.options.orchestrator.bridge.setCwd === "function") {
+              this.options.orchestrator.bridge.setCwd(this.workspaceRoot);
+            }
+          }
+        } else if (this.options.cliApp && typeof this.options.cliApp.getOrchestrator === "function") {
+          this.options.orchestrator = this.options.cliApp.getOrchestrator();
         }
 
         try {
@@ -787,12 +1035,23 @@ export class RpcHandler {
   private handleSessionNew(payload?: { title?: string }): void {
     const title = payload?.title || "新会话";
     let newId = `ses_${Date.now()}`;
+    const modelTone =
+      this.options.cliApp?.getModelTone?.() ||
+      this.options.orchestrator?.modelTone ||
+      this.agentConfig?.modelTone ||
+      "Gpt_61_Sol_Reasoning";
+    const maxTurns =
+      this.options.cliApp?.getMaxTurns?.() ||
+      this.options.orchestrator?.maxTurns ||
+      30;
 
     if (this.sessionManager) {
       try {
         const created = this.sessionManager.createSession({
           title,
-          workspaceRoot: this.options.workspaceRoot,
+          workspaceRoot: this.workspaceRoot || undefined,
+          modelTone,
+          maxTurns,
         });
         newId = created.id;
       } catch {
@@ -862,6 +1121,12 @@ export class RpcHandler {
       }
     }
 
+    if (this.pendingHandoffSnapshot) {
+      const prefix = `【前序会话成果与交接备忘录】\n${this.pendingHandoffSnapshot}\n\n【接力任务目标】\n`;
+      executionTask = prefix + executionTask;
+      this.pendingHandoffSnapshot = null;
+    }
+
     const turnId = `turn-${Date.now()}`;
     const newTurn: Turn = {
       id: turnId,
@@ -907,111 +1172,386 @@ export class RpcHandler {
     targetSkill?: Skill
   ): Promise<void> {
     const orchestrator = this.options.orchestrator;
+    if (this.workspaceRoot && orchestrator) {
+      if (typeof orchestrator.setWorkspaceRoot === "function") {
+        orchestrator.setWorkspaceRoot(this.workspaceRoot, this.skillRegistry);
+      } else {
+        if (orchestrator.workspaceRoot !== this.workspaceRoot) {
+          orchestrator.workspaceRoot = this.workspaceRoot;
+        }
+        if (orchestrator.bridge && typeof orchestrator.bridge.setCwd === "function") {
+          orchestrator.bridge.setCwd(this.workspaceRoot);
+        }
+      }
+    }
     const abortController = new AbortController();
     this.activeAbortController = abortController;
 
-    const skillsToUse = targetSkill ? [targetSkill] : this.skillRegistry.getActiveSkills();
-    const sessionId = this.activeSessionId || `ses_${Date.now()}`;
-    const startTime = Date.now();
-    let toolCounter = 0;
+    const mountedSkills = this.skillRegistry.getAgentMountedSkills();
+    const mountedSkillObjs = mountedSkills
+      .map((name) => this.skillRegistry.findSkill(name))
+      .filter((s): s is Skill => Boolean(s));
+
+    let skillsToUse: Skill[];
+    if (targetSkill) {
+      const filteredMounted = mountedSkillObjs.filter(
+        (s) => s.name.toLowerCase() !== targetSkill.name.toLowerCase()
+      );
+      skillsToUse = [targetSkill, ...filteredMounted];
+    } else {
+      skillsToUse = this.skillRegistry.getActiveSkills();
+    }
+
+    const rootTaskPrompt = task;
+    let currentTaskPrompt = task;
+    let currentInitialAnnotations: AttachmentAnnotation[] | undefined = undefined;
+    let hopCount = 0;
+    let currentTurn = turn;
+
+    const modelTone =
+      this.options.cliApp?.getModelTone?.() ||
+      this.options.orchestrator?.modelTone ||
+      this.agentConfig?.modelTone ||
+      "Gpt_61_Sol_Reasoning";
+    const maxTurns =
+      this.options.cliApp?.getMaxTurns?.() ||
+      this.options.orchestrator?.maxTurns ||
+      30;
 
     // Check if orchestrator supports the full run(options) contract
     if (typeof orchestrator.run === "function") {
       try {
-        await orchestrator.run({
-          task,
-          sessionId,
-          signal: abortController.signal,
-          activeSkills: skillsToUse,
-          events: {
-            onDelta: (chunk: string) => {
-              if (this.isInterrupted) return;
-              if (turn.reasoning) turn.reasoning.isStreaming = false;
-              turn.assistantText = (turn.assistantText || "") + chunk;
-              this.send("assistant:chunk", { chunk });
-            },
-            onReasoning: (chunk: string) => {
-              if (this.isInterrupted) return;
-              if (turn.reasoning) {
-                turn.reasoning.text += chunk;
-                turn.reasoning.isStreaming = true;
-              }
-              this.send("reasoning:chunk", { chunk });
-            },
-            onTurnStart: (turnNum: number) => {
-              this.send("terminal:chunk", {
-                stream: "system",
-                content: `[Copilot Engine] 轮次 ${turnNum} 开始执行...\n`,
-              });
-            },
-            onToolStart: (action: any) => {
-              toolCounter++;
-              const toolId = `tool-${Date.now()}-${toolCounter}`;
-              const toolName = action?.tool || action?.action || "tool";
-              const toolArgs = action?.args || action || {};
-              const toolCall: ToolCall = {
-                id: toolId,
-                name: toolName,
-                args: toolArgs,
-                status: "running",
-              };
-              turn.tools.push(toolCall);
-              this.send("tool:update", { tool: toolCall, turnId: turn.id });
-              this.send("terminal:chunk", {
-                stream: "stdout",
-                content: `$ ${toolName} ${JSON.stringify(toolArgs)}\n`,
-              });
-            },
-            onToolEnd: (result: any) => {
-              const lastTool = turn.tools[turn.tools.length - 1];
-              if (lastTool) {
-                lastTool.status = result?.success === false ? "failed" : "completed";
-                lastTool.output = result?.output || result?.content || "";
-                lastTool.durationMs = result?.durationMs;
-                if (result?.diff) lastTool.diff = result.diff;
-                this.send("tool:update", { tool: lastTool, turnId: turn.id });
-              }
-              if (result?.stepId || result?.exitCode !== undefined) {
-                const entry: LedgerEntry = {
-                  stepId: result.stepId || toolCounter,
-                  timestamp: Date.now(),
-                  toolName: lastTool?.name || "tool",
-                  argsHash: result.argsHash || "sha256:auto",
-                  exitCode: result.exitCode ?? (result.success ? 0 : 1),
-                  durationMs: result.durationMs || 0,
-                  evidencePath: result.evidencePath,
+        while (true) {
+          if (abortController.signal.aborted || this.isInterrupted) {
+            break;
+          }
+
+          const sessionId = this.activeSessionId || `ses_${Date.now()}`;
+          const startTime = Date.now();
+          let toolCounter = 0;
+          let turnFinalized = false;
+
+          const runResult = await orchestrator.run({
+            task: currentTaskPrompt,
+            sessionId,
+            signal: abortController.signal,
+            activeSkills: skillsToUse,
+            initialAnnotations: currentInitialAnnotations,
+            rootUserPrompt: rootTaskPrompt,
+            events: {
+              onDelta: (chunk: string) => {
+                if (this.isInterrupted) return;
+                if (currentTurn.reasoning) currentTurn.reasoning.isStreaming = false;
+                currentTurn.assistantText = (currentTurn.assistantText || "") + chunk;
+                this.send("assistant:chunk", { chunk });
+              },
+              onReasoning: (chunk: string) => {
+                if (this.isInterrupted) return;
+                if (currentTurn.reasoning) {
+                  currentTurn.reasoning.text += chunk;
+                  currentTurn.reasoning.isStreaming = true;
+                }
+                this.send("reasoning:chunk", { chunk });
+              },
+              onTurnStart: (turnNum: number) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Copilot Engine] 轮次 ${turnNum} 开始执行...\n`,
+                });
+              },
+              onToolStart: (action: any) => {
+                toolCounter++;
+                const toolId = `tool-${Date.now()}-${toolCounter}`;
+                const toolName = action?.tool || action?.action || "tool";
+                const toolArgs = action?.args || action || {};
+                if (toolName === "invoke_subagent") {
+                  this.activeSubagentToolId = toolId;
+                }
+                const toolCall: ToolCall = {
+                  id: toolId,
+                  name: toolName,
+                  args: toolArgs,
+                  status: "running",
                 };
-                this.send("wal:append", entry);
+                currentTurn.tools.push(toolCall);
+                this.send("tool:update", { tool: toolCall, turnId: currentTurn.id });
+                this.send("terminal:chunk", {
+                  stream: "stdout",
+                  content: `$ ${toolName} ${JSON.stringify(toolArgs)}\n`,
+                });
+              },
+              onToolEnd: (result: any) => {
+                const lastTool = currentTurn.tools[currentTurn.tools.length - 1];
+                if (lastTool?.name === "invoke_subagent") {
+                  this.activeSubagentToolId = null;
+                }
+                if (lastTool) {
+                  lastTool.status = result?.success === false ? "failed" : "completed";
+                  lastTool.output = result?.output || result?.content || "";
+                  lastTool.durationMs = result?.durationMs;
+                  if (result?.diff) lastTool.diff = result.diff;
+                  this.send("tool:update", { tool: lastTool, turnId: currentTurn.id });
+                }
+                if (result?.stepId || result?.exitCode !== undefined) {
+                  const entry: LedgerEntry = {
+                    stepId: result.stepId || toolCounter,
+                    timestamp: Date.now(),
+                    toolName: lastTool?.name || "tool",
+                    argsHash: result.argsHash || "sha256:auto",
+                    exitCode: result.exitCode ?? (result.success ? 0 : 1),
+                    durationMs: result.durationMs || 0,
+                    evidencePath: result.evidencePath,
+                  };
+                  this.send("wal:append", entry);
+                }
+              },
+              onSubagentStart: (
+                id: string,
+                role: string,
+                spec: any,
+                hop?: number,
+                account?: string
+              ) => {
+                this.handleSubagentStart(id, role, spec, hop, account);
+              },
+              onSubagentProgress: (
+                id: string,
+                turn: number,
+                delta?: string,
+                action?: any,
+                hopCount?: number,
+                account?: string
+              ) => {
+                this.handleSubagentProgress(id, turn, delta, action, hopCount, account);
+              },
+              onSubagentEnd: (report: any) => {
+                this.handleSubagentEnd(report);
+              },
+              onRefusalIntercepted: (refusal: string, attempt: number) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `⚠️ [Sydney Gateway] 检测到网关审查/拦截 (重试 ${attempt}): ${refusal.slice(0, 100)}\n`,
+                });
+              },
+              onCompacted: (cleared: number, ratio: number) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Context Compaction] 历史滑动压实完成，释放 ${cleared} 字符 (~${Math.round(ratio * 100)}% 压缩比)\n`,
+                });
+                this.send("context:update", { compactionRatio: ratio, clearedChars: cleared });
+              },
+              onDisasterOccurred: (blackbox: string, lastError: string) => {
+                const shortErr = lastError
+                  ? lastError.replace(/[\r\n]+/g, " ").slice(0, 120)
+                  : "连接中断或频控异常";
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `\n[Disaster Recovery] ⚠️ 检测到网络/频控异常中断 (${shortErr})，正在提取黑匣子快照...\n`,
+                });
+              },
+              onArbitratorHandoffStart: (arbId: string, email: string) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Disaster Recovery] 启动仲裁微会话 (${arbId.slice(0, 16)}...)，轮换账号 ${email} 正在生成交接文档...\n`,
+                });
+              },
+              onArbitratorHandoffComplete: (docPath: string, arbId: string) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Disaster Recovery] 仲裁交接完成，交接文档已落盘: ${path.basename(docPath)}\n\n`,
+                });
+              },
+              onAccountSwitched: (oldEmail: string, newEmail: string) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Account Pool] 已自动切换账号: ${oldEmail} -> ${newEmail}\n`,
+                });
+                this.send("accounts:update", this.getAccountsPayload());
+              },
+              onHandoff: (snapshot: string, docPath?: string) => {
+                const docName = docPath ? path.basename(docPath) : "handoff.md";
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Handoff] 会话已安全生成阶段性交接文档: ${docName}\n`,
+                });
+                this.handleHandoffOccurred(snapshot, docPath);
+              },
+              onSuccessorAwakened: (newSessionId: string, generation: number) => {
+                this.handleSuccessorAwakened(newSessionId, generation);
+              },
+              onCompleted: async (ans: string) => {
+                turnFinalized = true;
+                if (currentTurn.reasoning) currentTurn.reasoning.isStreaming = false;
+                currentTurn.status = "completed";
+                const durationMs = Date.now() - startTime;
+                const totalChars = (currentTurn.assistantText?.length || 0) + (currentTurn.reasoning?.text?.length || 0);
+                const tokens = Math.max(1, Math.round(totalChars / 2));
+                const tps = durationMs > 200 ? Math.round((tokens / (durationMs / 1000)) * 10) / 10 : undefined;
+                currentTurn.metrics = {
+                  durationMs,
+                  model: "copilot-substrate",
+                  tokens,
+                  tokensOut: tokens,
+                  ...(tps !== undefined ? { tps } : {}),
+                };
+                this.send("turn:end", { metrics: currentTurn.metrics });
+                await this.persistActiveSession();
+              },
+              onError: async (err: Error) => {
+                turnFinalized = true;
+                currentTurn.status = "error";
+                this.send("turn:end", { error: err.message, status: "error" });
+                await this.persistActiveSession();
+              },
+              onAttachmentUploaded: (attachment: any, toolName: string) => {
+                this.send("terminal:chunk", {
+                  stream: "system",
+                  content: `[Substrate] 已无损上传附件: ${attachment.fileName || attachment.name} (${toolName})\n`,
+                });
+              },
+            },
+          });
+
+          if (!turnFinalized) {
+            if (currentTurn.reasoning) currentTurn.reasoning.isStreaming = false;
+            const durationMs = Date.now() - startTime;
+            const totalChars = (currentTurn.assistantText?.length || 0) + (currentTurn.reasoning?.text?.length || 0);
+            const tokens = Math.max(1, Math.round(totalChars / 2));
+            const tps = durationMs > 200 ? Math.round((tokens / (durationMs / 1000)) * 10) / 10 : undefined;
+            currentTurn.metrics = {
+              durationMs,
+              model: "copilot-substrate",
+              tokens,
+              tokensOut: tokens,
+              ...(tps !== undefined ? { tps } : {}),
+            };
+
+            if (runResult?.handedOff) {
+              currentTurn.status = "completed";
+              const docName = runResult.handoffDocPath
+                ? path.basename(runResult.handoffDocPath)
+                : "handoff.md";
+              if (!this.pendingHandoffSnapshot && runResult.handoffSnapshot) {
+                this.handleHandoffOccurred(runResult.handoffSnapshot, runResult.handoffDocPath);
               }
-            },
-            onCompleted: (ans: string) => {
-              if (turn.reasoning) turn.reasoning.isStreaming = false;
-              turn.status = "completed";
-              const durationMs = Date.now() - startTime;
-              turn.metrics = {
-                durationMs,
-                model: "copilot-substrate",
-                tps: 42,
-              };
-              this.send("turn:end", { metrics: turn.metrics });
-            },
-            onError: (err: Error) => {
-              turn.status = "error";
-              this.send("turn:end", { error: err.message });
-            },
-            onAttachmentUploaded: (attachment: any, toolName: string) => {
-              this.send("terminal:chunk", {
-                stream: "system",
-                content: `[Substrate] 已无损上传附件: ${attachment.fileName || attachment.name} (${toolName})\n`,
+              if (!currentTurn.assistantText) {
+                currentTurn.assistantText = `🔄 **会话已安全完成阶段性成果交接 (Handoff)**\n\n- **交接文档**: \`${docName}\`\n- **状态**: 单轮推理达到阶段上限或检测到网络中断，当前已生成高保真阶段性交接文档并完整落盘至 \`.cph/handoffs/\`。`;
+                this.send("assistant:chunk", { chunk: currentTurn.assistantText });
+              }
+              this.send("turn:end", {
+                metrics: currentTurn.metrics,
+                status: "handed_off",
+                handoffDocPath: runResult.handoffDocPath,
               });
-            },
-          },
-        });
+            } else {
+              currentTurn.status = "completed";
+              if (runResult?.finalAnswer && !currentTurn.assistantText) {
+                currentTurn.assistantText = runResult.finalAnswer;
+                this.send("assistant:chunk", { chunk: currentTurn.assistantText });
+              }
+              this.send("turn:end", { metrics: currentTurn.metrics });
+            }
+            turnFinalized = true;
+            await this.persistActiveSession();
+          }
+
+          // Check if autonomous continuation is warranted
+          if (runResult?.handedOff && hopCount < this.maxAutonomousHandoffHops) {
+            hopCount++;
+            const nextStage = hopCount + 1;
+            const prevSessionId = this.activeSessionId || sessionId;
+            let newSessionId = `ses_${Date.now()}`;
+
+            if (this.sessionManager) {
+              const prevRecord = this.sessionManager.loadSession(prevSessionId);
+              const rootTitle = prevRecord?.title || "接力任务";
+              const newSession = this.sessionManager.createSession({
+                title: `${rootTitle} (接力 ${hopCount})`,
+                workspaceRoot: this.workspaceRoot || undefined,
+                maxTurns,
+                modelTone,
+                handoffSnapshot: runResult.handoffSnapshot,
+                handoffDocPath: runResult.handoffDocPath,
+                disasterBlackbox: (runResult as any).disasterBlackbox,
+              });
+              newSessionId = newSession.id;
+            }
+            this.activeSessionId = newSessionId;
+
+            currentInitialAnnotations = undefined;
+            if (runResult.handoffSnapshot && this.graphTokenProvider) {
+              try {
+                const graphToken = await this.graphTokenProvider();
+                if (graphToken) {
+                  const uploadRes = await SubstrateUploader.uploadDocumentToOneDrive(
+                    graphToken,
+                    `handoff-${newSessionId}.md`,
+                    runResult.handoffSnapshot,
+                    "markdown"
+                  );
+                  if (uploadRes?.annotation) {
+                    currentInitialAnnotations = [uploadRes.annotation];
+                  }
+                }
+              } catch {
+                // Graceful fallback to local document if upload fails
+              }
+            }
+
+            this.send("session:handoff", {
+              predecessorSessionId: prevSessionId,
+              successorSessionId: newSessionId,
+              handoffDocPath: runResult.handoffDocPath,
+              memoSnippet: runResult.handoffSnapshot ? runResult.handoffSnapshot.slice(0, 300) : "",
+              generation: nextStage,
+            });
+
+            this.send("terminal:chunk", {
+              stream: "system",
+              content: `\n🔄 [Auto-Handoff] 已自动开启接力新阶段 (第 ${hopCount}/${this.maxAutonomousHandoffHops} 跳): ${newSessionId}\n`,
+            });
+
+            currentTaskPrompt = [
+              `【自主接力延续任务 - 阶段 ${nextStage}】`,
+              `终极目标: ${rootTaskPrompt}`,
+              `交接资产: 详细交接文档已${currentInitialAnnotations ? "通过云端附件无损送达" : "落盘于工作区"} (本地路径: ${runResult.handoffDocPath || "未落盘"})`,
+              `物理账本: .cph/state/execution-ledger.md`,
+              `【接力行动准则】`,
+              `请优先推进未完成的核心业务切片，严禁仅做基线核验即提前退出。`,
+            ].join("\n");
+
+            const nextTurnId = `turn-${Date.now()}`;
+            const nextTurn: Turn = {
+              id: nextTurnId,
+              turnNumber: this.turns.length + 1,
+              userMessage: {
+                text: `🔄 自主接力延续 (阶段 ${nextStage})`,
+              },
+              reasoning: {
+                text: `🎯 阶段 ${nextStage} 自主接力启动，正在挂载前序成果并接续执行...`,
+                isStreaming: true,
+              },
+              assistantText: "",
+              tools: [],
+              status: "streaming",
+            };
+            this.turns.push(nextTurn);
+            currentTurn = nextTurn;
+            continue;
+          }
+
+          // Loop done
+          break;
+        }
       } catch (err: any) {
         if (abortController.signal.aborted || this.isInterrupted) {
-          turn.status = "interrupted";
+          currentTurn.status = "interrupted";
           this.send("turn:end", { status: "interrupted" });
+          await this.persistActiveSession();
         } else {
+          currentTurn.status = "error";
+          this.send("turn:end", { error: err?.message || String(err), status: "error" });
+          await this.persistActiveSession();
           throw err;
         }
       } finally {
@@ -1034,6 +1574,7 @@ export class RpcHandler {
       });
       turn.status = "completed";
       this.send("turn:end", { metrics: turn.metrics });
+      await this.persistActiveSession();
     } else {
       await this.runDefaultGeneration(turn, task, targetSkill);
     }
@@ -1089,14 +1630,20 @@ export class RpcHandler {
 
     turn.status = "completed";
     const durationMs = Date.now() - startTime;
+    const totalChars = (turn.assistantText?.length || 0) + (turn.reasoning?.text?.length || 0);
+    const tokens = Math.max(1, Math.round(totalChars / 2));
+    const tps = durationMs > 200 ? Math.round((tokens / (durationMs / 1000)) * 10) / 10 : undefined;
     turn.metrics = {
       durationMs,
       model: "copilot-gpt-4o",
-      tps: 40,
+      tokens,
+      tokensOut: tokens,
+      ...(tps !== undefined ? { tps } : {}),
     };
 
     this.send("turn:end", { metrics: turn.metrics });
     this.running = false;
+    await this.persistActiveSession();
   }
 
   /**

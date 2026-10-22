@@ -1,7 +1,9 @@
 import readline from "node:readline";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { startWebServer, stopWebServer, resolveWebDistDir, type WebServerInstance } from "./web/server.ts";
 import { CopilotOrchestrator, type IOrchestratorChatClient } from "./agent/orchestrator.ts";
 import { InterruptController } from "./agent/interrupt-controller.ts";
 import { TuiRenderer, type SessionStatusInfo, type ActiveSubagentState, type SubagentLiveState } from "./ui/tui-renderer.ts";
@@ -56,12 +58,20 @@ export {
   BUILTIN_SLASH_COMMANDS,
 };
 
+export {
+  startWebServer,
+  stopWebServer,
+  resolveWebDistDir,
+  type WebServerInstance,
+};
+
 export interface WorkspaceConfig {
   customAgentId?: string;
   modelTone?: string;
   allowedAccounts?: string[];
   debug?: boolean;
   debugLogPath?: string;
+  agentMountedSkills?: string[];
 }
 
 export interface CphPiCliOptions {
@@ -100,6 +110,10 @@ export interface CphPiCliOptions {
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
   graphTokenProvider?: () => Promise<string>;
+  port?: number;
+  host?: string;
+  autoOpen?: boolean;
+  distDir?: string;
 }
 
 export type CliOptions = CphPiCliOptions;
@@ -200,6 +214,9 @@ export class CphPiCli {
 
     const loader = options.skillLoader || new SkillLoader(this.workspaceRoot);
     this.skillRegistry = options.skillRegistry || new SkillRegistry(loader);
+    if (config.agentMountedSkills && Array.isArray(config.agentMountedSkills)) {
+      this.skillRegistry.setAgentMountedSkills(config.agentMountedSkills);
+    }
     this.skillRegistry.loadSkills();
 
     this.interruptController =
@@ -228,6 +245,7 @@ export class CphPiCli {
         arbitratorChatClient: this.arbitratorChatClient,
         chatClientFactory: this.chatClientFactory,
         bridge: this.bridge,
+        skillRegistry: this.skillRegistry,
         activeSkills: this.skillRegistry.getActiveSkills(),
         customAgentId: this.customAgentId,
         coderAgentId: this.coderAgentId,
@@ -312,6 +330,62 @@ export class CphPiCli {
     return this.workspaceRoot;
   }
 
+  /**
+   * Dynamically switch workspaceRoot, rebind ToolBridge, ExecutionLedger, SkillRegistry, and Orchestrator.
+   */
+  public setWorkspaceRoot(newRoot: string): void {
+    this.workspaceRoot = path.resolve(newRoot);
+    this.ledger = new ExecutionLedger(this.workspaceRoot);
+    if (this.bridge && typeof (this.bridge as any).setCwd === "function") {
+      (this.bridge as any).setCwd(this.workspaceRoot, this.ledger);
+    } else {
+      this.bridge = new ToolBridge({
+        cwd: this.workspaceRoot,
+        ledger: this.ledger,
+        onQuestion: async (qArgs) => {
+          const answer = await this.handleInteractiveQuestion(qArgs);
+          return ToolBridge.formatUserResponse(answer);
+        },
+      });
+    }
+
+    const loader = new SkillLoader(this.workspaceRoot);
+    this.skillRegistry = new SkillRegistry(loader);
+    const config = this.loadWorkspaceConfig();
+    if (config.agentMountedSkills && Array.isArray(config.agentMountedSkills)) {
+      this.skillRegistry.setAgentMountedSkills(config.agentMountedSkills);
+    }
+    try {
+      this.skillRegistry.loadSkills();
+    } catch {}
+
+    if (this.orchestrator && typeof (this.orchestrator as any).setWorkspaceRoot === "function") {
+      (this.orchestrator as any).setWorkspaceRoot(this.workspaceRoot, this.skillRegistry);
+    } else {
+      this.orchestrator = new CopilotOrchestrator({
+        workspaceRoot: this.workspaceRoot,
+        modelTone: this.modelTone,
+        maxTurns: this.maxTurns,
+        maxGenerations: this.maxAutonomousHandoffHops,
+        pool: this.pool,
+        chatClient: this.chatClient,
+        arbitratorChatClient: this.arbitratorChatClient,
+        chatClientFactory: this.chatClientFactory,
+        bridge: this.bridge,
+        skillRegistry: this.skillRegistry,
+        activeSkills: this.skillRegistry.getActiveSkills(),
+        customAgentId: this.customAgentId,
+        coderAgentId: this.coderAgentId,
+        researcherAgentId: this.researcherAgentId,
+        timeoutMs: this.timeoutSec * 1000,
+      } as any);
+    }
+
+    try {
+      this.sessionManager = new SessionManager(this.workspaceRoot);
+    } catch {}
+  }
+
   public getModelTone(): string {
     return this.modelTone;
   }
@@ -326,6 +400,10 @@ export class CphPiCli {
 
   public getPool(): AccountPool {
     return this.pool;
+  }
+
+  public getGraphTokenProvider(): (() => Promise<string>) | undefined {
+    return this.graphTokenProvider;
   }
 
   public getPendingHandoffSnapshot(): string | undefined {
@@ -367,6 +445,7 @@ export class CphPiCli {
       arbitratorChatClient: this.arbitratorChatClient,
       chatClientFactory: this.chatClientFactory,
       bridge: this.bridge,
+      skillRegistry: this.skillRegistry,
       activeSkills: this.skillRegistry.getActiveSkills(),
       customAgentId: this.customAgentId,
       coderAgentId: this.coderAgentId,
@@ -435,6 +514,41 @@ export class CphPiCli {
 
   public renderHelpBanner(): string {
     return renderHelpBanner();
+  }
+
+  public async startWebServer(options: {
+    port?: number;
+    host?: string;
+    autoOpen?: boolean;
+    distDir?: string;
+  } = {}): Promise<WebServerInstance> {
+    const port = options.port ?? 3000;
+    const host = options.host ?? "127.0.0.1";
+    const autoOpen = options.autoOpen ?? true;
+
+    const targetDistDir = resolveWebDistDir(options.distDir);
+    const webDistIndex = path.resolve(targetDistDir, "index.html");
+
+    if (!fs.existsSync(webDistIndex)) {
+      console.warn(
+        chalk.yellow("⚠️  警告: 未找到前端构建产物 (web/dist/index.html)。请先运行: npm run web:build\n")
+      );
+    }
+
+    return await startWebServer({
+      port,
+      host,
+      autoOpen,
+      distDir: targetDistDir,
+      workspaceRoot: this.workspaceRoot,
+      orchestrator: this.orchestrator,
+      sessionManager: this.sessionManager,
+      pool: this.pool,
+      cliApp: this,
+      skillRegistry: this.skillRegistry,
+      debug: this.isDebugModeEnabled(),
+      debugLogPath: this.getDebugLogPath(),
+    });
   }
 
   /**
@@ -1503,8 +1617,9 @@ export const CPH_PI_VERSION = "0.1.0";
 
 export interface RunCliResult {
   exitCode: number;
-  mode: "help" | "version" | "task" | "interactive";
+  mode: "help" | "version" | "task" | "interactive" | "web";
   output?: string;
+  serverInstance?: WebServerInstance;
 }
 
 /**
@@ -1555,6 +1670,83 @@ export async function runCli(
   };
 
   const cli = new CphPiCli(options);
+
+  if (parsed.subcommand === "web") {
+    // If no explicit workspace was specified on the CLI, adopt lastWorkspace from global config if valid
+    if (!parsed.workspace && !customOptions.workspaceRoot) {
+      try {
+        const globalConfigPath = path.join(os.homedir(), ".cph", "global-config.json");
+        if (fs.existsSync(globalConfigPath)) {
+          const raw = JSON.parse(fs.readFileSync(globalConfigPath, "utf-8"));
+          if (raw.lastWorkspace && typeof raw.lastWorkspace === "string" && fs.existsSync(raw.lastWorkspace)) {
+            cli.setWorkspaceRoot(raw.lastWorkspace);
+          }
+        }
+      } catch {}
+    }
+
+    const port = parsed.port ?? customOptions.port ?? 3000;
+    const host = parsed.host ?? customOptions.host ?? "127.0.0.1";
+    const autoOpen =
+      customOptions.autoOpen !== undefined
+        ? customOptions.autoOpen
+        : parsed.noOpen
+        ? false
+        : true;
+
+    const distDir = resolveWebDistDir(customOptions.distDir);
+    const webDistIndex = path.resolve(distDir, "index.html");
+
+    if (!fs.existsSync(webDistIndex)) {
+      console.warn(
+        chalk.yellow("⚠️  警告: 未找到前端构建产物 (web/dist/index.html)。请先运行: npm run web:build\n")
+      );
+    }
+
+    const serverInstance = await startWebServer({
+      port,
+      host,
+      autoOpen,
+      distDir,
+      workspaceRoot: cli.getWorkspaceRoot(),
+      orchestrator: cli.getOrchestrator(),
+      sessionManager: cli.getSessionManager(),
+      pool: cli.getPool(),
+      cliApp: cli,
+      skillRegistry: cli.getSkillRegistry(),
+      debug: cli.isDebugModeEnabled(),
+      debugLogPath: cli.getDebugLogPath(),
+      maxAutonomousHandoffHops: cli.getMaxAutonomousHandoffHops(),
+      graphTokenProvider: cli.getGraphTokenProvider(),
+    });
+
+    process.stdout.write(
+      chalk.bold.cyan(`\n🚀 CPH-PI Web 界面服务已就绪: http://${host}:${port}\n`)
+    );
+
+    if (cli.isDebugModeEnabled()) {
+      const logPath =
+        cli.getDebugLogPath() || TerminalLogger.getInstance().getLogFilePath() || ".cph/logs/";
+      process.stdout.write(
+        chalk.green(`🐞 Debug 模式已开启，终端实时输出落盘至: ${chalk.bold(logPath)}\n`)
+      );
+    }
+
+    if (isDirectRun) {
+      await new Promise<void>((resolve) => {
+        const shutdown = async () => {
+          process.stdout.write(chalk.gray("\n正在关闭 Web 服务...\n"));
+          await stopWebServer(serverInstance);
+          resolve();
+          process.exit(0);
+        };
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
+      });
+    }
+
+    return { exitCode: 0, mode: "web", serverInstance };
+  }
 
   if (parsed.task) {
     try {

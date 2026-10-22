@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 export interface Skill {
   name: string;
@@ -63,7 +64,28 @@ export class SkillLoader {
       paths.push(
         path.join(this.workspaceRoot, ".skills"),
         path.join(this.workspaceRoot, "skills"),
-        path.join(this.workspaceRoot, ".pi", "skills"),
+        path.join(this.workspaceRoot, ".pi", "skills")
+      );
+
+      // Bundled CPH-PI core skills (dev & package distribution)
+      try {
+        const here = path.dirname(fileURLToPath(import.meta.url));
+        const bundledDirs = [
+          path.resolve(here, "../../skills"),
+          path.resolve(here, "../skills"),
+          path.resolve(here, "../agent-bundle/skills"),
+          path.resolve(here, "../../package/agent-bundle/skills"),
+        ];
+        for (const dir of bundledDirs) {
+          if (fs.existsSync(dir) && !paths.includes(dir)) {
+            paths.push(dir);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      paths.push(
         path.join(home, ".gemini", "config", "skills"),
         path.join(home, ".gemini", "antigravity", "builtin", "skills"),
         path.join(home, ".pi", "agent", "skills")
