@@ -1,3 +1,4 @@
+import http from "node:http";
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { WebSocket } from "ws";
 import { startWebServer, stopWebServer, type WebServerInstance } from "../../src/web/server.ts";
@@ -509,6 +510,134 @@ describe("CPH-PI Web Server & RPC Integration Tests", () => {
     expect(payload.accounts).toHaveLength(2);
     expect(payload.accounts[0].throttleReason).toBe("daily");
     expect(payload.accounts[1].throttleReason).toBe("burst");
+  });
+
+  it("RpcHandler should finalize turn and emit turn:end when orchestrator hands off", async () => {
+    const sentPackets: Array<{ type: string; payload: any }> = [];
+    const mockWs: any = {
+      readyState: 1,
+      send: (str: string) => {
+        sentPackets.push(JSON.parse(str));
+      },
+      on: () => {},
+    };
+
+    const mockOrchestrator: any = {
+      run: async (opts: any) => {
+        opts.events?.onTurnStart?.(1);
+        opts.events?.onDisasterOccurred?.("blackbox dump", "WebSocket connection error: Received network error");
+        opts.events?.onArbitratorHandoffStart?.("ses_arb_123", "backup@example.com");
+        opts.events?.onHandoff?.("snapshot doc", ".cph/handoffs/handoff-123.md");
+        return {
+          finalAnswer: "Disaster recovered via arbitrator session",
+          completed: false,
+          handedOff: true,
+          handoffDocPath: ".cph/handoffs/handoff-123.md",
+        };
+      },
+    };
+
+    const handler = new RpcHandler(mockWs, {
+      orchestrator: mockOrchestrator,
+      workspaceRoot: null,
+    });
+
+    (handler as any).handleUserSubmit({ text: "Test review task" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const endPacket = sentPackets.find((p) => p.type === "turn:end");
+    expect(endPacket).toBeDefined();
+    expect(endPacket?.payload?.status).toBe("handed_off");
+    expect(endPacket?.payload?.handoffDocPath).toBe(".cph/handoffs/handoff-123.md");
+
+    const terminalChunks = sentPackets.filter((p) => p.type === "terminal:chunk");
+    expect(terminalChunks.some((p) => p.payload?.content?.includes("Disaster Recovery"))).toBe(true);
+    expect(terminalChunks.some((p) => p.payload?.content?.includes("Handoff"))).toBe(true);
+  });
+
+  it("RpcHandler with debug enabled should tee terminal chunks to stdout", () => {
+    const mockWs: any = {
+      readyState: 1,
+      send: () => {},
+      on: () => {},
+    };
+
+    const writes: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: any) => {
+      writes.push(String(chunk));
+      return true;
+    }) as any;
+
+    try {
+      const handler = new RpcHandler(mockWs, {
+        workspaceRoot: null,
+        debug: true,
+      });
+
+      handler.send("terminal:chunk", {
+        stream: "system",
+        content: "[Test Log] Hello from test\n",
+      });
+
+      expect(writes.some((w) => w.includes("[Test Log] Hello from test"))).toBe(true);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it("RpcHandler should update orchestrator and cliApp when workspace:set is processed", () => {
+    const mockWs: any = {
+      readyState: 1,
+      send: () => {},
+      on: () => {},
+    };
+
+    let updatedOrchRoot = "";
+    let updatedCliRoot = "";
+
+    const mockOrchestrator: any = {
+      workspaceRoot: "old/path",
+      setWorkspaceRoot: (root: string) => {
+        updatedOrchRoot = root;
+      },
+    };
+
+    const mockCliApp: any = {
+      workspaceRoot: "old/path",
+      setWorkspaceRoot: (root: string) => {
+        updatedCliRoot = root;
+      },
+    };
+
+    const handler = new RpcHandler(mockWs, {
+      workspaceRoot: null,
+      orchestrator: mockOrchestrator,
+      cliApp: mockCliApp,
+    });
+
+    (handler as any).handleWorkspaceSet({ path: process.cwd() });
+
+    expect(updatedOrchRoot).toBe(process.cwd());
+    expect(updatedCliRoot).toBe(process.cwd());
+  });
+
+  it("startWebServer should automatically fallback to next port on port conflict", async () => {
+    const dummyServer = http.createServer((req, res) => res.end("dummy"));
+    await new Promise<void>((resolve) => dummyServer.listen(3995, "127.0.0.1", () => resolve()));
+
+    try {
+      const instance = await startWebServer({
+        port: 3995,
+        host: "127.0.0.1",
+        autoOpen: false,
+      });
+
+      expect(instance.port).toBe(3996);
+      await stopWebServer(instance);
+    } finally {
+      await new Promise<void>((resolve) => dummyServer.close(() => resolve()));
+    }
   });
 });
 

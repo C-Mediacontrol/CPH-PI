@@ -1720,8 +1720,9 @@ export async function runCli(
       graphTokenProvider: cli.getGraphTokenProvider(),
     });
 
+    const actualPort = serverInstance.port ?? port;
     process.stdout.write(
-      chalk.bold.cyan(`\n🚀 CPH-PI Web 界面服务已就绪: http://${host}:${port}\n`)
+      chalk.bold.cyan(`\n🚀 CPH-PI Web 界面服务已就绪: http://${host}:${actualPort}\n`)
     );
 
     if (cli.isDebugModeEnabled()) {

@@ -27,6 +27,8 @@ export interface WebServerOptions {
 export interface WebServerInstance {
   server: http.Server;
   wss: WebSocketServer;
+  port?: number;
+  host?: string;
 }
 
 export type WebServerResult = Promise<WebServerInstance> & WebServerInstance;
@@ -142,26 +144,54 @@ export function startWebServer(options: WebServerOptions): WebServerResult {
   });
 
   const promise = new Promise<WebServerInstance>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, options.host, () => {
-      if (options.autoOpen) {
-        const targetHost =
-          options.host === "0.0.0.0" ? "127.0.0.1" : options.host;
-        const url = `http://${targetHost}:${options.port}`;
-        const startCmd =
-          process.platform === "darwin"
-            ? `open "${url}"`
-            : process.platform === "win32"
-            ? `cmd.exe /c start "" "${url}"`
-            : `xdg-open "${url}"`;
-        try {
-          exec(startCmd, () => {});
-        } catch {
-          // ignore auto-open failures
+    let currentPort = options.port;
+    const maxRetries = 10;
+    let attempts = 0;
+
+    const tryListen = () => {
+      const onError = (err: any) => {
+        if (
+          (err.code === "EADDRINUSE" || err.code === "EACCES") &&
+          attempts < maxRetries
+        ) {
+          attempts++;
+          const nextPort = currentPort + 1;
+          process.stdout.write(
+            `\n⚠️  端口 ${currentPort} 被系统或其它应用占用 (${err.code})，正在自动尝试端口 ${nextPort}...\n`
+          );
+          currentPort = nextPort;
+          server.removeListener("error", onError);
+          setTimeout(tryListen, 50);
+        } else {
+          server.removeListener("error", onError);
+          reject(err);
         }
-      }
-      resolve({ server, wss });
-    });
+      };
+
+      server.once("error", onError);
+      server.listen(currentPort, options.host, () => {
+        server.removeListener("error", onError);
+        if (options.autoOpen) {
+          const targetHost =
+            options.host === "0.0.0.0" ? "127.0.0.1" : options.host;
+          const url = `http://${targetHost}:${currentPort}`;
+          const startCmd =
+            process.platform === "darwin"
+              ? `open "${url}"`
+              : process.platform === "win32"
+              ? `cmd.exe /c start "" "${url}"`
+              : `xdg-open "${url}"`;
+          try {
+            exec(startCmd, () => {});
+          } catch {
+            // ignore auto-open failures
+          }
+        }
+        resolve({ server, wss, port: currentPort, host: options.host });
+      });
+    };
+
+    tryListen();
   });
 
   return Object.assign(promise, { server, wss });
