@@ -53,7 +53,7 @@ if (-not $DirtyLogPath) {
     $DirtyLogPath = Join-Path $WorkspaceRoot '.cph\state\dirty-sync.jsonl'
 }
 
-# 4. SHA256 计算辅助函数
+# 4. SHA256 计算辅助函数与可索引文件过滤器
 function Get-FileSha256 {
     param([string]$FilePath)
     $hasher = [System.Security.Cryptography.SHA256]::Create()
@@ -69,6 +69,25 @@ function Get-FileSha256 {
 }
 
 # 5. 增量状态清单加载与保存
+function Test-IsIndexableSyncFile {
+    param(
+        [string]$RelativePath,
+        [string]$FullPath = "",
+        [long]$MaxBytes = 20971520
+    )
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) { return $false }
+    $norm = $RelativePath.Replace('\', '/').TrimStart('/')
+    if ($norm -match '(^|/)(\.git|\.cph|node_modules|dist|package)(/|$)') { return $false }
+    if ($norm -match '\.(dll|dylib|so|exe|pdb|lib|obj|o|a|zip|tar|gz|7z|rar|aar|jar|war|onnx|bin|dat|pack|idx|cache|Up2Date)$') {
+        return $false
+    }
+    if ($FullPath -and (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        $len = (Get-Item -LiteralPath $FullPath).Length
+        if ($len -gt $MaxBytes) { return $false }
+    }
+    return $true
+}
+
 function Get-SyncManifest {
     param([string]$Path)
     $filesMap = @{}
@@ -87,12 +106,19 @@ function Get-SyncManifest {
                 if ($parsed.lastPrewarmAt) { $lastPrewarmAt = $parsed.lastPrewarmAt }
                 if ($parsed.files) {
                     $parsed.files.PSObject.Properties | ForEach-Object {
-                        $filesMap[$_.Name] = @{
+                        $entry = @{
                             sha256 = [string]$_.Value.sha256
                             size = if ($_.Value.size) { [long]$_.Value.size } else { 0 }
                             uniqueId = [string]$_.Value.uniqueId
                             lastSyncedAt = [string]$_.Value.lastSyncedAt
                         }
+                        if ($_.Value.PSObject.Properties["firstCreatedAt"] -and $_.Value.firstCreatedAt) {
+                            $entry["firstCreatedAt"] = [string]$_.Value.firstCreatedAt
+                        }
+                        if ($_.Value.PSObject.Properties["serverRelativeUrl"] -and $_.Value.serverRelativeUrl) {
+                            $entry["serverRelativeUrl"] = [string]$_.Value.serverRelativeUrl
+                        }
+                        $filesMap[$_.Name] = $entry
                     }
                 }
                 if ($parsed.folders) {
@@ -219,7 +245,11 @@ function Push-FileToSharePoint {
                 if ($env:SP_SYNC_MOCK_FAIL -eq '1' -or ($env:SP_SYNC_MOCK_FAIL_FILE -and ($RelativePath -like $env:SP_SYNC_MOCK_FAIL_FILE -or $LocalFullPath -like $env:SP_SYNC_MOCK_FAIL_FILE))) {
                     throw "Simulated network transport error for $RelativePath"
                 }
-                return $true
+                return @{
+                    synced = $true
+                    uniqueId = [System.Guid]::NewGuid().ToString()
+                    serverRelativeUrl = "$($TargetFolder.Replace('\', '/').TrimEnd('/'))/$($RelativePath.Replace('\', '/').TrimStart('/'))"
+                }
             } else {
                 if (-not $SiteUrl) {
                     throw "SiteUrl is required when not in MockTransport mode"
@@ -236,9 +266,27 @@ function Push-FileToSharePoint {
                 $stream = [System.IO.File]::OpenRead($LocalFullPath)
                 try {
                     [Microsoft.SharePoint.Client.File]::SaveBinaryDirect($ctx, $targetFileUrl, $stream, $true) | Out-Null
-                    return $true
                 } finally {
                     $stream.Dispose()
+                }
+
+                $realGuid = ""
+                $realServerRelUrl = $targetFileUrl
+                try {
+                    $spFile = $ctx.Web.GetFileByServerRelativeUrl($targetFileUrl)
+                    $ctx.Load($spFile)
+                    $ctx.ExecuteQuery()
+                    if ($spFile.UniqueId) {
+                        $realGuid = $spFile.UniqueId.ToString()
+                    }
+                    if ($spFile.ServerRelativeUrl) {
+                        $realServerRelUrl = [string]$spFile.ServerRelativeUrl
+                    }
+                } catch { }
+                return @{
+                    synced = $true
+                    uniqueId = $realGuid
+                    serverRelativeUrl = $realServerRelUrl
                 }
             }
         } catch {
@@ -256,18 +304,20 @@ function Get-LocalFolders {
     $localFolders = @{}
     $dirs = Get-ChildItem -Path $cleanRoot -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
         $norm = $_.FullName.Replace('\', '/') + '/'
-        $norm -notmatch '/(\.git|\.cph|node_modules|dist|package|Library)/'
+        $norm -notmatch '/(\.git|\.cph|node_modules|dist|package)/'
     }
     foreach ($d in $dirs) {
         $rel = $d.FullName.Substring($cleanRoot.Length).TrimStart('\', '/').Replace('\', '/')
         if ([string]::IsNullOrWhiteSpace($rel)) { continue }
-        # 校验 git check-ignore
-        try {
-            $check = git -C $cleanRoot check-ignore $rel 2>$null
-            if ($LASTEXITCODE -eq 0 -and $check) { continue }
-            $checkDir = git -C $cleanRoot check-ignore "$rel/" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $checkDir) { continue }
-        } catch { }
+        # 校验 git check-ignore (Library/ 及子目录跳过 git check-ignore)
+        if ($rel -notmatch '^Library(/|$)') {
+            try {
+                $check = git -C $cleanRoot check-ignore $rel 2>$null
+                if ($LASTEXITCODE -eq 0 -and $check) { continue }
+                $checkDir = git -C $cleanRoot check-ignore "$rel/" 2>$null
+                if ($LASTEXITCODE -eq 0 -and $checkDir) { continue }
+            } catch { }
+        }
         $localFolders[$rel] = $true
     }
     return $localFolders
@@ -393,9 +443,20 @@ switch ($Action) {
             }
         }
 
-        # 核心防泄漏过滤：无论来自 git 还是文件遍历，严禁同步 .cph / .git / node_modules 等内部物理状态
-        $localFiles = @($localFiles | Where-Object {
-            $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
+        # 补齐 Library/ 目录下的参考资料与索引文件（即使 Library/ 在 .gitignore 中被忽略）
+        $libDir = Join-Path $WorkspaceRoot "Library"
+        if (Test-Path -LiteralPath $libDir) {
+            $libFiles = Get-ChildItem -LiteralPath $libDir -Recurse -File -Force -ErrorAction SilentlyContinue
+            foreach ($lf in $libFiles) {
+                $rel = $lf.FullName.Substring($WorkspaceRoot.Length).TrimStart('\', '/').Replace('\', '/')
+                $localFiles += $rel
+            }
+        }
+
+        # 核心防泄漏过滤与可索引文件校验：严禁同步 .git / .cph / node_modules 等内部物理状态，去重并过滤非文本/过大文件
+        $localFiles = @($localFiles | Select-Object -Unique | Where-Object {
+            $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package)[\\/]') -and `
+            (Test-IsIndexableSyncFile -RelativePath $_ -FullPath (Join-Path $WorkspaceRoot $_))
         })
 
         # 1. 递归枚举云端实际存在的实体 (文件与目录双轨)
@@ -495,6 +556,20 @@ switch ($Action) {
             $existing = $manifest.files[$norm]
 
             if ($existing -and $existing.sha256 -eq $sha256 -and ($MockTransport -or $cloudFiles.ContainsKey($norm))) {
+                if ($cloudFiles.ContainsKey($norm)) {
+                    $cf = $cloudFiles[$norm]
+                    if ($cf) {
+                        if ($cf.UniqueId -and (-not $existing.uniqueId -or $existing.uniqueId -like 'guid-*')) {
+                            $existing["uniqueId"] = $cf.UniqueId.ToString()
+                        }
+                        if ($cf.ServerRelativeUrl -and (-not $existing.serverRelativeUrl)) {
+                            $existing["serverRelativeUrl"] = [string]$cf.ServerRelativeUrl
+                        }
+                    }
+                }
+                if (-not $existing.serverRelativeUrl) {
+                    $existing["serverRelativeUrl"] = "$($TargetFolder.Replace('\', '/').TrimEnd('/'))/$norm"
+                }
                 $skippedCount++
                 Write-Output "[SKIP] $norm"
                 $results += @{
@@ -503,19 +578,24 @@ switch ($Action) {
                     size = $fileSize
                     sha256 = $sha256
                     uniqueId = $existing.uniqueId
+                    serverRelativeUrl = $existing.serverRelativeUrl
                 }
             } else {
-                $uniqueId = "guid-$([System.Guid]::NewGuid().ToString().Substring(0, 8))"
                 try {
-
-                        Push-FileToSharePoint -LocalFullPath $fullPath -RelativePath $norm `
-                            -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
-                            -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
+                    $pushRes = Push-FileToSharePoint -LocalFullPath $fullPath -RelativePath $norm `
+                        -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
+                        -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
                     $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    $uniqueId = if ($pushRes -is [hashtable] -and $pushRes.uniqueId) { $pushRes.uniqueId } elseif ($existing -and $existing.uniqueId) { $existing.uniqueId } else { [System.Guid]::NewGuid().ToString() }
+                    $serverRelUrl = if ($pushRes -is [hashtable] -and $pushRes.serverRelativeUrl) { $pushRes.serverRelativeUrl } else { "$($TargetFolder.Replace('\', '/').TrimEnd('/'))/$norm" }
+                    $firstCreatedAt = if ($existing -and $existing.firstCreatedAt) { $existing.firstCreatedAt } else { $isoNow }
+
                     $manifest.files[$norm] = @{
                         sha256 = $sha256
                         size = $fileSize
                         uniqueId = $uniqueId
+                        serverRelativeUrl = $serverRelUrl
+                        firstCreatedAt = $firstCreatedAt
                         lastSyncedAt = $isoNow
                     }
                     $syncedCount++
@@ -526,6 +606,7 @@ switch ($Action) {
                         size = $fileSize
                         sha256 = $sha256
                         uniqueId = $uniqueId
+                        serverRelativeUrl = $serverRelUrl
                     }
                 } catch {
                     Append-DirtyLog -Path $DirtyLogPath -File $norm -ErrorMessage $_.Exception.Message -Attempts 3
@@ -746,27 +827,34 @@ switch ($Action) {
         $rel = $fullSource.Substring($WorkspaceRoot.Length).TrimStart('\', '/').Replace('\', '/')
         $sha256 = Get-FileSha256 -FilePath $fullSource
         $fileSize = (Get-Item $fullSource).Length
-        $uniqueId = "guid-$([System.Guid]::NewGuid().ToString().Substring(0, 8))"
 
         $manifest = Get-SyncManifest -Path $ManifestPath
         $existing = $manifest.files[$rel]
         $status = 'synced'
+        $uniqueId = ""
+        $serverRelUrl = ""
 
         if ($existing -and $existing.sha256 -eq $sha256) {
             $status = 'skipped'
-            $uniqueId = $existing.uniqueId
+            $uniqueId = if ($existing.uniqueId) { $existing.uniqueId } else { [System.Guid]::NewGuid().ToString() }
+            $serverRelUrl = if ($existing.serverRelativeUrl) { $existing.serverRelativeUrl } else { "$($TargetFolder.Replace('\', '/').TrimEnd('/'))/$rel" }
         } else {
             try {
-                if (-not $MockTransport) {
-                    Push-FileToSharePoint -LocalFullPath $fullSource -RelativePath $rel `
-                        -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
-                        -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
-                }
+                $pushRes = Push-FileToSharePoint -LocalFullPath $fullSource -RelativePath $rel `
+                    -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
+                    -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
+                
                 $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+                $uniqueId = if ($pushRes -is [hashtable] -and $pushRes.uniqueId) { $pushRes.uniqueId } elseif ($existing -and $existing.uniqueId) { $existing.uniqueId } else { [System.Guid]::NewGuid().ToString() }
+                $serverRelUrl = if ($pushRes -is [hashtable] -and $pushRes.serverRelativeUrl) { $pushRes.serverRelativeUrl } else { "$($TargetFolder.Replace('\', '/').TrimEnd('/'))/$rel" }
+                $firstCreatedAt = if ($existing -and $existing.firstCreatedAt) { $existing.firstCreatedAt } else { $isoNow }
+
                 $manifest.files[$rel] = @{
                     sha256 = $sha256
                     size = $fileSize
                     uniqueId = $uniqueId
+                    serverRelativeUrl = $serverRelUrl
+                    firstCreatedAt = $firstCreatedAt
                     lastSyncedAt = $isoNow
                 }
                 Save-SyncManifest -Manifest $manifest -Path $ManifestPath
@@ -791,6 +879,7 @@ switch ($Action) {
                     size = $fileSize
                     sha256 = $sha256
                     uniqueId = $uniqueId
+                    serverRelativeUrl = $serverRelUrl
                 }
             )
         }

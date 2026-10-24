@@ -326,12 +326,12 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       fs.mkdirSync(path.join(tmpWorkspace, ".git", "objects"), { recursive: true });
       fs.mkdirSync(path.join(tmpWorkspace, ".cph", "state"), { recursive: true });
       fs.mkdirSync(path.join(tmpWorkspace, "node_modules", "pkg"), { recursive: true });
-      fs.mkdirSync(path.join(tmpWorkspace, "Library", "ref"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "Library", "docs"), { recursive: true });
       fs.mkdirSync(path.join(tmpWorkspace, "dist", "bin"), { recursive: true });
       fs.mkdirSync(path.join(tmpWorkspace, "ignored-dir"), { recursive: true });
 
       spawnSync("git", ["init"], { cwd: tmpWorkspace });
-      fs.writeFileSync(path.join(tmpWorkspace, ".gitignore"), "ignored-dir/\n");
+      fs.writeFileSync(path.join(tmpWorkspace, ".gitignore"), "ignored-dir/\nLibrary/\n");
 
       const psScript = `
         . '${SCRIPT_PATH.replace(/'/g, "''")}' -Action 'EnsureFolder' -SourceFolder 'init' -WorkspaceRoot '${tmpWorkspace.replace(/'/g, "''")}' -MockTransport | Out-Null
@@ -344,10 +344,11 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(res.stdout).toContain("[LOCAL-FOLDER] src/empty-dir");
       expect(res.stdout).toContain("[LOCAL-FOLDER] docs");
       expect(res.stdout).toContain("[LOCAL-FOLDER] docs/specs");
+      expect(res.stdout).toContain("[LOCAL-FOLDER] Library");
+      expect(res.stdout).toContain("[LOCAL-FOLDER] Library/docs");
       expect(res.stdout).not.toContain("[LOCAL-FOLDER] .git");
       expect(res.stdout).not.toContain("[LOCAL-FOLDER] .cph");
       expect(res.stdout).not.toContain("[LOCAL-FOLDER] node_modules");
-      expect(res.stdout).not.toContain("[LOCAL-FOLDER] Library");
       expect(res.stdout).not.toContain("[LOCAL-FOLDER] dist");
       expect(res.stdout).not.toContain("[LOCAL-FOLDER] ignored-dir");
     });
@@ -488,6 +489,195 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(updated.folders["nested/sub/leaf"]).toBeUndefined();
       expect(updated.folders["nested/sub"]).toBeUndefined();
       expect(updated.folders["nested"]).toBeUndefined();
+    });
+  });
+
+  describe("7. Library Inclusion, Binary Filtering & Real Metadata Extraction (Task 2B)", () => {
+    it("should sync indexable files in git-ignored Library/ while filtering out non-indexable binary/archive extensions", () => {
+      if (!IS_WINDOWS) return;
+      spawnSync("git", ["init"], { cwd: tmpWorkspace });
+      fs.writeFileSync(path.join(tmpWorkspace, ".gitignore"), "Library/\n");
+
+      // Create indexable files inside Library/
+      const refMd = path.join(tmpWorkspace, "Library", "docs", "ref.md");
+      const helperTs = path.join(tmpWorkspace, "Library", "helpers", "util.ts");
+      fs.mkdirSync(path.dirname(refMd), { recursive: true });
+      fs.mkdirSync(path.dirname(helperTs), { recursive: true });
+      fs.writeFileSync(refMd, "# API Reference Doc\n");
+      fs.writeFileSync(helperTs, "export const helper = true;\n");
+
+      // Create non-indexable binary/archive extensions inside Library/
+      const binDir = path.join(tmpWorkspace, "Library", "bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      const binaryFiles = [
+        "native.dylib",
+        "archive.zip",
+        "model.onnx",
+        "lib.dll",
+      ];
+      for (const bf of binaryFiles) {
+        fs.writeFileSync(path.join(binDir, bf), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+      }
+
+      // Create standard workspace file
+      const appTs = path.join(tmpWorkspace, "src", "index.ts");
+      fs.mkdirSync(path.dirname(appTs), { recursive: true });
+      fs.writeFileSync(appTs, "console.log('main');\n");
+
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      // Indexable files inside git-ignored Library/ must be synced
+      expect(res.stdout).toContain("[SYNCED] Library/docs/ref.md");
+      expect(res.stdout).toContain("[SYNCED] Library/helpers/util.ts");
+      expect(res.stdout).toContain("[SYNCED] src/index.ts");
+
+      // Binary and archive files must be filtered out
+      expect(res.stdout).not.toContain("native.dylib");
+      expect(res.stdout).not.toContain("archive.zip");
+      expect(res.stdout).not.toContain("model.onnx");
+      expect(res.stdout).not.toContain("lib.dll");
+
+      // Verify sync-manifest.json state
+      expect(fs.existsSync(manifestPath)).toBe(true);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(manifest.files["Library/docs/ref.md"]).toBeDefined();
+      expect(manifest.files["Library/helpers/util.ts"]).toBeDefined();
+      expect(manifest.files["src/index.ts"]).toBeDefined();
+
+      expect(manifest.files["Library/bin/native.dylib"]).toBeUndefined();
+      expect(manifest.files["Library/bin/archive.zip"]).toBeUndefined();
+      expect(manifest.files["Library/bin/model.onnx"]).toBeUndefined();
+      expect(manifest.files["Library/bin/lib.dll"]).toBeUndefined();
+    });
+
+    it("should record valid 36-char GUID uniqueId, serverRelativeUrl, and firstCreatedAt in sync-manifest.json during SyncWorkspace, and preserve firstCreatedAt on update", async () => {
+      if (!IS_WINDOWS) return;
+      const testFile = path.join(tmpWorkspace, "src", "service.ts");
+      fs.mkdirSync(path.dirname(testFile), { recursive: true });
+      fs.writeFileSync(testFile, "export class Service {}\n");
+
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+
+      // Initial SyncWorkspace
+      const res1 = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+      expect(res1.status).toBe(0);
+      expect(res1.stdout).toContain("[SYNCED] src/service.ts");
+
+      const manifest1 = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const entry1 = manifest1.files["src/service.ts"];
+      expect(entry1).toBeDefined();
+
+      const guidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      expect(entry1.uniqueId).toMatch(guidRegex);
+      expect(entry1.uniqueId.length).toBe(36);
+      expect(entry1.serverRelativeUrl).toBeDefined();
+      expect(entry1.serverRelativeUrl).toContain("src/service.ts");
+      expect(entry1.firstCreatedAt).toBeDefined();
+      expect(new Date(entry1.firstCreatedAt).toString()).not.toBe("Invalid Date");
+
+      const initialCreatedAt = entry1.firstCreatedAt;
+
+      // Wait 1.1s so clock passes 1-second boundary for lastSyncedAt
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Modify the file and re-sync
+      fs.writeFileSync(testFile, "export class Service { run() { return 42; } }\n");
+
+      const res2 = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+      expect(res2.status).toBe(0);
+      expect(res2.stdout).toContain("[SYNCED] src/service.ts");
+
+      const manifest2 = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const entry2 = manifest2.files["src/service.ts"];
+      expect(entry2).toBeDefined();
+      expect(entry2.firstCreatedAt).toBe(initialCreatedAt);
+      expect(entry2.uniqueId).toMatch(guidRegex);
+      expect(entry2.uniqueId.length).toBe(36);
+      expect(entry2.serverRelativeUrl).toContain("src/service.ts");
+      expect(entry2.sha256).not.toBe(entry1.sha256);
+      expect(new Date(entry2.lastSyncedAt).getTime()).toBeGreaterThanOrEqual(new Date(initialCreatedAt).getTime());
+    });
+
+    it("should record valid 36-char GUID uniqueId, serverRelativeUrl, and firstCreatedAt in sync-manifest.json during SyncSingleFile, and preserve firstCreatedAt on update", async () => {
+      if (!IS_WINDOWS) return;
+      const testFile = path.join(tmpWorkspace, "config", "settings.json");
+      fs.mkdirSync(path.dirname(testFile), { recursive: true });
+      fs.writeFileSync(testFile, '{"debug": true}\n');
+
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+
+      // Initial SyncSingleFile
+      const res1 = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncSingleFile",
+        "-SourceFile", "config/settings.json",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+      expect(res1.status).toBe(0);
+      expect(res1.stdout).toContain("[SYNCED] config/settings.json");
+
+      const manifest1 = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const entry1 = manifest1.files["config/settings.json"];
+      expect(entry1).toBeDefined();
+
+      const guidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      expect(entry1.uniqueId).toMatch(guidRegex);
+      expect(entry1.uniqueId.length).toBe(36);
+      expect(entry1.serverRelativeUrl).toBeDefined();
+      expect(entry1.serverRelativeUrl).toContain("config/settings.json");
+      expect(entry1.firstCreatedAt).toBeDefined();
+      expect(new Date(entry1.firstCreatedAt).toString()).not.toBe("Invalid Date");
+
+      const initialCreatedAt = entry1.firstCreatedAt;
+
+      // Wait 1.1s so clock passes 1-second boundary for lastSyncedAt
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Modify the file and re-sync
+      fs.writeFileSync(testFile, '{"debug": false, "version": 2}\n');
+
+      const res2 = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncSingleFile",
+        "-SourceFile", "config/settings.json",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+      expect(res2.status).toBe(0);
+      expect(res2.stdout).toContain("[SYNCED] config/settings.json");
+
+      const manifest2 = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      const entry2 = manifest2.files["config/settings.json"];
+      expect(entry2).toBeDefined();
+      expect(entry2.firstCreatedAt).toBe(initialCreatedAt);
+      expect(entry2.uniqueId).toMatch(guidRegex);
+      expect(entry2.uniqueId.length).toBe(36);
+      expect(entry2.serverRelativeUrl).toContain("config/settings.json");
+      expect(entry2.sha256).not.toBe(entry1.sha256);
+      expect(new Date(entry2.lastSyncedAt).getTime()).toBeGreaterThanOrEqual(new Date(initialCreatedAt).getTime());
     });
   });
 });
