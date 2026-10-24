@@ -8,6 +8,36 @@
 
 ## 已完成的变更请求
 
+### CR-2026-10-24-02: 云端工作区目录双轨对齐与拓扑生命周期
+
+- **发起日期**: 2026-10-24
+- **完成日期**: 2026-10-24
+- **状态**: ✅ 已完成并全量测试通过 (Completed & Verified)
+- **类型**: 🐛 严重缺陷修复 & 📁 云端镜像双轨拓扑生命周期架构增强
+- **设计规范**: [`.docs/specs/2026-10-24-cloud-workspace-folder-dual-track-sync-design.md`](./specs/2026-10-24-cloud-workspace-folder-dual-track-sync-design.md)
+- **实施计划**: [`.docs/plans/2026-10-24-cloud-workspace-folder-dual-track-sync.md`](./plans/2026-10-24-cloud-workspace-folder-dual-track-sync.md)
+
+#### 摘要
+彻底解决工作区云端同步时本地空文件夹被无差别误删，以及本地新建空目录无法主动同步上云的架构缺陷，达成云端与本地 1:1 严格镜像：
+1. **文件与目录双轨抽象与状态解耦**：彻底摒弃单轨仅查文件的盲区，新增 `Get-LocalFolders`（集成 Git 忽略规则）与 `Get-SharePointCloudEntities`（递归收集并排除 SharePoint 保留目录），实现文件与目录独立纳管。
+2. **清单 Manifest 升级 v2**：升级 `.cph/state/sync-manifest.json` 为版本 2，引入 `folders` 映射字典，无损向后兼容旧版清单。
+3. **三阶段拓扑流水线 (3-Phase Pipeline)**：
+   - **阶段 1 (Top-Down Pre-creation)**：按路径深度升序自顶向下，在上传文件前先行在云端补齐本地所有的业务目录（含纯空目录）。
+   - **阶段 2 (Files Data Track)**：保持既有文件的 SHA-256 增量流转与孤儿文件回收。
+   - **阶段 3 (Bottom-Up Safe Pruning)**：彻底废除旧版无差别清空空目录的代码，按路径深度降序自底向上遍历孤儿目录候选集，严格施加**本地存续硬门禁（本地若存在则绝对保留）**与**云端空闲硬门禁（云端无文件与子目录才回收）**，彻底根除误删。
+4. **独立目录热同步与地图感知**：
+   - PowerShell 引擎新增 `-Action EnsureFolder`；
+   - TypeScript 引擎导出 `FolderManifestEntry` 与 `SyncFolderResult`，并实现 `PnPWorkspaceSyncEngine.syncFolder()`；
+   - `generateVirtualRepoMap()` 新增渲染 `[DIRECTORIES / EMPTY FOLDERS]` 节点，确保 Copilot Agent 具备完整的云端目录结构语义感知。
+5. **镜像守卫修复**：在 `VerifyCloudMirror` 中加载并校验 `Files.Count` 与 `Folders.Count`，避免仅有子目录时被误判为全空。
+
+#### 验证结果
+- 全仓测试套件: **106 个测试文件、846 项测试用例全部 100% 绿灯通过，0 失败**。
+- Web 前端构建: `npm run web:build` 编译打包 0 错误。
+- 零负面禁止词，工作区二级目录物理隔离。
+
+---
+
 ### CR-2026-10-24-01: M365 账号治理自治增强、交互式 PKCE 凭据刷新与跨代接力连续性架构重构
 
 - **发起日期**: 2026-10-24

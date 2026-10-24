@@ -370,21 +370,21 @@ git commit -m "feat(workspace): add syncFolder TS API, manifest v2, and director
 - Modify: `CPH-PI/.docs/CHANGE-REQUEST.md`
 - Verify: Full Test Suite (`bun test`), Web Production Build (`npm run web:build`)
 
-- [ ] **Step 1: 运行全仓单元与集成测试**
+- [x] **Step 1: 运行全仓单元与集成测试**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test`
 预期: 106+ 个测试文件、845+ 项测试用例全部 100% PASS，0 失败。
 
-- [ ] **Step 2: 运行前端生产编译**
+- [x] **Step 2: 运行前端生产编译**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI\web"; npm run build`
 预期: Vite 构建无报错，0 类型错误。
 
-- [ ] **Step 3: 登记变更文档 `CPH-PI/.docs/CHANGE-REQUEST.md`**
+- [x] **Step 3: 登记变更文档 `CPH-PI/.docs/CHANGE-REQUEST.md`**
 
 追加 `CR-2026-10-24-02` 变更记录，说明空文件夹误删根治与双轨模型交付。
 
-- [ ] **Step 4: 最终提交**
+- [x] **Step 4: 最终提交**
 
 ```powershell
 git add CPH-PI/.docs/CHANGE-REQUEST.md
