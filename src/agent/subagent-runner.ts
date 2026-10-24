@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { CopilotOrchestrator, isInlineScoutTask, type OrchestratorRunOptions } from "./orchestrator.ts";
+export { isInlineScoutTask };
 import { ToolBridge, type SubagentTaskSpec } from "../protocol/tool-bridge.ts";
 import { TerminalLogger, type SessionLoggerTree } from "../ui/terminal-logger.ts";
 import { AccountPool } from "../auth/account-pool.ts";
@@ -284,7 +285,7 @@ export class SubagentRunner {
           }
           const taskSpec = item.task;
           const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-          const role = taskSpec.role === "coder" ? "coder" : "researcher";
+          const role = taskSpec.role === "researcher" ? "researcher" : "coder";
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
             settled[item.index] = { status: "fulfilled", value: report };
@@ -302,7 +303,7 @@ export class SubagentRunner {
             const item = stageTasks[itemIndex];
             const taskSpec = item.task;
             const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-            const role = taskSpec.role === "coder" ? "coder" : "researcher";
+            const role = taskSpec.role === "researcher" ? "researcher" : "coder";
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
               settled[item.index] = { status: "fulfilled", value: report };
@@ -380,7 +381,7 @@ export class SubagentRunner {
 
     return settled.map((result, idx) => {
       const task = tasks[idx] || ({} as SubagentTaskSpec);
-      const role = task.role === "coder" ? "coder" : "researcher";
+      const role = task.role === "researcher" ? "researcher" : "coder";
       const description = task.description || `Task ${idx + 1}`;
 
       if (result?.status === "fulfilled" && result.value) {
@@ -469,12 +470,6 @@ export class SubagentRunner {
 
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
-    const isScout = isInlineScoutTask([spec]);
-    if (isScout) {
-      currentTaskPrompt =
-        `【斥候宏观侦察工单】：本阶段任务聚焦于目标文件的宏观结构概览与顶层大纲探查（顶层函数/类列表、对外导出与大致行号分布）。请在梳理出清晰目录大纲后，立即输出包含大纲与建议切片的 FINAL_ANSWER 结题，以便主控进入下一阶段精准拆解任务。\n\n` +
-        currentTaskPrompt;
-    }
     let previousSessionId: string | undefined = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";
