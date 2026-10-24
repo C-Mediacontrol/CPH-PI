@@ -1,4 +1,4 @@
-# Web 前端全滚动区域视口懒加载与渲染性能优化实施计划 (Web Scrolling Lazy-Loading Performance Implementation Plan)
+﻿# Web 前端全滚动区域视口懒加载与渲染性能优化实施计划 (Web Scrolling Lazy-Loading Performance Implementation Plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -86,7 +86,7 @@
   - `LazyViewportItem`: React 组件，接受 `fallbackHeight`, `forceActive`, `children`
   - `base.css`: 包含 `.contentVisibilityAuto` 实用样式
 
-- [ ] **Step 1: 编写失败测试 `tests/web/lazy-viewport-observer.test.ts`**
+- [x] **Step 1: 编写失败测试 `tests/web/lazy-viewport-observer.test.ts`**
 
 测试 `useIntersectionObserver` 在离屏与在屏时的状态切换，以及 `disabled`（强制激活）模式：
 
@@ -126,12 +126,12 @@ describe("1. useIntersectionObserver & LazyViewportItem (Task 1)", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/lazy-viewport-observer.test.ts`
 预期: FAIL，因对应文件尚不存在。
 
-- [ ] **Step 3: 实现 `useIntersectionObserver.ts`、`LazyViewportItem.tsx` 与 `base.css`**
+- [x] **Step 3: 实现 `useIntersectionObserver.ts`、`LazyViewportItem.tsx` 与 `base.css`**
 
 1. 编写 `web/src/hooks/useIntersectionObserver.ts`：
    - 处理 SSR/无 DOM 环境优雅降级（若 `IntersectionObserver` 不存在则默认返回 `true`）；
@@ -142,12 +142,12 @@ describe("1. useIntersectionObserver & LazyViewportItem (Task 1)", () => {
    - 处于可视区或 `forceActive === true` 时渲染真实 `children`；离屏时渲染骨架占位 `div`。
 3. 在 `web/src/styles/base.css` 中追加 `.contentVisibilityAuto` 辅助类。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/lazy-viewport-observer.test.ts`
 预期: PASS。
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```powershell
 git add CPH-PI/web/src/hooks/useIntersectionObserver.ts CPH-PI/web/src/components/common/LazyViewportItem.tsx CPH-PI/web/src/components/common/LazyViewportItem.module.css CPH-PI/web/src/styles/base.css CPH-PI/tests/web/lazy-viewport-observer.test.ts
@@ -172,7 +172,7 @@ git commit -m "feat(web): implement useIntersectionObserver hook and LazyViewpor
   - `LazyTextCollapse`: 对长文本在 >35 行或 >1800 字符时切片，提供展开与无损复制
   - `ToolCard`: 优化展开逻辑（`running` 与 `failed` 展开，`completed` 默认摘要），输出与 Diff 接入 `LazyTextCollapse`
 
-- [ ] **Step 1: 编写失败测试**
+- [x] **Step 1: 编写失败测试**
 
 测试 `LazyTextCollapse` 截断逻辑、展开/收起切换与复制完整文本逻辑；测试 `ToolCard` 默认状态分流：
 
@@ -198,12 +198,12 @@ describe("2. LazyTextCollapse & ToolCard Strategy (Task 2)", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/lazy-text-collapse.test.ts tests/web/tool-card-lazy.test.ts`
 预期: FAIL。
 
-- [ ] **Step 3: 实现 `LazyTextCollapse` 并重构 `ToolCard`**
+- [x] **Step 3: 实现 `LazyTextCollapse` 并重构 `ToolCard`**
 
 1. 编写 `web/src/components/common/LazyTextCollapse.tsx` 及样式；
 2. 在 `ToolCard.tsx` 中：
@@ -218,12 +218,12 @@ describe("2. LazyTextCollapse & ToolCard Strategy (Task 2)", () => {
    - 在 `renderDiff` 中如果 lines > 40 使用 `LazyTextCollapse` 包裹；
    - 工具 `tool.output` 渲染接入 `<LazyTextCollapse text={tool.output} maxLines={35} maxChars={1800} />`。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/lazy-text-collapse.test.ts tests/web/tool-card-lazy.test.ts`
 预期: PASS。
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```powershell
 git add CPH-PI/web/src/components/common/LazyTextCollapse.tsx CPH-PI/web/src/components/common/LazyTextCollapse.module.css CPH-PI/web/src/components/chat/ToolCard.tsx CPH-PI/web/src/components/chat/ToolCard.module.css CPH-PI/tests/web/lazy-text-collapse.test.ts CPH-PI/tests/web/tool-card-lazy.test.ts
@@ -246,7 +246,7 @@ git commit -m "feat(web): implement LazyTextCollapse component and optimize Tool
   - 流式打字与吸底保护：`isLatest || isStreaming` 触发 `forceActive={true}`
   - 子代理独立聚焦流（`focusedStageContainer`）：动作列表与报告预览视口懒加载
 
-- [ ] **Step 1: 编写测试 `tests/web/chat-view-lazy-integration.test.ts`**
+- [x] **Step 1: 编写测试 `tests/web/chat-view-lazy-integration.test.ts`**
 
 测试 `ChatView` 接入 `LazyViewportItem`，并且明确断言 `forceActive` 保护机制：
 
@@ -268,12 +268,12 @@ describe("3. ChatView Lazy Integration & Streaming Invariant (Task 3)", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/chat-view-lazy-integration.test.ts`
 预期: FAIL。
 
-- [ ] **Step 3: 在 `ChatView.tsx` 中接入 `LazyViewportItem` 并增强流式吸底**
+- [x] **Step 3: 在 `ChatView.tsx` 中接入 `LazyViewportItem` 并增强流式吸底**
 
 1. 引入 `LazyViewportItem`；
 2. 在 `turns.map((turn, index))` 中包裹每个消息项；
@@ -281,12 +281,12 @@ describe("3. ChatView Lazy Integration & Streaming Invariant (Task 3)", () => {
 4. 在 `focusedSub.actions.map` 中包裹每个 `actionItem`；
 5. 在 `ChatView.module.css` 的 `.scrollArea` 添加 `content-visibility` 与平滑滚动属性。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/chat-view-lazy-integration.test.ts`
 预期: PASS。
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```powershell
 git add CPH-PI/web/src/components/chat/ChatView.tsx CPH-PI/web/src/components/chat/ChatView.module.css CPH-PI/tests/web/chat-view-lazy-integration.test.ts
@@ -310,7 +310,7 @@ git commit -m "feat(web): integrate LazyViewportItem into ChatView turns and sub
   - `LedgerWALViewer`: 采用 `visibleCount` 分批展示（默认 35 条，触底追加），条目包裹 `LazyViewportItem`
   - `Sidebar`: 历史会话列表采用 `content-visibility: auto`，避免百级列表重排阻塞
 
-- [ ] **Step 1: 编写测试 `tests/web/ledger-viewer-lazy.test.ts`**
+- [x] **Step 1: 编写测试 `tests/web/ledger-viewer-lazy.test.ts`**
 
 测试 `LedgerWALViewer` 的渐进式批次渲染与 `Sidebar` 的 CSS 优化：
 
@@ -331,12 +331,12 @@ describe("4. LedgerWALViewer Batching & Sidebar Optimization (Task 4)", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/ledger-viewer-lazy.test.ts`
 预期: FAIL。
 
-- [ ] **Step 3: 在 `LedgerWALViewer` 与 `Sidebar` 中实现优化**
+- [x] **Step 3: 在 `LedgerWALViewer` 与 `Sidebar` 中实现优化**
 
 1. `LedgerWALViewer.tsx`:
    - 增加 `const [visibleCount, setVisibleCount] = useState<number>(35);`
@@ -346,12 +346,12 @@ describe("4. LedgerWALViewer Batching & Sidebar Optimization (Task 4)", () => {
 2. `Sidebar.module.css`:
    - 在 `.sessionList` 与 `.sessionItem` 中添加 `content-visibility: auto` 与 `contain-intrinsic-size: auto 36px`。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test tests/web/ledger-viewer-lazy.test.ts`
 预期: PASS。
 
-- [ ] **Step 5: 提交代码**
+- [x] **Step 5: 提交代码**
 
 ```powershell
 git add CPH-PI/web/src/components/panels/LedgerWALViewer.tsx CPH-PI/web/src/components/panels/LedgerWALViewer.module.css CPH-PI/web/src/components/layout/Sidebar.tsx CPH-PI/web/src/components/layout/Sidebar.module.css CPH-PI/tests/web/ledger-viewer-lazy.test.ts
@@ -366,23 +366,24 @@ git commit -m "feat(web): implement progressive batching in LedgerWALViewer and 
 - Modify: `CPH-PI/.docs/CHANGE-REQUEST.md`
 - Verify: Full Test Suite (`bun test`), Web Production Build (`npm run web:build`)
 
-- [ ] **Step 1: 运行前端生产编译**
+- [x] **Step 1: 运行前端生产编译**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI\web"; npm run build`
 预期: Vite 构建无报错，TypeScript 0 类型错误。
 
-- [ ] **Step 2: 运行全仓单元与集成测试**
+- [x] **Step 2: 运行全仓单元与集成测试**
 
 运行: `cd "E:\copilot-web proxy\CPH-PI"; bun test`
 预期: 全仓现有测试与新增测试 100% PASS，0 失败。
 
-- [ ] **Step 3: 登记变更文档 `CPH-PI/.docs/CHANGE-REQUEST.md`**
+- [x] **Step 3: 登记变更文档 `CPH-PI/.docs/CHANGE-REQUEST.md`**
 
 追加 `CR-2026-10-25-01` 变更记录，说明滚动懒加载、智能长文本截断与渲染性能优化交付。
 
-- [ ] **Step 4: 最终提交**
+- [x] **Step 4: 最终提交**
 
 ```powershell
 git add CPH-PI/.docs/CHANGE-REQUEST.md
 git commit -m "docs: finalize CR-2026-10-25-01 implementation and full verification"
 ```
+

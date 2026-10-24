@@ -8,6 +8,43 @@
 
 ## 已完成的变更请求
 
+### CR-2026-10-25-01: Web 前端全滚动区域视口懒加载与渲染性能优化
+
+- **发起日期**: 2026-10-25
+- **完成日期**: 2026-10-25
+- **状态**: ✅ 已完成并全量测试通过 (Completed & Verified)
+- **类型**: ⚡ 性能优化 & 🎨 Web 前端长会话渲染治理
+- **设计规范**: [`.docs/specs/2026-10-25-web-scrolling-lazy-loading-performance-design.md`](./specs/2026-10-25-web-scrolling-lazy-loading-performance-design.md)
+- **实施计划**: [`.docs/plans/2026-10-25-web-scrolling-lazy-loading-performance.md`](./plans/2026-10-25-web-scrolling-lazy-loading-performance.md)
+
+#### 摘要
+彻底解决长会话轮次堆积、长日志与大 Diff 输出导致 Web 前端 DOM 树庞大、滚动掉帧、内存占用过高的问题：
+1. **浏览器原生加速体系**：在全局与滚动容器集成 CSS `content-visibility: auto` 与 `contain-intrinsic-size`，浏览器原生跳过离屏重排/重绘；在所有可滚动区域注入 `overscroll-behavior-y: contain` 与 `-webkit-overflow-scrolling: touch`，杜绝链式滚动并赋予硬件加速。
+2. **底层视口感知 Hook 与轻量骨架容器 (`useIntersectionObserver` & `LazyViewportItem`)**：提供 250px 预加载缓冲区；在进入视口前渲染极轻量占位骨架，进入后挂载真实组件并动态记住真实 DOM 高度；对当前正在流式打字的消息或最新轮次施加 `forceActive: true` 常驻保护，坚守流式打字与吸底不抖动不变量。
+3. **超长文本智能截断组件与工具卡片治理 (`LazyTextCollapse` & `ToolCard`)**：
+   - 提取通用 `LazyTextCollapse` 组件，对 >35 行或 >1800 字符的长日志/长文本进行首屏截断展示，清晰标注剩余行数，并支持一键展开/收起；
+   - 恪守 AGENTS.md 准则 9（全量字节保真）：截断组件自带的一键复制按钮严格复制原始完整文本；
+   - 重构 `ToolCard` 展开策略：`running` 与 `failed` 状态保持默认展开，`completed` 成功状态默认折叠摘要；长输出与 >40 行 Diff 无缝接入智能截断。
+4. **主会话消息流与子代理视窗全挂载 (`ChatView`)**：
+   - 主消息列表所有历史轮次全部包裹 `LazyViewportItem`，依据工具数量动态计算占位高度；
+   - 聚焦子代理视窗中的动作流列表与交付物报告预览卡片接入视口懒加载与智能长文本截断。
+5. **侧边抽屉面板渐进式分批与全局样式 (`LedgerWALViewer` & `Sidebar`)**：
+   - `LedgerWALViewer` 账本列表引入 `visibleCount`（默认 35 条，触底手动/自动追加），单条记录包裹 `LazyViewportItem`，搜索与过滤变更时自动重置；
+   - `Sidebar` 会话列表条目引入 `content-visibility: auto` 与 `contain-intrinsic-size: auto 36px`，百级列表零重排卡顿。
+
+#### 验证结果
+- 全仓测试套件: **111 个测试文件、895 项测试用例全部 100% 绿灯通过，0 失败**。
+- 4 个专属新建测试文件全通：
+  - `tests/web/lazy-viewport-observer.test.ts` (9 pass)
+  - `tests/web/lazy-text-collapse.test.ts` (10 pass)
+  - `tests/web/tool-card-lazy.test.ts` (10 pass)
+  - `tests/web/chat-view-lazy-integration.test.ts` (10 pass)
+  - `tests/web/ledger-viewer-lazy.test.ts` (10 pass)
+- Web 前端构建: `tsc && vite build` 生产打包编译 100% 成功，0 错误，打包耗时 2.82s。
+- 严格遵循 AGENTS.md 准则 1（二级目录安全隔离）与准则 3（建设性正向引导）。
+
+---
+
 ### CR-2026-10-24-02: 云端工作区目录双轨对齐与拓扑生命周期
 
 - **发起日期**: 2026-10-24
