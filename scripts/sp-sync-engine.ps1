@@ -53,6 +53,10 @@ if (-not $DirtyLogPath) {
     $DirtyLogPath = Join-Path $WorkspaceRoot '.cph\state\dirty-sync.jsonl'
 }
 
+# 3.1 CSOM 上下文与文件夹内存缓存 (规避重复 HTTP 往返)
+$script:CachedDpsContext = @{}
+$script:EnsuredFolderCache = @{}
+
 # 4. SHA256 计算辅助函数与可索引文件过滤器
 function Get-FileSha256 {
     param([string]$FilePath)
@@ -78,6 +82,7 @@ function Test-IsIndexableSyncFile {
     if ([string]::IsNullOrWhiteSpace($RelativePath)) { return $false }
     $norm = $RelativePath.Replace('\', '/').TrimStart('/')
     if ($norm -match '(^|/)(\.git|\.cph|node_modules|dist|package)(/|$)') { return $false }
+    if ($norm -match '^Library/.*(^|/)(bin|obj|packages)(/|$)' -or $norm -match '^Library/(.*/)?(bin|obj|packages)(/|$)') { return $false }
     if ($norm -match '\.(dll|dylib|so|exe|pdb|lib|obj|o|a|zip|tar|gz|7z|rar|aar|jar|war|onnx|bin|dat|pack|idx|cache|Up2Date)$') {
         return $false
     }
@@ -94,6 +99,8 @@ function Get-SyncManifest {
     $foldersMap = @{}
     $lastFullSync = $null
     $lastPrewarmAt = $null
+    $manifestSiteUrl = $null
+    $manifestTargetFolder = $null
     $version = 2
 
     if (Test-Path $Path) {
@@ -104,6 +111,8 @@ function Get-SyncManifest {
                 if ($parsed.version) { $version = [int]$parsed.version }
                 if ($parsed.lastFullSync) { $lastFullSync = $parsed.lastFullSync }
                 if ($parsed.lastPrewarmAt) { $lastPrewarmAt = $parsed.lastPrewarmAt }
+                if ($parsed.siteUrl) { $manifestSiteUrl = [string]$parsed.siteUrl }
+                if ($parsed.targetFolder) { $manifestTargetFolder = [string]$parsed.targetFolder }
                 if ($parsed.files) {
                     $parsed.files.PSObject.Properties | ForEach-Object {
                         $entry = @{
@@ -139,13 +148,20 @@ function Get-SyncManifest {
         $version = 2
     }
 
-    return @{
+    $res = @{
         version = $version
         lastFullSync = $lastFullSync
         lastPrewarmAt = $lastPrewarmAt
         files = $filesMap
         folders = $foldersMap
     }
+    if ($manifestSiteUrl) {
+        $res["siteUrl"] = $manifestSiteUrl
+    }
+    if ($manifestTargetFolder) {
+        $res["targetFolder"] = $manifestTargetFolder
+    }
+    return $res
 }
 
 function Save-SyncManifest {
@@ -159,6 +175,12 @@ function Save-SyncManifest {
     }
     if (-not $Manifest.folders) {
         $Manifest.folders = @{}
+    }
+    if ($SiteUrl) {
+        $Manifest["siteUrl"] = $SiteUrl
+    }
+    if ($TargetFolder) {
+        $Manifest["targetFolder"] = $TargetFolder
     }
     $json = $Manifest | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
@@ -194,30 +216,42 @@ function Ensure-SharePointFolder {
         [string]$TargetFolder,
         [string]$RelativeDir
     )
-    $folder = $Context.Web.GetFolderByServerRelativeUrl($TargetFolder)
-    $Context.Load($folder)
-    $Context.ExecuteQuery()
+    $targetKey = $TargetFolder.Replace('\', '/').TrimEnd('/')
+    $folder = $null
+    if ($script:EnsuredFolderCache.ContainsKey($targetKey)) {
+        $folder = $script:EnsuredFolderCache[$targetKey]
+    } else {
+        $folder = $Context.Web.GetFolderByServerRelativeUrl($TargetFolder)
+        $Context.Load($folder)
+        $Context.ExecuteQuery()
+        $script:EnsuredFolderCache[$targetKey] = $folder
+    }
     
     if ([string]::IsNullOrWhiteSpace($RelativeDir)) {
         return $folder.ServerRelativeUrl
     }
 
     $currentFolder = $folder
-    $currentRel = $folder.ServerRelativeUrl
+    $currentRel = $folder.ServerRelativeUrl.TrimEnd('/')
 
     $parts = $RelativeDir.Replace('\', '/').Trim('/').Split('/')
     foreach ($part in $parts) {
         if ([string]::IsNullOrWhiteSpace($part)) { continue }
         $currentRel = "$currentRel/$part"
-        try {
-            $f = $Context.Web.GetFolderByServerRelativeUrl($currentRel)
-            $Context.Load($f)
-            $Context.ExecuteQuery()
-            $currentFolder = $f
-        } catch {
-            $currentFolder = $currentFolder.Folders.Add($part)
-            $Context.Load($currentFolder)
-            $Context.ExecuteQuery()
+        if ($script:EnsuredFolderCache.ContainsKey($currentRel)) {
+            $currentFolder = $script:EnsuredFolderCache[$currentRel]
+        } else {
+            try {
+                $f = $Context.Web.GetFolderByServerRelativeUrl($currentRel)
+                $Context.Load($f)
+                $Context.ExecuteQuery()
+                $currentFolder = $f
+            } catch {
+                $currentFolder = $currentFolder.Folders.Add($part)
+                $Context.Load($currentFolder)
+                $Context.ExecuteQuery()
+            }
+            $script:EnsuredFolderCache[$currentRel] = $currentFolder
         }
     }
     return $currentRel
@@ -239,6 +273,12 @@ function Push-FileToSharePoint {
 
     while ($attempt -lt $maxAttempts) {
         $attempt++
+        if ($attempt -gt 1) {
+            if ($SiteUrl -and $script:CachedDpsContext.ContainsKey($SiteUrl)) {
+                $null = $script:CachedDpsContext.Remove($SiteUrl)
+            }
+            $script:EnsuredFolderCache.Clear()
+        }
         try {
             if ($MockTransport) {
                 # 模拟单测故障触发
@@ -254,7 +294,13 @@ function Push-FileToSharePoint {
                 if (-not $SiteUrl) {
                     throw "SiteUrl is required when not in MockTransport mode"
                 }
-                $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                $ctx = if ($script:CachedDpsContext.ContainsKey($SiteUrl)) {
+                    $script:CachedDpsContext[$SiteUrl]
+                } else {
+                    $c = Get-DpsClientContext -SiteUrl $SiteUrl
+                    if ($c) { $script:CachedDpsContext[$SiteUrl] = $c }
+                    $c
+                }
                 if (-not $ctx) {
                     throw "Unable to acquire SharePoint client context for $SiteUrl"
                 }
@@ -304,7 +350,9 @@ function Get-LocalFolders {
     $localFolders = @{}
     $dirs = Get-ChildItem -Path $cleanRoot -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
         $norm = $_.FullName.Replace('\', '/') + '/'
-        $norm -notmatch '/(\.git|\.cph|node_modules|dist|package)/'
+        $norm -notmatch '/(\.git|\.cph|node_modules|dist|package)/' -and `
+        $norm -notmatch '/Library/.*/(bin|obj|packages)/' -and `
+        $norm -notmatch '/Library/(bin|obj|packages)/'
     }
     foreach ($d in $dirs) {
         $rel = $d.FullName.Substring($cleanRoot.Length).TrimStart('\', '/').Replace('\', '/')
@@ -424,6 +472,10 @@ switch ($Action) {
     { $_ -in 'Prewarm', 'SyncWorkspace' } {
         $startTime = [System.Diagnostics.Stopwatch]::StartNew()
         $manifest = if ($HardReset) { @{ version = 2; files = @{}; folders = @{} } } else { Get-SyncManifest -Path $ManifestPath }
+        if ($HardReset) {
+            $script:CachedDpsContext.Clear()
+            $script:EnsuredFolderCache.Clear()
+        }
 
         $localFiles = @()
         try {
@@ -465,7 +517,13 @@ switch ($Action) {
         $ctx = $null
         if (-not $MockTransport -and $SiteUrl) {
             try {
-                $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+                $ctx = if ($script:CachedDpsContext.ContainsKey($SiteUrl)) {
+                    $script:CachedDpsContext[$SiteUrl]
+                } else {
+                    $c = Get-DpsClientContext -SiteUrl $SiteUrl
+                    if ($c) { $script:CachedDpsContext[$SiteUrl] = $c }
+                    $c
+                }
                 if ($ctx) {
                     $cloudEntities = Get-SharePointCloudEntities -Context $ctx -TargetFolder $TargetFolder
                     $cloudFiles = $cloudEntities.files
