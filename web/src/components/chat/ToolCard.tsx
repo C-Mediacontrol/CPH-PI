@@ -10,6 +10,8 @@ import {
   Check,
 } from 'lucide-react';
 import type { ToolCall } from '../../types/protocol';
+import { SubagentBatchCard } from './SubagentBatchCard';
+import { LazyTextCollapse } from '../common/LazyTextCollapse';
 import css from './ToolCard.module.css';
 
 export interface ToolCardProps {
@@ -18,11 +20,15 @@ export interface ToolCardProps {
 }
 
 export function ToolCard({ tool, defaultExpanded }: ToolCardProps): React.JSX.Element {
-  // 运行中或有输出时默认展开，除非显式指定
+  if (tool.name === 'invoke_subagent') {
+    return <SubagentBatchCard tool={tool} defaultExpanded={defaultExpanded} />;
+  }
+
+  // 运行中或失败时默认展开，成功完成时默认收起以保持视口极简与高性能
   const [expanded, setExpanded] = useState<boolean>(
     defaultExpanded !== undefined
       ? defaultExpanded
-      : tool.status === 'running' || Boolean(tool.output || tool.diff)
+      : tool.status === 'running' || tool.status === 'failed'
   );
   const [copied, setCopied] = useState(false);
 
@@ -79,9 +85,10 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps): React.JSX.El
 
   const renderDiff = (diffText: string) => {
     const lines = diffText.split('\n');
-    return (
+
+    const renderLines = (diffLines: string[]) => (
       <div className={css.diffContainer}>
-        {lines.map((line, idx) => {
+        {diffLines.map((line, idx) => {
           let lineClass = css.diffContext;
           if (line.startsWith('+') && !line.startsWith('+++')) {
             lineClass = css.diffAdded;
@@ -98,6 +105,22 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps): React.JSX.El
         })}
       </div>
     );
+
+    if (lines.length > 40) {
+      return (
+        <LazyTextCollapse
+          text={diffText}
+          maxLines={40}
+          maxChars={2400}
+          className={css.diffCollapse}
+          preClassName={css.diffPre}
+        >
+          {(slicedText) => renderLines(slicedText.split('\n'))}
+        </LazyTextCollapse>
+      );
+    }
+
+    return renderLines(lines);
   };
 
   const formattedDuration = tool.durationMs
@@ -169,7 +192,12 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps): React.JSX.El
                   <span>{copied ? '已复制' : '复制'}</span>
                 </button>
               </div>
-              <pre className={css.outputPre}>{tool.output}</pre>
+              <LazyTextCollapse
+                text={tool.output}
+                maxLines={35}
+                maxChars={1800}
+                preClassName={css.outputPre}
+              />
             </div>
           )}
 

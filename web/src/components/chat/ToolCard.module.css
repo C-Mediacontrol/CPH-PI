@@ -164,6 +164,19 @@
 }
 
 /* Diff Viewer */
+.diffCollapse {
+  width: 100%;
+}
+
+.diffPre {
+  font-family: var(--ds-font-family-code, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  background: #ffffff;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 .diffContainer {
   font-family: var(--ds-font-family-code, monospace);
   font-size: 12px;
