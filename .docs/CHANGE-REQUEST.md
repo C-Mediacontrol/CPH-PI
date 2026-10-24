@@ -8,6 +8,33 @@
 
 ## 已完成的变更请求
 
+### CR-2026-10-24-01: M365 账号治理自治增强、交互式 PKCE 凭据刷新与跨代接力连续性架构重构
+
+- **发起日期**: 2026-10-24
+- **完成日期**: 2026-10-24
+- **状态**: ✅ 已完成并全量测试通过 (Completed & Verified)
+- **类型**: 🐛 严重缺陷修复 & 🔐 账号自治与 PKCE 认证架构增强
+- **设计规范**: [`.docs/specs/2026-10-24-m365-account-governance-and-pkce-auth-refresh-design-v2-verified.md`](./specs/2026-10-24-m365-account-governance-and-pkce-auth-refresh-design-v2-verified.md)
+- **实施计划**: [`.docs/plans/2026-10-24-m365-account-governance-and-pkce-auth-refresh.md`](./plans/2026-10-24-m365-account-governance-and-pkce-auth-refresh.md)
+
+#### 摘要
+彻底解决长程多跳自主接力与长会话运行中的 5 大连锁架构缺陷：
+1. **修复状态机门禁反噬 (F1)**：在 `AccountPool` 选号与容量计算全入口（`acquireSessionLease`、`getNextAvailableToken`、`getGraphAccessToken`、`getAvailableCapacity`）强制施加 `status.authExpired || !status.isAvailable || status.isThrottled` 硬门禁，彻底杜绝失效账号以 0 秒无冷却死循环狂选打爆接口。
+2. **精准错误分流与 Graph 盲取重构 (F2)**：抽象 `isFatalAuthGrantError` 识别 `invalid_grant`、`interaction_required` 及 `AADSTS700082/50173/50076/50079` 等致命鉴权错误，将其转为 `authExpired: true` 并停止无效的 60 秒自动探测重试；`getGraphAccessToken` 重构为遍历选取健康账号，防止首账号失效导致 OneDrive 附件上传崩溃。
+3. **0 字节交接文件双点封堵 (F3)**：在模型内联空块落盘（`orchestrator.ts:854`）与容灾仲裁产物写入（`orchestrator.ts:2154`）施加 `>= 50` 字节硬门禁，破损文件强制清除并触发账本保底合成；更正预写账本路径为真实存在的 `.cph/state/execution-ledger.jsonl`。
+4. **会话租约生命周期全释放 (F5)**：在 `orchestrator.run()` 终态 `finally` 强制释放会话租约，封堵 CLI 模式跨代租约泄漏；在主会话世代虚拟化（L966）中对称释放前代租约并正确传入 `sessionId` 绑定；在 `RpcHandler` 接力循环中释放前代租约解除容量死锁。
+5. **Web 前端与 RPC 接力连续性闭环 (F4 & F6)**：自主接力时调用 `this.orchestrator.resetHandshake()` 重置握手与会话隔离；广播 `session:created` 与 `turn:start` 事件；前端 Store 严格采用真实字段 `activeSessionId`，驱动界面无缝流式渲染后续代际；修复 `AccountPool.resetCooldown` 调用断线并防止误解除失效账号。
+6. **恪守 Harness 中立与全量附件原始字节保真 (B1 / 准则 1 & 9)**：坚决废除在 `ToolBridge` 中拼接 Notice 的侵入性补丁，保持工具原始输出 100% 保真与 Harness 绝对中立；清洗系统提示词与 `handoff` 技能中的负面禁止词，转为建设性正向引导。
+7. **原生 TypeScript RFC 7636 PKCE 认证引擎 (OAuthPkceService)**：对齐 `Library/m365-auth-helper/auth.go` 源码规范，支持 S256 挑战码、`response_mode=query`、双 Token Claims 解析（`oid/tid/email`）、错误参数先行拦截与 `emailMismatch` 错位检测。
+8. **双端同构（Web + CLI）快捷重登通道**：Web 端提供三态徽章与两步 PKCE 交互授权弹窗；终端支持独立命令 `cph-pi auth login [email]` 与 TUI 交互内 `/accounts login [email]`。
+
+#### 验证结果
+- 全仓测试套件: **106 个测试文件、838 项测试用例全部 100% 绿灯通过，0 失败**。
+- Web 前端构建: `npm run web:build` 编译打包 0 错误。
+- 零负面禁止词扫描通过，工作区边界 100% 隔离守卫。
+
+---
+
 ### CR-2026-10-22-01: Web RPC 与 CLI 工业级执行管线全量对齐、Handoff 自主接力闭环与云端无损附件直传治理
 
 - **发起日期**: 2026-10-22

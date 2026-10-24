@@ -14,6 +14,11 @@ import type {
   SkillInfo,
   CloudWorkspaceConfig,
   CloudVerifyResult,
+  SubagentState,
+  SessionHandoffPayload,
+  PkceSessionPayload,
+  PkceResultPayload,
+  PkceErrorPayload,
 } from '../types/protocol';
 import { wsClient } from './client-ws';
 
@@ -49,6 +54,14 @@ export interface AppState {
   accountModalOpen: boolean;
   agentModalOpen: boolean;
   skillModalOpen: boolean;
+  subagentsMap: Record<string, SubagentState>;
+  focusedSubagentId: string | null;
+  activeSubagentAsideId: string | null;
+  handoffAnchor: SessionHandoffPayload | null;
+  pkceAuthLoading: boolean;
+  pkceSession: PkceSessionPayload | null;
+  pkceResult: PkceResultPayload | null;
+  pkceError: string | null;
 }
 
 export interface AppActions {
@@ -81,6 +94,12 @@ export interface AppActions {
   removeCustomAgent: (id: string) => void;
   toggleSkillMounted: (name: string) => void;
   setAgentMountedSkills: (names: string[]) => void;
+  setFocusedSubagentId: (id: string | null) => void;
+  setActiveSubagentAsideId: (id: string | null) => void;
+  clearHandoffAnchor: () => void;
+  startPkceAuth: (targetEmail?: string) => void;
+  completePkceAuth: (redirectUrl: string, state?: string, expectedEmail?: string) => void;
+  clearPkceState: () => void;
 }
 
 export type AppStore = AppState & AppActions;
@@ -247,6 +266,14 @@ const initialState: AppState = {
   agentModalOpen: false,
   skillModalOpen: false,
   agentMountedSkills: ['handoff', 'subagent'],
+  subagentsMap: {},
+  focusedSubagentId: null,
+  activeSubagentAsideId: null,
+  handoffAnchor: null,
+  pkceAuthLoading: false,
+  pkceSession: null,
+  pkceResult: null,
+  pkceError: null,
 };
 
 
@@ -439,6 +466,38 @@ const actions: AppActions = {
   setAgentMountedSkills: (names: string[]) => {
     wsClient.send('skills:set-mounted', { names });
   },
+
+  setFocusedSubagentId: (id: string | null) => {
+    setState((s) => ({ ...s, focusedSubagentId: id }));
+  },
+
+  setActiveSubagentAsideId: (id: string | null) => {
+    setState((s) => ({ ...s, activeSubagentAsideId: id }));
+  },
+
+  clearHandoffAnchor: () => {
+    setState((s) => ({ ...s, handoffAnchor: null }));
+  },
+
+  startPkceAuth: (targetEmail?: string) => {
+    setState((s) => ({ ...s, pkceAuthLoading: true, pkceError: null }));
+    wsClient.send('account:pkce_start', { email: targetEmail });
+  },
+
+  completePkceAuth: (redirectUrl: string, state?: string, expectedEmail?: string) => {
+    setState((s) => ({ ...s, pkceAuthLoading: true, pkceError: null }));
+    wsClient.send('account:pkce_complete', { redirectUrl, state, expectedEmail });
+  },
+
+  clearPkceState: () => {
+    setState((s) => ({
+      ...s,
+      pkceAuthLoading: false,
+      pkceSession: null,
+      pkceResult: null,
+      pkceError: null,
+    }));
+  },
 };
 
 
@@ -466,24 +525,30 @@ wsClient.on('session:snapshot', (payload: any) => {
   const nextWorkspaceRoot = payload.workspaceRoot ?? null;
   const nextCloudWorkspace = payload.cloudWorkspace ?? null;
 
-  setState((s) => ({
-    ...s,
-    sessions: payload.sessions || [],
-    activeSessionId: payload.activeSessionId ?? s.activeSessionId,
-    turns: payload.turns || [],
-    ledgerEntries: payload.ledgerEntries || [],
-    contextMetrics: payload.contextMetrics || s.contextMetrics,
-    running: payload.running !== undefined ? payload.running : s.running,
-    workspaceRoot: nextWorkspaceRoot,
-    cloudWorkspace: nextCloudWorkspace,
-    recentWorkspaces: payload.recentWorkspaces || s.recentWorkspaces,
-    workspaceFiles: nextWorkspaceRoot ? (payload.workspaceFiles || s.workspaceFiles) : [],
-    accounts: payload.accounts || s.accounts,
-    allowedAccounts: payload.allowedAccounts !== undefined ? payload.allowedAccounts : s.allowedAccounts,
-    agentConfig: payload.agentConfig || s.agentConfig,
-    availableSkills: skillsList || s.availableSkills || [],
-    agentMountedSkills: payload.agentMountedSkills || s.agentMountedSkills || ['handoff', 'subagent'],
-  }));
+  setState((s) => {
+    const isNewOrSwitched = !s.activeSessionId || (payload.activeSessionId && payload.activeSessionId !== s.activeSessionId);
+    return {
+      ...s,
+      sessions: payload.sessions || [],
+      activeSessionId: payload.activeSessionId ?? s.activeSessionId,
+      turns: payload.turns || [],
+      ledgerEntries: payload.ledgerEntries || [],
+      contextMetrics: payload.contextMetrics || s.contextMetrics,
+      running: payload.running !== undefined ? payload.running : s.running,
+      workspaceRoot: nextWorkspaceRoot,
+      cloudWorkspace: nextCloudWorkspace,
+      recentWorkspaces: payload.recentWorkspaces || s.recentWorkspaces,
+      workspaceFiles: nextWorkspaceRoot ? (payload.workspaceFiles || s.workspaceFiles) : [],
+      accounts: payload.accounts || s.accounts,
+      allowedAccounts: payload.allowedAccounts !== undefined ? payload.allowedAccounts : s.allowedAccounts,
+      agentConfig: payload.agentConfig || s.agentConfig,
+      availableSkills: skillsList || s.availableSkills || [],
+      agentMountedSkills: payload.agentMountedSkills || s.agentMountedSkills || ['handoff', 'subagent'],
+      subagentsMap: isNewOrSwitched ? (payload.subagentsMap || {}) : (payload.subagentsMap || s.subagentsMap),
+      focusedSubagentId: isNewOrSwitched ? null : s.focusedSubagentId,
+      activeSubagentAsideId: isNewOrSwitched ? null : s.activeSubagentAsideId,
+    };
+  });
 
   if (!skillsList) {
     wsClient.send('skills:list');
@@ -666,5 +731,194 @@ wsClient.on('agent:update', (payload: Partial<AgentConfig>) => {
     agentConfig: { ...s.agentConfig, ...payload },
   }));
 });
+
+wsClient.on('subagent:start', (payload: any) => {
+  const subagentId = payload?.subagentId;
+  if (!subagentId) return;
+  setState((s) => {
+    const existing = s.subagentsMap[subagentId];
+    const subagent: SubagentState = {
+      id: subagentId,
+      toolId: payload.toolId ?? existing?.toolId,
+      role: payload.role ?? existing?.role ?? 'researcher',
+      spec: payload.spec ?? existing?.spec,
+      status: 'running',
+      account: payload.account ?? existing?.account,
+      hopCount: payload.hopCount ?? existing?.hopCount ?? 0,
+      currentTurn: 1,
+      reasoning: '',
+      actions: [],
+      startTime: Date.now(),
+    };
+    return {
+      ...s,
+      subagentsMap: {
+        ...s.subagentsMap,
+        [subagentId]: subagent,
+      },
+    };
+  });
+});
+
+wsClient.on('subagent:progress', (payload: any) => {
+  const subagentId = payload?.subagentId;
+  if (!subagentId) return;
+  setState((s) => {
+    const existing = s.subagentsMap[subagentId];
+    if (!existing) return s;
+    const reasoning = payload.delta ? existing.reasoning + payload.delta : existing.reasoning;
+    const actions = payload.action
+      ? [
+          ...existing.actions,
+          {
+            ...payload.action,
+            timestamp: payload.action.timestamp ?? Date.now(),
+          },
+        ]
+      : existing.actions;
+    const currentTurn = payload.turn !== undefined ? payload.turn : existing.currentTurn;
+    const hopCount = payload.hopCount !== undefined ? payload.hopCount : existing.hopCount;
+    const account = payload.account !== undefined ? payload.account : existing.account;
+
+    return {
+      ...s,
+      subagentsMap: {
+        ...s.subagentsMap,
+        [subagentId]: {
+          ...existing,
+          reasoning,
+          actions,
+          currentTurn,
+          hopCount,
+          account,
+        },
+      },
+    };
+  });
+});
+
+wsClient.on('subagent:end', (payload: any) => {
+  const subagentId = payload?.subagentId;
+  if (!subagentId) return;
+  setState((s) => {
+    const existing = s.subagentsMap[subagentId];
+    if (!existing) return s;
+    const report = payload.report;
+    const status = report?.success ? 'completed' : 'failed';
+    const durationMs = report?.durationMs ?? (Date.now() - existing.startTime);
+    return {
+      ...s,
+      subagentsMap: {
+        ...s.subagentsMap,
+        [subagentId]: {
+          ...existing,
+          status,
+          report,
+          durationMs,
+        },
+      },
+    };
+  });
+});
+
+wsClient.on('session:handoff', (payload: SessionHandoffPayload) => {
+  setState((s) => ({
+    ...s,
+    handoffAnchor: payload,
+  }));
+});
+
+// 监听 turn:start 事件，驱动跨代接力流式呈现并对齐当前活跃会话标识
+wsClient.on('turn:start', (data: { turn?: Turn; activeSessionId?: string; generation?: number } | any) => {
+  if (!data) return;
+  const turn: Turn | undefined = data.turn ?? (data.id ? data : undefined);
+  if (!turn) return;
+
+  setState((s) => {
+    const existingIndex = s.turns.findIndex((t) => t.id === turn.id);
+    let updatedTurns: Turn[];
+    if (existingIndex >= 0) {
+      updatedTurns = [...s.turns];
+      updatedTurns[existingIndex] = turn;
+    } else {
+      updatedTurns = [...s.turns, turn];
+    }
+    return {
+      ...s,
+      running: true,
+      activeSessionId: data.activeSessionId ?? s.activeSessionId,
+      turns: updatedTurns,
+    };
+  });
+});
+
+// 监听 session:created 事件，挂载新会话至侧边栏列表
+wsClient.on('session:created', (payload: any) => {
+  const sessionId = payload?.id || payload?.sessionId;
+  if (!sessionId) return;
+  const newSession: SessionSummary = {
+    id: sessionId,
+    title: payload.title || `Session ${sessionId.slice(0, 8)}`,
+    createdAt: payload.createdAt || Date.now(),
+    updatedAt: payload.updatedAt || Date.now(),
+    messageCount: payload.messageCount || 0,
+    cwd: payload.cwd || '',
+  };
+  setState((s) => {
+    const existingIndex = s.sessions.findIndex((sess) => sess.id === sessionId);
+    if (existingIndex >= 0) {
+      const updatedSessions = [...s.sessions];
+      updatedSessions[existingIndex] = { ...updatedSessions[existingIndex], ...newSession };
+      return { ...s, sessions: updatedSessions };
+    }
+    return {
+      ...s,
+      sessions: [newSession, ...s.sessions],
+    };
+  });
+});
+
+// 监听 PKCE 认证发起成功事件
+wsClient.on('account:pkce_started', (payload: any) => {
+  const session: PkceSessionPayload = {
+    authSessionId: payload?.authSessionId ?? payload?.data?.authSessionId ?? '',
+    authUrl: payload?.authUrl ?? payload?.data?.authUrl ?? '',
+    state: payload?.state ?? payload?.data?.state ?? '',
+    targetEmail: payload?.targetEmail ?? payload?.data?.targetEmail,
+    expiresAt: payload?.expiresAt ?? payload?.data?.expiresAt,
+  };
+  setState((s) => ({
+    ...s,
+    pkceSession: session,
+    pkceAuthLoading: false,
+    pkceError: null,
+  }));
+});
+
+// 监听 PKCE 换票成功事件
+wsClient.on('account:pkce_completed', (payload: any) => {
+  const result: PkceResultPayload = {
+    success: payload?.success ?? payload?.data?.success ?? true,
+    email: payload?.email ?? payload?.data?.email ?? '',
+    expectedEmail: payload?.expectedEmail ?? payload?.data?.expectedEmail,
+    emailMismatch: payload?.emailMismatch ?? payload?.data?.emailMismatch ?? false,
+  };
+  setState((s) => ({
+    ...s,
+    pkceResult: result,
+    pkceAuthLoading: false,
+    pkceError: null,
+  }));
+});
+
+// 监听 PKCE 认证异常事件
+wsClient.on('account:pkce_error', (payload: PkceErrorPayload & { data?: PkceErrorPayload }) => {
+  setState((s) => ({
+    ...s,
+    pkceError: payload?.message ?? payload?.data?.message ?? 'PKCE 认证遇到异常',
+    pkceAuthLoading: false,
+  }));
+});
+
 
 

@@ -871,7 +871,9 @@ export class CphPiCli {
 
   public close(): void {
     if (this.rl) {
-      this.rl.close();
+      if (typeof this.rl.close === "function") {
+        this.rl.close();
+      }
       this.rl = undefined;
     }
     this.isInteractive = false;
@@ -1143,7 +1145,10 @@ export class CphPiCli {
         const isAllowed = s.isAllowed !== false;
         const mark = isAllowed ? chalk.green("[✓]") : chalk.gray("[ ]");
         const emailStr = isAllowed ? chalk.bold.white(s.email) : chalk.gray(s.email);
-        const throttleBadge = s.isThrottled ? chalk.red("(429限频冷却)") : chalk.green("(就绪)");
+        let throttleBadge = s.isThrottled ? chalk.red("(429限频冷却)") : chalk.green("(就绪)");
+        if (s.authExpired) {
+          throttleBadge = chalk.red(`🔒 凭据已失效 (执行 /accounts login ${s.email} 刷新)`);
+        }
         const allowedBadge = isAllowed ? chalk.cyan("(已启用)") : chalk.gray("(已跳过)");
         return `  ${mark} ${emailStr} ${throttleBadge} ${allowedBadge}`;
       }),
@@ -1152,16 +1157,16 @@ export class CphPiCli {
         ? chalk.yellow(`  当前白名单限制: 仅启用 ${allowed.length} 个账号，其余已跳过`)
         : chalk.dim("  当前白名单限制: 未设置 (默认全部账号轮转)"),
       "",
-      chalk.dim("提示: /accounts enable <email> 启用 | /accounts disable <email> 跳过 | /accounts set <e1,e2> 批量设置 | /accounts reset 全量重置"),
+      chalk.dim("提示: /accounts login <email> 刷新凭据 | /accounts enable <email> 启用 | /accounts disable <email> 跳过 | /accounts set <e1,e2> 批量设置 | /accounts reset 全量重置"),
       "",
     ];
     return lines.join("\n");
   }
 
   /**
-   * Handles /accounts command to inspect, enable, disable, set or reset account whitelist.
+   * Handles /accounts command to inspect, login, enable, disable, set or reset account whitelist.
    */
-  public handleAccountsCommand(args?: string): void {
+  public async handleAccountsCommand(args?: string): Promise<void> {
     const raw = args ? args.trim() : "";
     if (!raw) {
       process.stdout.write(this.formatAccountsList() + "\n");
@@ -1171,6 +1176,12 @@ export class CphPiCli {
     const parts = raw.split(/\s+/);
     const sub = parts[0].toLowerCase();
     const rest = raw.slice(parts[0].length).trim();
+
+    if (sub === "login") {
+      const email = rest ? rest.trim() : undefined;
+      await runCliPkceAuthFlow(this.pool, email, this.rl);
+      return;
+    }
 
     if (sub === "reset") {
       this.pool.setAllowedAccounts(undefined);
@@ -1232,7 +1243,7 @@ export class CphPiCli {
     }
 
     process.stdout.write(
-      chalk.red(`\n未知子命令: "${sub}"。可用子命令: /accounts [set|enable|disable|reset]\n\n`)
+      chalk.red(`\n未知子命令: "${sub}"。可用子命令: /accounts [login|set|enable|disable|reset]\n\n`)
     );
   }
 
@@ -1613,11 +1624,89 @@ export class CphPiCli {
 
 export const CPH_PI_VERSION = "0.1.0";
 
+/**
+ * Executes interactive PKCE authentication flow in CLI terminal
+ */
+export async function runCliPkceAuthFlow(
+  pool: AccountPool,
+  targetEmail?: string,
+  customRl?: readline.Interface
+): Promise<boolean> {
+  const session = pool.startPkceAuth(targetEmail);
 
+  process.stdout.write("\n" + chalk.bold.cyan("==================================================") + "\n");
+  process.stdout.write(chalk.bold.cyan("           Microsoft 365 账号授权与换票           ") + "\n");
+  process.stdout.write(chalk.bold.cyan("==================================================") + "\n\n");
+
+  if (targetEmail) {
+    process.stdout.write(chalk.yellow(`目标授权账号: ${chalk.bold(targetEmail)}\n\n`));
+  }
+
+  process.stdout.write(chalk.bold("请复制以下链接在系统浏览器中打开并完成登录:\n"));
+  process.stdout.write(chalk.underline.blue(session.authUrl) + "\n\n");
+  process.stdout.write(chalk.dim("登录完成后浏览器将跳转至空白页 (或显示无法访问)。\n"));
+  process.stdout.write(chalk.dim("请从浏览器地址栏复制完整重定向 URL，或直接粘贴返回的 code 参数。\n\n"));
+
+  const shouldCloseRl = !customRl;
+  const rl =
+    customRl ||
+    readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+  const input = await new Promise<string>((resolve) => {
+    rl.question(chalk.yellow("请输入重定向 URL 或 Code: "), (answer) => {
+      resolve((answer || "").trim());
+    });
+  });
+
+  if (shouldCloseRl) {
+    rl.close();
+  }
+
+  if (!input) {
+    process.stdout.write(chalk.red("\n✖ 输入为空，授权流程已取消。\n\n"));
+    return false;
+  }
+
+  try {
+    const result = await pool.completePkceAuth(input, session.state, targetEmail);
+    if (!result.success) {
+      process.stdout.write(
+        chalk.red(`\n✖ 凭据刷新失败: ${(result as any).error || "授权验证未通过"}\n\n`)
+      );
+      return false;
+    }
+
+    if (result.emailMismatch) {
+      process.stdout.write(
+        chalk.yellow(
+          `\n⚠️  检测到实际登录账号为 ${chalk.bold(result.email)}，原目标账号 ${chalk.bold(targetEmail)} 仍处于待重登状态。\n`
+        ) +
+          chalk.green(
+            `✔ 账号 ${chalk.bold(result.email)} 已安全保存至 accounts.json 并就绪可用。\n\n`
+          )
+      );
+    } else {
+      process.stdout.write(
+        chalk.green(
+          `\n✔ 凭据刷新成功! 账号 ${chalk.bold(result.email)} 已安全保存至 accounts.json 并就绪可用。\n\n`
+        )
+      );
+    }
+    return true;
+  } catch (err: any) {
+    process.stdout.write(
+      chalk.red(`\n✖ 授权流程发生异常: ${err.message || String(err)}\n\n`)
+    );
+    return false;
+  }
+}
 
 export interface RunCliResult {
   exitCode: number;
-  mode: "help" | "version" | "task" | "interactive" | "web";
+  mode: "help" | "version" | "task" | "interactive" | "web" | "auth";
   output?: string;
   serverInstance?: WebServerInstance;
 }
@@ -1747,6 +1836,23 @@ export async function runCli(
     }
 
     return { exitCode: 0, mode: "web", serverInstance };
+  }
+
+  if (parsed.subcommand === "auth") {
+    if (parsed.authAction === "login" || !parsed.authAction) {
+      const pool = cli.getPool();
+      const success = await runCliPkceAuthFlow(pool, parsed.authTargetEmail, customOptions.rl);
+      cli.close();
+      if (isDirectRun) process.exit(success ? 0 : 1);
+      return { exitCode: success ? 0 : 1, mode: "auth" };
+    } else {
+      process.stdout.write(
+        chalk.yellow(`\n未知 auth 动作: "${parsed.authAction}"。可用命令: cph-pi auth login [email]\n\n`)
+      );
+      cli.close();
+      if (isDirectRun) process.exit(1);
+      return { exitCode: 1, mode: "auth" };
+    }
   }
 
   if (parsed.task) {

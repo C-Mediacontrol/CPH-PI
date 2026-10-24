@@ -147,7 +147,46 @@ export class TokenManager {
    * Explicitly cache an active session token (useful for test injection)
    */
   public setCachedToken(email: string, token: ActiveSessionToken): void {
-    this.activeTokens.set(email.toLowerCase(), token);
+    const key = email.toLowerCase();
+    this.activeTokens.set(key, token);
+    this.graphTokens.delete(key);
+  }
+
+  /**
+   * Upsert account credential from PKCE authentication flow.
+   * Preserves existing metadata such as notes and cookies.
+   */
+  public upsertAccountFromPkce(
+    email: string,
+    refreshToken: string,
+    oid?: string,
+    tid?: string
+  ): StoredAccount {
+    const accounts = this.loadAccounts();
+    const key = email.toLowerCase();
+    const existing = accounts.find((a) => a.email.toLowerCase() === key);
+
+    let updatedAccount: StoredAccount;
+    if (existing) {
+      existing.refreshToken = refreshToken;
+      if (oid) existing.userId = oid;
+      if (tid) existing.tenantId = tid;
+      existing.lastRefresh = new Date().toISOString();
+      updatedAccount = existing;
+    } else {
+      updatedAccount = {
+        email,
+        refreshToken,
+        userId: oid,
+        tenantId: tid,
+        lastRefresh: new Date().toISOString(),
+      };
+      accounts.push(updatedAccount);
+    }
+
+    this.saveAccounts(accounts);
+    this.clearCache(email);
+    return updatedAccount;
   }
 
   /**
@@ -155,9 +194,12 @@ export class TokenManager {
    */
   public clearCache(email?: string): void {
     if (email) {
-      this.activeTokens.delete(email.toLowerCase());
+      const key = email.toLowerCase();
+      this.activeTokens.delete(key);
+      this.graphTokens.delete(key);
     } else {
       this.activeTokens.clear();
+      this.graphTokens.clear();
     }
   }
 

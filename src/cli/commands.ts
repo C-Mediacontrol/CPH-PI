@@ -24,7 +24,7 @@ export interface ICliApp {
   getDiagnosticCard(): string;
   formatSessionsList(): string;
   formatAccountsList(): string;
-  handleAccountsCommand(args?: string): void;
+  handleAccountsCommand(args?: string): Promise<void> | void;
   handleAgentCommand(args?: string): void;
   handleModelCommand(args?: string): void;
   isDebugModeEnabled(): boolean;
@@ -50,7 +50,7 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
       chalk.bold.cyan("\n可用命令列表:"),
       `  ${chalk.bold.yellow("/help")}        - 显示本帮助信息与按键说明`,
       `  ${chalk.bold.yellow("/status")}      - 查看当前会话诊断卡与账号池状态`,
-      `  ${chalk.bold.yellow("/accounts")}    - 查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+      `  ${chalk.bold.yellow("/accounts")}    - 查看或配置账号池 (/accounts login|enable|disable|set|reset)`,
       `  ${chalk.bold.yellow("/agent [id|clear]")} - 查看、绑定或解除专属智能体`,
       `  ${chalk.bold.yellow("/model [tone]")}      - 查看或动态切换当前模型风格`,
       `  ${chalk.bold.yellow("/debug [on|off|path]")} - 查看、开启或关闭终端输出实时落盘`,
@@ -59,8 +59,11 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
       `  ${chalk.bold.yellow("/resume <id>")} - 恢复指定 ID 的历史会话 (自动续跑脱困快照)`,
       `  ${chalk.bold.yellow("/continue [任务]")} - 自动续跑当前或最近接力会话 (别名 /relay)`,
       `  ${chalk.bold.yellow("/relay [任务]")}    - 快捷接力推进当前或最近会话成果快照`,
-      `  ${chalk.bold.yellow("/skills")}      - 列出所有已发现的原生技能与激活状态`,
-      `  ${chalk.bold.yellow("/skills find")} - 搜索指定关键词的技能 (如 /skills find tdd)`,
+      `  ${chalk.bold.yellow("/skills")}      - 列出所有技能并显示 [Agent内置] / [动态附件] 标识`,
+      `  ${chalk.bold.yellow("/skills mounted")} - 查看已在 Agent 挂载与动态挂载的筛分总览`,
+      `  ${chalk.bold.yellow("/skills mount <name>")} - 将技能设为 Agent 内置免附件轻量化唤醒`,
+      `  ${chalk.bold.yellow("/skills unmount <name>")} - 将技能恢复为动态随任务挂载全量附件`,
+      `  ${chalk.bold.yellow("/skills find <kw>")} - 搜索指定关键词的技能 (如 /skills find tdd)`,
       `  ${chalk.bold.yellow("/skill <name>")} - 切换指定技能的激活/停用状态`,
       `  ${chalk.bold.yellow("/<skill> <任务>")}- 快捷以专属技能模式执行任务 (如 /brainstorming 设计需求)`,
       `  ${chalk.bold.yellow("/audit")}       - 查看执行总账 (Execution Ledger) 审计状态与快照摘要`,
@@ -193,8 +196,8 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
     process.stdout.write(cli.getDiagnosticCard() + "\n");
   },
 
-  "/accounts": (cli, args) => {
-    cli.handleAccountsCommand(args);
+  "/accounts": async (cli, args) => {
+    await cli.handleAccountsCommand(args);
   },
 
   "/agent": (cli, args) => {
@@ -207,6 +210,90 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
 
   "/skills": (cli, args) => {
     const trimmed = args.trim();
+
+    // 1. /skills mounted
+    if (trimmed === "mounted") {
+      const allSkills = cli.getSkillRegistry().getAvailableSkills();
+      const mountedNames = cli.getSkillRegistry().getAgentMountedSkills();
+      const mountedSkills = allSkills.filter((s: any) => mountedNames.has(s.name.toLowerCase()));
+      const dynamicSkills = allSkills.filter((s: any) => !mountedNames.has(s.name.toLowerCase()));
+
+      const lines = [
+        chalk.bold.cyan(`\n[技能挂载筛分总览 (共 ${allSkills.length} 个技能)]`),
+        chalk.gray("──────────────────────────────────────────────────"),
+        chalk.bold.cyan(`◈ Agent 内置已挂载技能 (免附件/轻量通知, 共 ${mountedSkills.length} 个):`),
+        mountedSkills.length === 0
+          ? chalk.gray("  (暂无内置技能)")
+          : mountedSkills
+              .map(
+                (s: any) =>
+                  `  ${chalk.cyan("●")} ${chalk.bold.white(s.name)}${s.description ? chalk.gray(` - ${s.description}`) : ""}`
+              )
+              .join("\n"),
+        "",
+        chalk.bold.yellow(`◈ 动态随任务挂载技能 (全量附件/Prompt正文注入, 共 ${dynamicSkills.length} 个):`),
+        dynamicSkills.length === 0
+          ? chalk.gray("  (暂无动态技能)")
+          : dynamicSkills
+              .map(
+                (s: any) =>
+                  `  ${chalk.yellow("○")} ${chalk.white(s.name)}${s.description ? chalk.gray(` - ${s.description}`) : ""}`
+              )
+              .join("\n"),
+        chalk.gray("──────────────────────────────────────────────────"),
+        chalk.dim("提示: /skills mount <name> 设为内置免附件 | /skills unmount <name> 设为动态附件\n"),
+      ];
+      process.stdout.write(lines.join("\n"));
+      return;
+    }
+
+    // 2. /skills mount <name>
+    if (trimmed.startsWith("mount")) {
+      const name = trimmed.slice("mount".length).trim();
+      if (!name) {
+        process.stdout.write(chalk.yellow("\n请输入要挂载为内置的技能名称，例如: /skills mount handoff\n\n"));
+        return;
+      }
+      const skill = cli.getSkillRegistry().findSkill(name);
+      if (!skill) {
+        process.stdout.write(chalk.red(`\n未找到技能: "${name}"。输入 /skills 查看可用列表。\n\n`));
+        return;
+      }
+      cli.getSkillRegistry().setAgentMounted(skill.name, true);
+      const mountedArr = Array.from(cli.getSkillRegistry().getAgentMountedSkills());
+      cli.saveWorkspaceConfig({ agentMountedSkills: mountedArr });
+      process.stdout.write(
+        chalk.green(
+          `\n✔ 已将技能 "${skill.name}" 设为 Agent 内置已挂载模式 (免附件传输，指令轻量化唤醒)。\n  配置已保存至 .cph/config.json\n\n`
+        )
+      );
+      return;
+    }
+
+    // 3. /skills unmount <name>
+    if (trimmed.startsWith("unmount")) {
+      const name = trimmed.slice("unmount".length).trim();
+      if (!name) {
+        process.stdout.write(chalk.yellow("\n请输入要移除内置的技能名称，例如: /skills unmount handoff\n\n"));
+        return;
+      }
+      const skill = cli.getSkillRegistry().findSkill(name);
+      if (!skill) {
+        process.stdout.write(chalk.red(`\n未找到技能: "${name}"。输入 /skills 查看可用列表。\n\n`));
+        return;
+      }
+      cli.getSkillRegistry().setAgentMounted(skill.name, false);
+      const mountedArr = Array.from(cli.getSkillRegistry().getAgentMountedSkills());
+      cli.saveWorkspaceConfig({ agentMountedSkills: mountedArr });
+      process.stdout.write(
+        chalk.yellow(
+          `\n○ 已将技能 "${skill.name}" 恢复为动态随任务挂载模式 (全量附件/Prompt正文注入)。\n  配置已保存至 .cph/config.json\n\n`
+        )
+      );
+      return;
+    }
+
+    // 4. /skills find <kw>
     if (trimmed.startsWith("find")) {
       const kw = trimmed.slice("find".length).trim();
       if (!kw) {
@@ -226,9 +313,11 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
         ...matched.map((s: any) => {
           const isActive = activeNames.has(s.name.toLowerCase());
           const mark = isActive ? chalk.green("[✓]") : chalk.gray("[ ]");
+          const isMounted = cli.getSkillRegistry().isAgentMounted(s.name);
+          const modeTag = isMounted ? chalk.cyan("[Agent内置]") : chalk.gray("[动态附件]");
           const name = isActive ? chalk.bold.green(s.name) : chalk.bold.white(s.name);
           const desc = s.description ? chalk.gray(` - ${s.description}`) : "";
-          return `  ${mark} ${name}${desc}`;
+          return `  ${mark} ${name} ${modeTag}${desc}`;
         }),
         "",
       ];
@@ -236,6 +325,7 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
       return;
     }
 
+    // 5. Default /skills
     const allSkills = cli.getSkillRegistry().getAvailableSkills();
     if (allSkills.length === 0) {
       process.stdout.write(chalk.yellow("\n未在工作区或全局发现可用技能。\n\n"));
@@ -249,12 +339,14 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, SlashCommandHandler> = {
       ...allSkills.map((s: any) => {
         const isActive = activeNames.has(s.name.toLowerCase());
         const mark = isActive ? chalk.green("[✓]") : chalk.gray("[ ]");
+        const isMounted = cli.getSkillRegistry().isAgentMounted(s.name);
+        const modeTag = isMounted ? chalk.cyan("[Agent内置]") : chalk.gray("[动态附件]");
         const name = isActive ? chalk.bold.green(s.name) : chalk.bold.white(s.name);
         const desc = s.description ? chalk.gray(` - ${s.description}`) : "";
-        return `  ${mark} ${name}${desc}`;
+        return `  ${mark} ${name} ${modeTag}${desc}`;
       }),
       "",
-      chalk.dim("提示: 输入 /skill <name> 切换激活状态 | /skills find <kw> 搜索 | /<skill-name> <任务> 直接激活并运行"),
+      chalk.dim("提示: /skill <name> 切换激活 | /skills mounted 查看分类 | /skills mount|unmount <name> 筛分挂载 | /<skill-name> <任务> 直接运行"),
       "",
     ];
     process.stdout.write(lines.join("\n"));

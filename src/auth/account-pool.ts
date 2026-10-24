@@ -1,6 +1,11 @@
 import { TokenManager } from "./token-manager.ts";
 import type { ActiveSessionToken, StoredAccount } from "./token-manager.ts";
 import { ChatHubClient } from "../transport/chathub-client.ts";
+import {
+  OAuthPkceService,
+  type PkceExchangeResult,
+  type AuthSession,
+} from "./oauth-pkce-service.ts";
 
 export interface AccountStatus {
   email: string;
@@ -9,12 +14,14 @@ export interface AccountStatus {
   isAllowed: boolean;
   isLeased?: boolean;
   leasedBy?: string;
+  authExpired?: boolean;
+  authErrorReason?: string;
   cooldownUntil: number; // timestamp in ms
   lastUsedAt: number;
   totalRequests: number;
   throttledCount: number;
   ineligibleAgents?: string[];
-  throttleReason?: "daily" | "burst" | "agent_ineligible";
+  throttleReason?: "daily" | "burst" | "agent_ineligible" | "auth_error";
   consecutiveFailures?: number;
 }
 
@@ -37,6 +44,7 @@ export interface AccountPoolOptions {
   maxAccounts?: number;
   defaultCooldownMs?: number;
   allowedAccounts?: string[];
+  pkceService?: OAuthPkceService;
 }
 
 export interface GetTokenOptions {
@@ -51,6 +59,8 @@ export interface RelayOptions {
 
 export class AccountPool {
   private manager: TokenManager;
+  private pkceService: OAuthPkceService;
+  private pkceSessions: Map<string, string> = new Map(); // state / email / sessionId -> authSessionId
   private statuses: Map<string, AccountStatus> = new Map();
   private ineligibleAgents: Map<string, Set<string>> = new Map();
   private allowedAccounts?: Set<string>;
@@ -63,12 +73,17 @@ export class AccountPool {
 
   constructor(manager?: TokenManager, options?: AccountPoolOptions) {
     this.manager = manager || new TokenManager();
+    this.pkceService = options?.pkceService || new OAuthPkceService(this.manager);
     this.maxAccounts = options?.maxAccounts ?? 7;
     this.defaultCooldownMs = options?.defaultCooldownMs ?? 180_000; // 3 minutes
     if (options?.allowedAccounts) {
       this.setAllowedAccounts(options.allowedAccounts);
     }
     this.refreshAccountList();
+  }
+
+  public getPkceService(): OAuthPkceService {
+    return this.pkceService;
   }
 
   public getManager(): TokenManager {
@@ -180,6 +195,8 @@ export class AccountPool {
           isAvailable: true,
           isThrottled: false,
           isAllowed,
+          authExpired: false,
+          authErrorReason: undefined,
           cooldownUntil: 0,
           lastUsedAt: 0,
           totalRequests: 0,
@@ -255,8 +272,15 @@ export class AccountPool {
       const key = acc.email.toLowerCase();
       const status = this.statuses.get(key);
       if (!status) continue;
+      if (status.authExpired || status.isAvailable === false) continue;
       if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) continue;
-      if (status.isThrottled && now < status.cooldownUntil) continue;
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+        status.throttleReason = undefined;
+        status.consecutiveFailures = 0;
+      }
+      if (status.isThrottled) continue;
       if (this.isAccountLeased(key)) continue;
       capacity++;
     }
@@ -280,12 +304,25 @@ export class AccountPool {
     const existingEmail = this.sessionLeases.get(normSessionId);
     if (existingEmail) {
       const status = this.statuses.get(existingEmail.toLowerCase());
-      if (status && !status.isThrottled) {
-        status.lastUsedAt = Date.now();
-        status.totalRequests++;
-        return await this.manager.getAccessToken(existingEmail);
+      if (status && !status.authExpired && status.isAvailable !== false && !status.isThrottled) {
+        try {
+          const session = await this.manager.getAccessToken(existingEmail);
+          status.lastUsedAt = Date.now();
+          status.totalRequests++;
+          return session;
+        } catch (err) {
+          this.sessionLeases.delete(normSessionId);
+          if (this.isFatalAuthGrantError(err)) {
+            this.markAuthExpired(existingEmail, String((err as any)?.message || err));
+          } else {
+            status.isThrottled = true;
+            status.cooldownUntil = Date.now() + 60 * 1000;
+            status.throttledCount = (status.throttledCount || 0) + 1;
+          }
+        }
+      } else {
+        this.sessionLeases.delete(normSessionId);
       }
-      this.sessionLeases.delete(normSessionId);
     }
 
     const accounts = this.refreshAccountList();
@@ -309,6 +346,10 @@ export class AccountPool {
       const status = this.statuses.get(key)!;
 
       if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+        continue;
+      }
+
+      if (status.authExpired || status.isAvailable === false) {
         continue;
       }
 
@@ -336,9 +377,13 @@ export class AccountPool {
         return session;
       } catch (err) {
         this.sessionLeases.delete(normSessionId);
-        status.isThrottled = true;
-        status.cooldownUntil = Date.now() + 60 * 1000;
-        status.throttledCount = (status.throttledCount || 0) + 1;
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(acc.email, String((err as any)?.message || err));
+        } else {
+          status.isThrottled = true;
+          status.cooldownUntil = Date.now() + 60 * 1000;
+          status.throttledCount = (status.throttledCount || 0) + 1;
+        }
       }
     }
 
@@ -439,6 +484,97 @@ export class AccountPool {
       status.throttleReason = undefined;
       status.consecutiveFailures = 0;
     }
+  }
+
+  /**
+   * Reset cooldown for rate-limited account. Preserves expired credentials safety gate.
+   */
+  public resetCooldown(email: string): boolean {
+    const key = email.toLowerCase();
+    const status = this.statuses.get(key);
+    if (!status) {
+      return false;
+    }
+    if (status.authExpired) {
+      return false;
+    }
+    this.unthrottle(email);
+    return true;
+  }
+
+  /**
+   * Report throttle event for an account
+   */
+  public reportThrottle(
+    email: string,
+    durationMs?: number,
+    reason: "daily" | "burst" = "burst"
+  ): void {
+    this.markThrottled(email, durationMs, reason);
+  }
+
+  /**
+   * Determine if an error is a fatal authentication/grant error requiring interactive re-login
+   */
+  public static isFatalAuthGrantError(err: unknown): boolean {
+    if (!err) return false;
+    let text = "";
+    if (typeof err === "string") {
+      text = err;
+    } else if (err instanceof Error) {
+      text = `${err.message} ${(err as any).description || ""} ${(err as any).code || ""}`;
+    } else if (typeof err === "object") {
+      text = `${(err as any).message || ""} ${(err as any).error || ""} ${(err as any).error_description || ""} ${(err as any).code || ""}`;
+    }
+    const lower = text.toLowerCase();
+
+    if (lower.includes("invalid_grant") || lower.includes("interaction_required")) {
+      return true;
+    }
+
+    const fatalCodes = [
+      "aadsts700082",
+      "aadsts70008",
+      "aadsts50173",
+      "aadsts50076",
+      "aadsts50079",
+      "aadsts50058",
+      "aadsts70000",
+    ];
+
+    return fatalCodes.some((code) => lower.includes(code));
+  }
+
+  public isFatalAuthGrantError(err: unknown): boolean {
+    return AccountPool.isFatalAuthGrantError(err);
+  }
+
+  /**
+   * Mark account authentication expired and release residual leases
+   */
+  public markAuthExpired(email: string, reason: string): void {
+    const key = email.toLowerCase();
+    let status = this.statuses.get(key);
+    if (!status) {
+      this.refreshAccountList();
+      status = this.statuses.get(key);
+    }
+    if (status) {
+      status.authExpired = true;
+      status.authErrorReason = reason;
+      status.isAvailable = false;
+      status.isThrottled = false;
+      status.cooldownUntil = 0;
+      status.throttleReason = "auth_error";
+    }
+
+    // Clean up residual session leases pointing to this email
+    for (const [sessionId, leasedEmail] of this.sessionLeases.entries()) {
+      if (leasedEmail === key) {
+        this.sessionLeases.delete(sessionId);
+      }
+    }
+    this.inFlightLeases.delete(key);
   }
 
   /**
@@ -550,6 +686,11 @@ export class AccountPool {
           continue;
         }
 
+        // Hard gate: skip authExpired or unavailable accounts
+        if (status.authExpired || status.isAvailable === false) {
+          continue;
+        }
+
         // Check if cooldown expired
         if (status.isThrottled && now >= status.cooldownUntil) {
           status.isThrottled = false;
@@ -575,10 +716,13 @@ export class AccountPool {
           status.totalRequests++;
           return session;
         } catch (err) {
-          // If token acquisition fails, mark throttled and continue to next account
-          status.isThrottled = true;
-          status.cooldownUntil = Date.now() + 60 * 1000;
-          status.throttledCount = (status.throttledCount || 0) + 1;
+          if (this.isFatalAuthGrantError(err)) {
+            this.markAuthExpired(acc.email, String((err as any)?.message || err));
+          } else {
+            status.isThrottled = true;
+            status.cooldownUntil = Date.now() + 60 * 1000;
+            status.throttledCount = (status.throttledCount || 0) + 1;
+          }
         } finally {
           this.inFlightLeases.delete(key);
         }
@@ -593,7 +737,7 @@ export class AccountPool {
     let earliest: AccountStatus | null = null;
     for (const acc of eligibleAccounts) {
       const st = this.statuses.get(acc.email.toLowerCase());
-      if (st && (!earliest || st.cooldownUntil < earliest.cooldownUntil)) {
+      if (st && st.isThrottled && st.cooldownUntil > 0 && (!earliest || st.cooldownUntil < earliest.cooldownUntil)) {
         earliest = st;
       }
     }
@@ -645,6 +789,12 @@ export class AccountPool {
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || err).toLowerCase();
+
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(token.email, String(err?.message || err));
+          continue; // relay to next account
+        }
+
         const isRateLimited =
           msg.includes("rate limit") ||
           msg.includes("too many requests") ||
@@ -682,7 +832,8 @@ export class AccountPool {
   }
 
   /**
-   * Acquire a Microsoft Graph access token from the active or specified account
+   * Acquire a Microsoft Graph access token from the active or specified account.
+   * Automatically iterates to locate the first healthy available account.
    */
   public async getGraphAccessToken(email?: string): Promise<string> {
     if (email) {
@@ -692,8 +843,118 @@ export class AccountPool {
     if (accounts.length === 0) {
       throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
     }
-    const idx = Math.max(0, (this.currentIndex - 1 + accounts.length) % accounts.length);
-    const target = accounts[idx];
-    return this.manager.getGraphAccessToken(target.email);
+
+    const now = Date.now();
+    const total = accounts.length;
+    const startIndex = this.currentIndex;
+
+    for (let i = 0; i < total; i++) {
+      const idx = (startIndex + i) % total;
+      const acc = accounts[idx];
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key);
+      if (!status) continue;
+
+      if (status.authExpired || status.isAvailable === false) {
+        continue;
+      }
+
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+      }
+
+      if (status.isThrottled) {
+        continue;
+      }
+
+      try {
+        const token = await this.manager.getGraphAccessToken(acc.email);
+        return token;
+      } catch (err) {
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(acc.email, String((err as any)?.message || err));
+        } else {
+          this.markThrottled(acc.email, 60 * 1000, "burst");
+        }
+      }
+    }
+
+    throw new Error("No healthy accounts available in pool for Graph access token");
+  }
+
+  /**
+   * Start a new PKCE authentication session for interactive sign-in
+   */
+  public startPkceAuth(targetEmail?: string): {
+    authSessionId: string;
+    authUrl: string;
+    state: string;
+  } {
+    const session = this.pkceService.startAuthSession(targetEmail);
+    this.pkceSessions.set(session.state, session.authSessionId);
+    this.pkceSessions.set(session.authSessionId, session.authSessionId);
+    if (targetEmail) {
+      this.pkceSessions.set(targetEmail.trim().toLowerCase(), session.authSessionId);
+    }
+    return session;
+  }
+
+  /**
+   * Complete PKCE authentication: exchanges authorization code, restores account health,
+   * clears authExpired state, and verifies identity.
+   */
+  public async completePkceAuth(
+    redirectUrlOrCode: string,
+    state?: string,
+    expectedEmail?: string
+  ): Promise<PkceExchangeResult> {
+    let resolvedState = state;
+    if (!resolvedState) {
+      try {
+        const extracted = this.pkceService.extractCodeAndState(redirectUrlOrCode);
+        resolvedState = extracted.state;
+      } catch {}
+    }
+
+    let targetSessionId = "";
+    if (resolvedState && this.pkceSessions.has(resolvedState)) {
+      targetSessionId = this.pkceSessions.get(resolvedState)!;
+    } else if (resolvedState) {
+      targetSessionId = resolvedState;
+    } else if (expectedEmail && this.pkceSessions.has(expectedEmail.trim().toLowerCase())) {
+      targetSessionId = this.pkceSessions.get(expectedEmail.trim().toLowerCase())!;
+    } else if (this.pkceService.findSession) {
+      const match = this.pkceService.findSession(
+        (s) => !expectedEmail || s.targetEmail?.toLowerCase() === expectedEmail.toLowerCase()
+      );
+      if (match) targetSessionId = match.authSessionId;
+    }
+
+    const result = await this.pkceService.exchangeCode(
+      targetSessionId,
+      redirectUrlOrCode,
+      expectedEmail
+    );
+
+    if (result.success && result.email) {
+      const key = result.email.toLowerCase();
+      let status = this.statuses.get(key);
+      if (!status) {
+        this.refreshAccountList();
+        status = this.statuses.get(key);
+      }
+      if (status) {
+        status.authExpired = false;
+        status.authErrorReason = undefined;
+        status.isAvailable = true;
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+        status.throttleReason = undefined;
+        status.consecutiveFailures = 0;
+      }
+    }
+
+    return result;
   }
 }

@@ -35,6 +35,7 @@ import { getNextUtcMidnight } from "../auth/account-pool.ts";
 export interface IAccountPool {
   markThrottled(email: string, durationMs?: number, reason?: "daily" | "burst"): void;
   getNextAvailableToken(options?: any): Promise<any>;
+  releaseSessionLease?(sessionId: string): void;
   refreshAccountList?(): any[];
   getPoolStatus?(): any[];
   [key: string]: any;
@@ -430,7 +431,8 @@ export class Orchestrator {
    * Runs an autonomous closed-loop programming task.
    */
   public async run(options: OrchestratorRunOptions): Promise<OrchestratorRunResult> {
-    const { task, signal, events } = options;
+    try {
+      const { task, signal, events } = options;
     const rootUserPrompt = options.rootUserPrompt || options.task;
 
     if (signal?.aborted) {
@@ -790,7 +792,7 @@ export class Orchestrator {
           // 重试当前 prompt，不递增正式 turn
           continue;
         }
-        // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环（空响应非429限流，严禁标记账号Throttled误杀健康账号）
+        // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环（空响应非429限流，保持账号健康状态，仅轮换至下一个可用账号）
         if (this.pool) {
           try {
             const currentEmail = (client as any)?.token?.email || "";
@@ -850,12 +852,27 @@ export class Orchestrator {
       if (parsed.type === "handoff") {
         const targetSessionId = options.sessionId || this.sessionId;
         let docPath: string | undefined;
+        let finalHandoffDoc = (parsed.handoffDoc || "").trim();
+
         if (this.workspaceRoot) {
           const handoffsDir = path.join(this.workspaceRoot, ".cph", "handoffs");
           fs.mkdirSync(handoffsDir, { recursive: true });
           docPath = path.join(handoffsDir, `handoff-${targetSessionId}.md`);
-          fs.writeFileSync(docPath, parsed.handoffDoc, "utf8");
-          this.lastHandoffDocPath = docPath;
+
+          if (finalHandoffDoc.length >= 50) {
+            fs.writeFileSync(docPath, finalHandoffDoc, "utf8");
+            this.lastHandoffDocPath = docPath;
+          } else {
+            if (fs.existsSync(docPath)) {
+              try { fs.unlinkSync(docPath); } catch {}
+            }
+            finalHandoffDoc = this.generateHandoffSnapshot(task, history, targetSessionId);
+            docPath = this.lastHandoffDocPath;
+          }
+        } else {
+          if (finalHandoffDoc.length < 50) {
+            finalHandoffDoc = this.generateHandoffSnapshot(task, history, targetSessionId);
+          }
         }
 
         history.push({
@@ -865,7 +882,7 @@ export class Orchestrator {
           response: turnResponseText,
         });
         events?.onTurnEnd?.(turn, turnResponseText);
-        events?.onHandoff?.(parsed.handoffDoc, docPath);
+        events?.onHandoff?.(finalHandoffDoc, docPath);
 
         return {
           finalAnswer: "Session handed off with native handoff document.",
@@ -873,7 +890,7 @@ export class Orchestrator {
           completed: false,
           history,
           handedOff: true,
-          handoffSnapshot: parsed.handoffDoc,
+          handoffSnapshot: finalHandoffDoc,
           handoffDocPath: docPath,
         };
       }
@@ -945,6 +962,11 @@ export class Orchestrator {
           if (!isInlineScout) {
             // Generational transition to Successor Main Session
             const prevSessionId = this.sessionId;
+            if (this.pool && prevSessionId && typeof (this.pool as any).releaseSessionLease === "function") {
+              try {
+                (this.pool as any).releaseSessionLease(prevSessionId);
+              } catch {}
+            }
             this.generation++;
             const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
             this.sessionId = nextSessionId;
@@ -963,9 +985,10 @@ export class Orchestrator {
 
             if (!this.chatClient && this.pool) {
               try {
-                const token = await this.pool.getNextAvailableToken(
-                  this.customAgentId ? { forAgentId: this.customAgentId } : undefined
-                );
+                const token = await this.pool.getNextAvailableToken({
+                  sessionId: nextSessionId,
+                  ...(this.customAgentId ? { forAgentId: this.customAgentId } : {}),
+                });
                 client = this.chatClientFactory
                   ? this.chatClientFactory(token, {
                       modelTone: this.modelTone,
@@ -1247,7 +1270,16 @@ export class Orchestrator {
       handoffSnapshot,
       handoffDocPath,
     };
+  } finally {
+    if (this.pool && this.sessionId) {
+      try {
+        if (typeof (this.pool as any).releaseSessionLease === "function") {
+          (this.pool as any).releaseSessionLease(this.sessionId);
+        }
+      } catch {}
+    }
   }
+}
 
   /**
    * Helper to extract key error message from tool output without context bloat.
@@ -1381,8 +1413,47 @@ export class Orchestrator {
     }
 
     let verifiedFactsSection = "";
+    let diskLedgerEntries: any[] = [];
+    if (this.workspaceRoot) {
+      try {
+        const ledgerJsonlPath = path.join(this.workspaceRoot, ".cph", "state", "execution-ledger.jsonl");
+        if (fs.existsSync(ledgerJsonlPath)) {
+          const lines = fs.readFileSync(ledgerJsonlPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          for (const line of lines) {
+            try {
+              diskLedgerEntries.push(JSON.parse(line));
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
     if (history.length === 0) {
-      verifiedFactsSection = `- （暂无已执行的物理动作成果）\n\n**已执行动作清单**:\n- 无已执行的物理工具调用\n\n**最近工具发现与上下文**:\n- 暂无显著工具发现`;
+      if (diskLedgerEntries.length > 0) {
+        const parts: string[] = [
+          `- **物理工具执行汇总 (来自磁盘总账 \`.cph/state/execution-ledger.jsonl\` 共 ${diskLedgerEntries.length} 项记录)**:`,
+        ];
+        const actions: string[] = [];
+        const findings: string[] = [];
+        for (const entry of diskLedgerEntries) {
+          const status = entry.success !== false ? "成功" : "失败";
+          const tool = entry.canonicalTool || entry.tool || "tool";
+          const target = entry.actionTarget ? ` (${entry.actionTarget})` : "";
+          actions.push(`- Step ${entry.stepIndex ?? "?"}: [${status}] ${tool}${target}`);
+          if (entry.outputSummary) {
+            findings.push(`- Step ${entry.stepIndex ?? "?"} (${tool}): ${entry.outputSummary}`);
+          }
+        }
+        parts.push(``);
+        parts.push(`**已执行动作清单**:`);
+        parts.push(actions.join("\n"));
+        parts.push(``);
+        parts.push(`**最近工具发现与上下文**:`);
+        parts.push(findings.length > 0 ? findings.slice(-5).join("\n") : "- 暂无显著工具发现");
+        verifiedFactsSection = parts.join("\n");
+      } else {
+        verifiedFactsSection = `- （暂无已执行的物理动作成果）\n\n**已执行动作清单**:\n- 无已执行的物理工具调用\n\n**最近工具发现与上下文**:\n- 暂无显著工具发现`;
+      }
     } else {
       const parts: string[] = [];
 
@@ -1533,7 +1604,7 @@ export class Orchestrator {
     }
 
     nextSteps.push(
-      `- **避坑提示**: 请勿重复执行前序已验证成功的步骤与文件探测，直接基于上述已验证客观事实推进。`
+      `- **推进提示**: 请直接基于上述已验证客观事实推进，复用前序已验证成功的步骤与文件探测成果。`
     );
     nextStepsSection = [
       `**接力建议**: 请接续上方成果与状态，避免重复执行已验证步骤，继续完成剩余需求。`,
@@ -2086,7 +2157,7 @@ export class Orchestrator {
       `2. 【已验证客观事实与阶段性成果】（提炼前序已确认事实与已生成资产）`,
       `3. 【关键卡点、报错与最新诊断】（客观记录中断原因与现场状态）`,
       `4. 【已修改/生成文件清单】（记录已落盘与已修改的文件）`,
-      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，严禁误导后继者提前交付退出）`,
+      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，请明确未完成切片的具体行动路径，引导后继会话优先推进核心业务交付）`,
       ``,
       `【行动交付要求】`,
       `请必须使用 action: write_file 将交接文档写入 \`${targetHandoffRelativePath}\`。`,
@@ -2150,16 +2221,23 @@ export class Orchestrator {
       events?.onToolEnd?.(toolResult);
     }
 
-    // Guarantee persistence if not already created on disk by write_file
-    if (!fs.existsSync(targetHandoffAbsolutePath)) {
-      const contentToPersist =
+    // Guarantee persistence if not already created on disk or if created file is damaged (< 50 bytes)
+    const existingArbitrationDoc = fs.existsSync(targetHandoffAbsolutePath)
+      ? fs.readFileSync(targetHandoffAbsolutePath, "utf8").trim()
+      : "";
+
+    if (existingArbitrationDoc.length < 50) {
+      const candidateContent = (
         parsed.type === "handoff"
-          ? parsed.handoffDoc
+          ? (parsed.handoffDoc || "")
           : parsed.type === "final_answer"
           ? (parsed.answer.summary || parsed.answer.raw || arbitratorResponseText)
           : (parsed.type === "action" && parsed.action?.content)
           ? parsed.action.content
-          : arbitratorResponseText;
+          : arbitratorResponseText
+      ).trim();
+      const contentToPersist =
+        candidateContent.length >= 50 ? candidateContent : disasterBlackbox;
       fs.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
 

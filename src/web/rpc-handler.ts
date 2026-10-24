@@ -97,6 +97,8 @@ export interface AccountInfo {
   totalRequests: number;
   throttledCount: number;
   throttleReason?: "daily" | "burst" | "agent_ineligible";
+  authExpired?: boolean;
+  authErrorReason?: string;
 }
 
 export interface CustomAgentItem {
@@ -121,6 +123,7 @@ export interface AgentConfig {
 export interface WsPacket<T = unknown> {
   type: string;
   payload?: T;
+  data?: T;
 }
 
 export interface RpcHandlerOptions {
@@ -160,6 +163,10 @@ export class RpcHandler {
   private pendingHandoffSnapshot: string | null = null;
   private maxAutonomousHandoffHops: number = 3;
   private graphTokenProvider?: () => Promise<string>;
+
+  public get orchestrator(): any {
+    return this.options.orchestrator;
+  }
 
   public static getGlobalConfigPath(): string {
     if (process.env.CPH_GLOBAL_CONFIG_PATH) {
@@ -293,7 +300,9 @@ export class RpcHandler {
     }
 
     if (this.ws && typeof this.ws.on === "function") {
-      this.ws.on("message", (data: RawData) => this.handleMessage(data));
+      this.ws.on("message", (data: RawData) => {
+        void this.handleMessage(data);
+      });
       this.ws.on("error", (err) => {
         console.warn("[RpcHandler] WebSocket error:", err.message);
       });
@@ -318,7 +327,7 @@ export class RpcHandler {
             process.stdout.write(`[${timeStr}] [Web RPC ==> ${type}] ${preview}\n`);
           }
         }
-        this.ws.send(JSON.stringify({ type, payload }));
+        this.ws.send(JSON.stringify({ type, payload, data: payload }));
       } catch (err: any) {
         console.warn(`[RpcHandler] Failed to send packet ${type}:`, err.message);
       }
@@ -328,63 +337,75 @@ export class RpcHandler {
   /**
    * Handle incoming raw WebSocket messages
    */
-  private handleMessage(data: RawData | string): void {
+  private async handleMessage(data: RawData | string): Promise<void> {
     try {
       const rawStr = typeof data === "string" ? data : data.toString("utf-8");
       const packet = JSON.parse(rawStr) as WsPacket<any>;
       if (!packet || typeof packet.type !== "string") return;
 
+      const rawPayload = packet.payload !== undefined ? packet.payload : packet.data;
+
       if (this.debug) {
         const timeStr = new Date().toISOString().slice(11, 19);
-        const preview = packet.payload ? JSON.stringify(packet.payload).slice(0, 120) : "";
+        const preview = rawPayload ? JSON.stringify(rawPayload).slice(0, 120) : "";
         process.stdout.write(`[${timeStr}] [Web RPC <== ${packet.type}] ${preview}\n`);
       }
 
       switch (packet.type) {
         case "session:new":
-          this.handleSessionNew(packet.payload);
+          this.handleSessionNew(rawPayload);
           break;
         case "session:select":
-          this.handleSessionSelect(packet.payload);
+          this.handleSessionSelect(rawPayload);
           break;
         case "workspace:set":
-          this.handleWorkspaceSet(packet.payload);
+          this.handleWorkspaceSet(rawPayload);
           break;
         case "workspace:verify-cloud":
-          this.handleWorkspaceVerifyCloud(packet.payload);
+          this.handleWorkspaceVerifyCloud(rawPayload);
           break;
         case "workspace:sync-cloud":
-          this.handleWorkspaceSyncCloud(packet.payload);
+          this.handleWorkspaceSyncCloud(rawPayload);
           break;
         case "accounts:list":
           this.send("accounts:update", this.getAccountsPayload());
           break;
         case "accounts:toggle":
-          this.handleAccountToggle(packet.payload);
+          this.handleAccountToggle(rawPayload);
           break;
         case "accounts:whitelist":
-          this.handleAccountWhitelist(packet.payload);
+          this.handleAccountWhitelist(rawPayload);
           break;
         case "accounts:reset-cooldown":
-          this.handleAccountResetCooldown(packet.payload);
+        case "account:reset-cooldown":
+        case "account:reset_cooldown":
+          this.handleAccountResetCooldown(rawPayload);
+          break;
+        case "account:pkce_start":
+        case "auth:start-pkce":
+          this.handlePkceStart(rawPayload);
+          break;
+        case "account:pkce_complete":
+        case "auth:exchange-code":
+          await this.handlePkceComplete(rawPayload);
           break;
         case "agent:get":
           this.send("agent:update", this.getAgentConfigPayload());
           break;
         case "agent:set":
-          this.handleAgentSet(packet.payload);
+          this.handleAgentSet(rawPayload);
           break;
         case "agent:reset":
-          this.handleAgentReset(packet.payload);
+          this.handleAgentReset(rawPayload);
           break;
         case "agent:add-custom":
-          this.handleAgentAddCustom(packet.payload);
+          this.handleAgentAddCustom(rawPayload);
           break;
         case "agent:remove-custom":
-          this.handleAgentRemoveCustom(packet.payload);
+          this.handleAgentRemoveCustom(rawPayload);
           break;
         case "user:submit":
-          this.handleUserSubmit(packet.payload);
+          this.handleUserSubmit(rawPayload);
           break;
         case "user:interrupt":
           this.handleUserInterrupt();
@@ -1033,6 +1054,9 @@ export class RpcHandler {
    * Handle session:new packet
    */
   private handleSessionNew(payload?: { title?: string }): void {
+    if (this.options.orchestrator && typeof this.options.orchestrator.resetHandshake === "function") {
+      this.options.orchestrator.resetHandshake();
+    }
     const title = payload?.title || "新会话";
     let newId = `ses_${Date.now()}`;
     const modelTone =
@@ -1157,9 +1181,18 @@ export class RpcHandler {
         this.send("turn:end", { error: err?.message || String(err) });
       } finally {
         this.running = false;
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
       }
     } else {
-      await this.runDefaultGeneration(newTurn, executionTask, targetSkill);
+      try {
+        await this.runDefaultGeneration(newTurn, executionTask, targetSkill);
+      } finally {
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
+      }
     }
   }
 
@@ -1461,12 +1494,24 @@ export class RpcHandler {
             const nextStage = hopCount + 1;
             const prevSessionId = this.activeSessionId || sessionId;
             let newSessionId = `ses_${Date.now()}`;
+            let newSessionTitle = `接力任务 (接力 ${hopCount})`;
+
+            // 1. Release predecessor lease
+            if (this.pool && prevSessionId) {
+              this.pool.releaseSessionLease(prevSessionId);
+            }
+
+            // 2. Reset handshake state (Fix F4)
+            if (this.options.orchestrator && typeof this.options.orchestrator.resetHandshake === "function") {
+              this.options.orchestrator.resetHandshake();
+            }
 
             if (this.sessionManager) {
               const prevRecord = this.sessionManager.loadSession(prevSessionId);
               const rootTitle = prevRecord?.title || "接力任务";
+              newSessionTitle = `${rootTitle} (接力 ${hopCount})`;
               const newSession = this.sessionManager.createSession({
-                title: `${rootTitle} (接力 ${hopCount})`,
+                title: newSessionTitle,
                 workspaceRoot: this.workspaceRoot || undefined,
                 maxTurns,
                 modelTone,
@@ -1498,6 +1543,7 @@ export class RpcHandler {
               }
             }
 
+            // 3. Broadcast session handoff and creation
             this.send("session:handoff", {
               predecessorSessionId: prevSessionId,
               successorSessionId: newSessionId,
@@ -1506,18 +1552,26 @@ export class RpcHandler {
               generation: nextStage,
             });
 
+            this.send("session:created", {
+              sessionId: newSessionId,
+              title: newSessionTitle,
+              generation: nextStage,
+              predecessorSessionId: prevSessionId,
+            });
+
             this.send("terminal:chunk", {
               stream: "system",
               content: `\n🔄 [Auto-Handoff] 已自动开启接力新阶段 (第 ${hopCount}/${this.maxAutonomousHandoffHops} 跳): ${newSessionId}\n`,
             });
 
+            // 5. Constructive positive guidance (clean negative prohibition words)
             currentTaskPrompt = [
               `【自主接力延续任务 - 阶段 ${nextStage}】`,
               `终极目标: ${rootTaskPrompt}`,
               `交接资产: 详细交接文档已${currentInitialAnnotations ? "通过云端附件无损送达" : "落盘于工作区"} (本地路径: ${runResult.handoffDocPath || "未落盘"})`,
               `物理账本: .cph/state/execution-ledger.md`,
               `【接力行动准则】`,
-              `请优先推进未完成的核心业务切片，严禁仅做基线核验即提前退出。`,
+              `请优先推进未完成的核心业务切片，聚焦于增量功能交付与深度代码构建，持续输出实质性工程成果。`,
             ].join("\n");
 
             const nextTurnId = `turn-${Date.now()}`;
@@ -1537,6 +1591,14 @@ export class RpcHandler {
             };
             this.turns.push(nextTurn);
             currentTurn = nextTurn;
+
+            // 4. Broadcast turn:start
+            this.send("turn:start", {
+              turn: nextTurn,
+              activeSessionId: newSessionId,
+              generation: nextStage,
+            });
+
             continue;
           }
 
@@ -1556,6 +1618,9 @@ export class RpcHandler {
         }
       } finally {
         this.activeAbortController = undefined;
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
       }
     } else if (typeof orchestrator.runTurn === "function") {
       // Compatibility with runTurn test mocks
@@ -1680,6 +1745,10 @@ export class RpcHandler {
       }
     }
 
+    if (this.pool && this.activeSessionId) {
+      this.pool.releaseSessionLease(this.activeSessionId);
+    }
+
     this.send("turn:end", { status: "interrupted" });
   }
 
@@ -1766,8 +1835,17 @@ export class RpcHandler {
       totalRequests: s.totalRequests,
       throttledCount: s.throttledCount,
       throttleReason: s.throttleReason,
+      authExpired: s.authExpired,
+      authErrorReason: s.authErrorReason,
     }));
     return { accounts, allowedAccounts: allowed ?? null };
+  }
+
+  /**
+   * Broadcast current account pool status to client
+   */
+  public sendAccountsStatus(): void {
+    this.send("accounts:update", this.getAccountsPayload());
   }
 
   /**
@@ -1790,7 +1868,7 @@ export class RpcHandler {
     }
     const allowed = this.pool.getAllowedAccounts();
     this.saveWorkspaceConfig({ allowedAccounts: allowed });
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
   }
 
   /**
@@ -1802,7 +1880,7 @@ export class RpcHandler {
       Array.isArray(payload.emails) && payload.emails.length > 0 ? payload.emails : undefined;
     this.pool.setAllowedAccounts(emails);
     this.saveWorkspaceConfig({ allowedAccounts: emails });
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
   }
 
   /**
@@ -1811,7 +1889,58 @@ export class RpcHandler {
   private handleAccountResetCooldown(payload?: { email: string }): void {
     if (!payload || !payload.email) return;
     this.pool.resetCooldown(payload.email);
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
+  }
+
+  /**
+   * Handle PKCE authentication initiation
+   */
+  private handlePkceStart(rawPayload?: any): void {
+    const payload = rawPayload?.payload || rawPayload?.data || rawPayload;
+    const targetEmail = payload?.email || payload?.targetEmail;
+    try {
+      const session = this.pool.startPkceAuth(targetEmail);
+      const data = {
+        authSessionId: session.authSessionId,
+        authUrl: session.authUrl,
+        state: session.state,
+        targetEmail,
+      };
+      this.send("account:pkce_started", {
+        ...data,
+        data,
+      });
+    } catch (err: any) {
+      const errData = { message: err?.message || String(err) };
+      this.send("account:pkce_error", {
+        ...errData,
+        data: errData,
+      });
+    }
+  }
+
+  /**
+   * Handle PKCE authentication code exchange
+   */
+  private async handlePkceComplete(rawPayload?: any): Promise<void> {
+    const payload = rawPayload?.payload || rawPayload?.data || rawPayload;
+    try {
+      const redirectUrl = payload?.redirectUrl || payload?.url || payload?.code || "";
+      const state = payload?.state;
+      const expectedEmail = payload?.expectedEmail || payload?.email;
+      const result = await this.pool.completePkceAuth(redirectUrl, state, expectedEmail);
+      this.sendAccountsStatus();
+      this.send("account:pkce_completed", {
+        ...result,
+        data: result,
+      });
+    } catch (err: any) {
+      const errData = { message: err?.message || String(err) };
+      this.send("account:pkce_error", {
+        ...errData,
+        data: errData,
+      });
+    }
   }
 
   /**

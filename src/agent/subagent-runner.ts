@@ -217,7 +217,12 @@ export class SubagentRunner {
   ): Promise<SubagentTaskReport[]> {
     const poolStatus = (this.pool?.getPoolStatus?.() || []) as any[];
     const activeAllowedAccounts = poolStatus.filter(
-      (acc) => acc.isAllowed !== false && !acc.isThrottled && !acc.isLeased
+      (acc) =>
+        acc.isAllowed !== false &&
+        !acc.isThrottled &&
+        !acc.isLeased &&
+        !acc.authExpired &&
+        acc.isAvailable !== false
     );
     const effectiveCapacity =
       activeAllowedAccounts.length > 0
@@ -925,7 +930,7 @@ export class SubagentRunner {
     parts.push(`【主控对账与推进指引 (Plan Convergence Guidance)】:`);
     parts.push(`1. 对于状态为【✅ 成功】的子任务，其完整交付报告已落盘至对应物理文件，请立即使用 patch_file 将 plan.md 对应项更新打勾为 \`- [x] ...\`；`);
     if (failedCount > 0) {
-      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，严禁全盘推翻已完成成果或重写整个计划！`);
+      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，请保护并复用已成功编写的计划，针对失败项进行定向补充！`);
     } else {
       parts.push(`2. 所有规划子任务均已圆满交付，若无后续 Stage，即可验证后收敛输出 FINAL_ANSWER。`);
     }

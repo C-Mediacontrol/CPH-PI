@@ -2,7 +2,56 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { CopilotOrchestrator, TurnRecord } from "../../src/agent/orchestrator";
+import {
+  CopilotOrchestrator,
+  type TurnRecord,
+  type IOrchestratorChatClient,
+  type IAccountPool,
+} from "../../src/agent/orchestrator.ts";
+import { ToolBridge } from "../../src/protocol/tool-bridge.ts";
+
+class MockChatClient implements IOrchestratorChatClient {
+  public responses: string[] = [];
+  public callCount = 0;
+  public sentPrompts: string[] = [];
+  public token = { email: "dev@contoso.com" };
+
+  constructor(responses: string[]) {
+    this.responses = responses;
+  }
+
+  async sendMessage(params: { text: string; [key: string]: any }): Promise<{ text: string }> {
+    this.sentPrompts.push(params.text);
+    const resp = this.responses[this.callCount] ?? "FINAL_ANSWER: Done";
+    this.callCount++;
+    return { text: resp };
+  }
+}
+
+class MockAccountPool implements IAccountPool {
+  public releasedSessions: string[] = [];
+  public requestedTokens: any[] = [];
+  public currentLeases = new Map<string, string>();
+
+  markThrottled(email: string, durationMs?: number, reason?: "daily" | "burst"): void {}
+
+  async getNextAvailableToken(options?: any): Promise<any> {
+    this.requestedTokens.push(options);
+    if (options?.sessionId) {
+      this.currentLeases.set(options.sessionId, "dev@contoso.com");
+    }
+    return { email: "dev@contoso.com", token: "mock-token" };
+  }
+
+  releaseSessionLease(sessionId: string): void {
+    this.releasedSessions.push(sessionId);
+    this.currentLeases.delete(sessionId);
+  }
+
+  refreshAccountList() {
+    return [{ email: "dev@contoso.com" }];
+  }
+}
 
 describe("CR-3 Harness Governance Cleanliness & Neutrality (AGENTS.md Principles 1, 3, 6)", () => {
   let tempDir: string;
@@ -11,8 +60,7 @@ describe("CR-3 Harness Governance Cleanliness & Neutrality (AGENTS.md Principles
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-governance-test-"));
     orchestrator = new CopilotOrchestrator({
-      model: "gpt-4o",
-      copilotToken: "dummy-token",
+      modelTone: "balanced",
       workspaceRoot: tempDir,
     });
   });
@@ -54,10 +102,7 @@ describe("CR-3 Harness Governance Cleanliness & Neutrality (AGENTS.md Principles
       },
     ];
 
-    // Call generateHandoffMarkdown (or generateHandoffSnapshot)
-    const doc = orchestrator.generateHandoffMarkdown
-      ? orchestrator.generateHandoffMarkdown(task, history, "session-gov-001")
-      : orchestrator.generateHandoffSnapshot(task, history, "session-gov-001");
+    const doc = orchestrator.generateHandoffSnapshot(task, history, "session-gov-001");
 
     // 1. Strict governance: MUST NOT contain hardcoded third-party environment blocker patches
     expect(doc).not.toContain("环境卡点: 缺少 .NET SDK 8 环境或安装中断，导致相关组件构建受阻");
@@ -72,7 +117,6 @@ describe("CR-3 Harness Governance Cleanliness & Neutrality (AGENTS.md Principles
     expect(doc).not.toContain("环境修复指引: 检测到 .NET SDK / winget");
 
     // 3. Harness neutrality & Blackbox contract (Principles 1 & 6):
-    // Objectively records the actual failed command and output context without biased editorializing
     expect(doc).toContain("【关键卡点、报错与最新诊断】");
     expect(doc).toContain("winget install --id Microsoft.DotNet.SDK.8 --exact");
     expect(doc).toContain("dotnet --list-sdks");
@@ -102,17 +146,260 @@ describe("CR-3 Harness Governance Cleanliness & Neutrality (AGENTS.md Principles
       },
     ];
 
-    const doc = orchestrator.generateHandoffMarkdown
-      ? orchestrator.generateHandoffMarkdown(task, history, "session-gov-002")
-      : orchestrator.generateHandoffSnapshot(task, history, "session-gov-002");
+    const doc = orchestrator.generateHandoffSnapshot(task, history, "session-gov-002");
 
-    // Must be completely free of .NET or winget references
     expect(doc).not.toContain(".NET SDK");
     expect(doc).not.toContain("winget");
     expect(doc).not.toContain("切勿");
 
-    // Must cleanly record the cargo error
     expect(doc).toContain("cargo build --release");
     expect(doc).toContain("unresolved import `serde_json`");
+  });
+
+  // ================= Task 3 Specific Governance & Cleanliness Tests =================
+
+  it("Seal Point A: should intercept < 50 byte inline handoff, clean 0-byte file, and fallback to snapshot synthesis >= 50 bytes", async () => {
+    const handoffsDir = path.join(tempDir, ".cph", "handoffs");
+    fs.mkdirSync(handoffsDir, { recursive: true });
+    const targetSessionId = "test-empty-handoff-session";
+    const docPath = path.join(handoffsDir, `handoff-${targetSessionId}.md`);
+    // Pre-create a damaged 0-byte handoff file
+    fs.writeFileSync(docPath, "", "utf8");
+    expect(fs.statSync(docPath).size).toBe(0);
+
+    // Client emits an empty handoff block
+    const mockClient = new MockChatClient([
+      "```handoff\n```",
+    ]);
+
+    const orch = new CopilotOrchestrator({
+      workspaceRoot: tempDir,
+      chatClient: mockClient,
+      sessionId: targetSessionId,
+      isHandshakePending: false,
+    });
+
+    const result = await orch.run({
+      task: "重构鉴权模块并执行测试",
+      sessionId: targetSessionId,
+    });
+
+    expect(result.handedOff).toBe(true);
+    expect(result.handoffSnapshot).toBeDefined();
+    expect(result.handoffSnapshot!.length).toBeGreaterThanOrEqual(50);
+    expect(fs.existsSync(docPath)).toBe(true);
+    const persistedContent = fs.readFileSync(docPath, "utf8");
+    expect(persistedContent.length).toBeGreaterThanOrEqual(50);
+    expect(persistedContent).toContain("【任务目标与原始需求】");
+  });
+
+  it("Seal Point B: should intercept 0-byte arbitration output and overwrite with disasterBlackbox >= 50 bytes", async () => {
+    const handoffsDir = path.join(tempDir, ".cph", "handoffs");
+    fs.mkdirSync(handoffsDir, { recursive: true });
+    const sessionId = "session-victim-123";
+    const docPath = path.join(handoffsDir, `handoff-${sessionId}.md`);
+    // Pre-create damaged 0-byte arbitration file
+    fs.writeFileSync(docPath, "", "utf8");
+    expect(fs.statSync(docPath).size).toBe(0);
+
+    // Arbitrator client returns empty text or action without content
+    const arbClient = new MockChatClient([
+      "",
+    ]);
+
+    const orch = new CopilotOrchestrator({
+      workspaceRoot: tempDir,
+      sessionId,
+      arbitratorChatClient: arbClient,
+    });
+
+    const res = await (orch as any).executeDisasterRecoveryArbitration({
+      task: "紧急容灾恢复任务",
+      history: [],
+      client: {} as any,
+      lastError: "Rate limit 429",
+      sessionId,
+      arbitratorChatClient: arbClient,
+    });
+
+    expect(res.handedOff).toBe(true);
+    expect(fs.existsSync(docPath)).toBe(true);
+    const fileContent = fs.readFileSync(docPath, "utf8");
+    expect(fileContent.length).toBeGreaterThanOrEqual(50);
+    expect(fileContent).toContain("事故现场黑匣子快照");
+    expect(fileContent).toContain("429_RATE_LIMIT");
+  });
+
+  it("Real Ledger Path: generateHandoffSnapshot should reference .cph/state/execution-ledger.jsonl instead of nonexistent wal.jsonl", () => {
+    const stateDir = path.join(tempDir, ".cph", "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const jsonlPath = path.join(stateDir, "execution-ledger.jsonl");
+
+    // Write mock ledger entries to the real execution-ledger.jsonl path
+    const entry1 = {
+      stepIndex: 1,
+      canonicalTool: "read_file",
+      actionTarget: "src/auth/token-manager.ts",
+      success: true,
+      timestamp: Date.now(),
+    };
+    const entry2 = {
+      stepIndex: 2,
+      canonicalTool: "run_command",
+      actionTarget: "bun test",
+      success: true,
+      timestamp: Date.now(),
+    };
+    fs.writeFileSync(jsonlPath, `${JSON.stringify(entry1)}\n${JSON.stringify(entry2)}\n`, "utf8");
+
+    const snapshot = orchestrator.generateHandoffSnapshot("执行账本验证", [], "session-ledger-test");
+
+    // MUST NOT reference nonexistent wal.jsonl
+    expect(snapshot).not.toContain("wal.jsonl");
+    // MUST reference real ledger path and incorporate entries
+    expect(snapshot).toContain("execution-ledger.jsonl");
+    expect(snapshot).toContain("src/auth/token-manager.ts");
+    expect(snapshot).toContain("bun test");
+  });
+
+  it("Session Lease Lifecycle: orchestrator.run() should release session lease in finally block on exit", async () => {
+    const mockPool = new MockAccountPool();
+    const mockClient = new MockChatClient(["FINAL_ANSWER: Success!"]);
+
+    const orch = new CopilotOrchestrator({
+      workspaceRoot: tempDir,
+      chatClient: mockClient,
+      pool: mockPool,
+      sessionId: "session-lease-test-1",
+      isHandshakePending: false,
+    });
+
+    await orch.run({
+      task: "测试正常退出释放租约",
+      sessionId: "session-lease-test-1",
+    });
+
+    expect(mockPool.releasedSessions).toContain("session-lease-test-1");
+  });
+
+  it("Session Lease Lifecycle: orchestrator.run() should release session lease in finally block on exception", async () => {
+    const mockPool = new MockAccountPool();
+    const throwingClient: IOrchestratorChatClient = {
+      sendMessage: async () => {
+        throw new Error("Fatal network crash");
+      },
+    };
+
+    const orch = new CopilotOrchestrator({
+      workspaceRoot: tempDir,
+      chatClient: throwingClient,
+      pool: mockPool,
+      sessionId: "session-lease-error-test",
+      isHandshakePending: false,
+    });
+
+    try {
+      await orch.run({
+        task: "测试异常退出释放租约",
+        sessionId: "session-lease-error-test",
+      });
+    } catch {
+      // Expected error
+    }
+
+    expect(mockPool.releasedSessions).toContain("session-lease-error-test");
+  });
+
+  it("Generational Virtualization: should release previous generation lease and request token with nextSessionId", async () => {
+    const mockPool = new MockAccountPool();
+    const initialSessionId = "session-gen-root";
+    const subagentAction = "```action\ntool: invoke_subagent\nsubagents:\n  - role: coder\n    prompt: write unit tests\n```";
+    const finalAnswer = "FINAL_ANSWER: All done";
+
+    const mockClient = new MockChatClient([subagentAction, finalAnswer]);
+    const mockRunner = {
+      executeBatch: async () => [
+        { id: "sub-1", role: "coder", success: true, finalAnswer: "Tests written", deliverablePath: ".cph/reports/r.md" },
+      ],
+      formatReportSummary: () => "Summary of reports",
+    };
+
+    const orch = new CopilotOrchestrator({
+      workspaceRoot: tempDir,
+      chatClientFactory: () => mockClient,
+      pool: mockPool,
+      subagentRunner: mockRunner,
+      sessionId: initialSessionId,
+      isHandshakePending: false,
+    });
+
+    await orch.run({
+      task: "测试世代接力租约释放",
+      sessionId: initialSessionId,
+    });
+
+    // Root session must have been released during generational handover
+    expect(mockPool.releasedSessions).toContain(initialSessionId);
+    // Successor generation must have requested a token with sessionId
+    const successorTokenReq = mockPool.requestedTokens.find(
+      (req) => req?.sessionId && req.sessionId.includes("_gen2")
+    );
+    expect(successorTokenReq).toBeDefined();
+  });
+
+  it("Constructive Guidance: prompt and skill files MUST NOT contain negative prohibition phrases", () => {
+    const projectRoot = path.resolve(__dirname, "../../");
+    const filesToCheck = [
+      path.join(projectRoot, "src/agent/orchestrator.ts"),
+      path.join(projectRoot, "src/agent/subagent-runner.ts"),
+      path.join(projectRoot, "src/protocol/prompt-builder.ts"),
+      path.join(projectRoot, "skills/handoff/SKILL.md"),
+    ];
+
+    // Negative prohibition keywords forbidden by AGENTS.md Principle 3
+    const forbiddenPatterns = [
+      "严禁",
+      "切勿",
+      "绝不",
+      "绝不允许",
+    ];
+
+    for (const filePath of filesToCheck) {
+      expect(fs.existsSync(filePath)).toBe(true);
+      const content = fs.readFileSync(filePath, "utf8");
+
+      for (const pattern of forbiddenPatterns) {
+        // Exclude this test file itself and comments explaining principles if any
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Skip pure English comments or instructions referencing AGENTS.md rules about prohibitions
+          if (line.includes("Principle 3") || line.includes("禁止词") || line.includes("负面词")) {
+            continue;
+          }
+          if (line.includes(pattern)) {
+            throw new Error(`File ${filePath}:${i + 1} contains forbidden prohibition '${pattern}':\n${line.trim()}`);
+          }
+        }
+      }
+    }
+  });
+
+  it("ToolBridge Neutrality: ToolBridge must NOT inject Notice or subjective lecturing into tool output", async () => {
+    const bridge = new ToolBridge(tempDir);
+    const testFile = path.join(tempDir, "sample.txt");
+    const rawContent = "Hello, world!\nLine 2\nLine 3";
+    fs.writeFileSync(testFile, rawContent, "utf8");
+
+    const result = await bridge.executeAction({
+      tool: "read_file",
+      path: testFile,
+    });
+
+    expect(result.success).toBe(true);
+    // Raw output MUST be 100% pure without notices
+    expect(result.rawOutput).toBe(rawContent);
+    expect(result.output).not.toContain("Notice:");
+    expect(result.output).not.toContain("Notice");
   });
 });

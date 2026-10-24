@@ -41,6 +41,7 @@ export interface Turn {
     durationMs: number;
     tokensIn?: number;
     tokensOut?: number;
+    tokens?: number;
     tps?: number;
     model: string;
   };
@@ -65,7 +66,47 @@ export interface ContextMetrics {
   activeAgent: string;
 }
 
-export type RightbarTab = 'files' | 'terminal' | 'diff' | 'ledger' | 'context';
+export interface SubagentTaskSpec {
+  prompt?: string;
+  description?: string;
+  targetFile?: string;
+  stage?: number;
+}
+
+export interface SubagentState {
+  id: string;
+  toolId?: string;
+  role: "researcher" | "coder" | string;
+  spec?: SubagentTaskSpec;
+  status: "queued" | "running" | "completed" | "failed";
+  account?: string;
+  hopCount: number;
+  currentTurn: number;
+  reasoning: string;
+  actions: Array<{ tool: string; args: any; output?: string; timestamp: number }>;
+  report?: {
+    id: string;
+    role: string;
+    description: string;
+    success: boolean;
+    finalAnswer: string;
+    deliverablePath?: string;
+    durationMs: number;
+    turnsCount: number;
+  };
+  durationMs?: number;
+  startTime: number;
+}
+
+export interface SessionHandoffPayload {
+  predecessorSessionId: string;
+  successorSessionId: string;
+  handoffDocPath?: string;
+  memoSnippet?: string;
+  generation: number;
+}
+
+export type RightbarTab = 'files' | 'terminal' | 'diff' | 'ledger' | 'context' | 'subagent';
 
 export interface WorkspaceFile {
   id: string;
@@ -151,11 +192,32 @@ export interface AccountInfo {
   isAllowed: boolean;
   isLeased?: boolean;
   leasedBy?: string;
+  authExpired?: boolean;
+  authErrorReason?: string;
   cooldownUntil: number;
   cooldownRemainingSec: number;
   totalRequests: number;
   throttledCount: number;
-  throttleReason?: 'daily' | 'burst' | 'agent_ineligible';
+  throttleReason?: 'daily' | 'burst' | 'agent_ineligible' | 'auth_error';
+}
+
+export interface PkceSessionPayload {
+  authSessionId: string;
+  authUrl: string;
+  state: string;
+  targetEmail?: string;
+  expiresAt?: number;
+}
+
+export interface PkceResultPayload {
+  success: boolean;
+  email: string;
+  expectedEmail?: string;
+  emailMismatch: boolean;
+}
+
+export interface PkceErrorPayload {
+  message: string;
 }
 
 export interface CustomAgentItem {

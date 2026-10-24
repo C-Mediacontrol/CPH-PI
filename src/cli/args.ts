@@ -11,6 +11,13 @@ import {
 export interface ParsedCliArgs {
   help: boolean;
   version: boolean;
+  subcommand?: string;
+  authAction?: "login" | string;
+  authTargetEmail?: string;
+  positional?: string[];
+  port?: number;
+  host?: string;
+  noOpen?: boolean;
   workspaceRoot?: string;
   modelTone?: string;
   hasExplicitModel?: boolean;
@@ -152,7 +159,7 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
       const val = parseInt(arg.slice("--hops=".length), 10);
       if (!isNaN(val)) result.maxAutonomousHandoffHops = val;
       i++;
-    } else if (arg === "-d" || arg === "--debug") {
+    } else if (arg === "-d" || arg === "--debug" || arg === "-debug") {
       result.debug = true;
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         const nextArg = args[i + 1];
@@ -167,23 +174,29 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
         }
       }
       i++;
-    } else if (arg.startsWith("--debug=")) {
+    } else if (arg.startsWith("--debug=") || arg.startsWith("-debug=")) {
       result.debug = true;
-      result.debugLogPath = arg.slice("--debug=".length);
+      result.debugLogPath = arg.startsWith("--debug=")
+        ? arg.slice("--debug=".length)
+        : arg.slice("-debug=".length);
       i++;
-    } else if (arg === "--log" || arg === "--log-file") {
+    } else if (arg === "--log" || arg === "--log-file" || arg === "-log" || arg === "-log-file") {
       result.debug = true;
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         result.debugLogPath = args[++i];
       }
       i++;
-    } else if (arg.startsWith("--log=")) {
+    } else if (arg.startsWith("--log=") || arg.startsWith("-log=")) {
       result.debug = true;
-      result.debugLogPath = arg.slice("--log=".length);
+      result.debugLogPath = arg.startsWith("--log=")
+        ? arg.slice("--log=".length)
+        : arg.slice("-log=".length);
       i++;
-    } else if (arg.startsWith("--log-file=")) {
+    } else if (arg.startsWith("--log-file=") || arg.startsWith("-log-file=")) {
       result.debug = true;
-      result.debugLogPath = arg.slice("--log-file=".length);
+      result.debugLogPath = arg.startsWith("--log-file=")
+        ? arg.slice("--log-file=".length)
+        : arg.slice("-log-file=".length);
       i++;
     } else if (arg === "--timeout") {
       const val = parseInt(args[++i], 10);
@@ -218,12 +231,54 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
     } else if (arg.startsWith("--task=")) {
       result.task = arg.slice("--task=".length);
       i++;
+    } else if (arg === "-p" || arg === "--port") {
+      const val = parseInt(args[++i], 10);
+      if (!isNaN(val) && val > 0) result.port = val;
+      i++;
+    } else if (arg.startsWith("--port=")) {
+      const val = parseInt(arg.slice("--port=".length), 10);
+      if (!isNaN(val) && val > 0) result.port = val;
+      i++;
+    } else if (arg.startsWith("-p=")) {
+      const val = parseInt(arg.slice("-p=".length), 10);
+      if (!isNaN(val) && val > 0) result.port = val;
+      i++;
+    } else if (arg === "--host") {
+      result.host = args[++i];
+      i++;
+    } else if (arg.startsWith("--host=")) {
+      result.host = arg.slice("--host=".length);
+      i++;
+    } else if (arg === "--no-open") {
+      result.noOpen = true;
+      i++;
     } else if (!arg.startsWith("-")) {
-      positional.push(arg);
+      if (arg === "web" && !result.subcommand && positional.length === 0) {
+        result.subcommand = "web";
+      } else if (arg === "auth" && !result.subcommand && positional.length === 0) {
+        result.subcommand = "auth";
+        if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+          result.authAction = args[++i];
+          if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+            result.authTargetEmail = args[++i];
+          }
+        }
+      } else {
+        positional.push(arg);
+      }
       i++;
     } else {
       // Ignore other flags
       i++;
+    }
+  }
+
+  if (result.subcommand === "web") {
+    if (result.port === undefined) {
+      result.port = 3000;
+    }
+    if (result.host === undefined) {
+      result.host = "127.0.0.1";
     }
   }
 
@@ -272,8 +327,12 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
   }
 
   if (!result.task && positional.length > 0) {
-    result.task = positional.join(" ");
+    if (result.subcommand !== "web" && result.subcommand !== "auth") {
+      result.task = positional.join(" ");
+    }
   }
+
+  result.positional = positional;
 
   return result;
 }
@@ -284,6 +343,8 @@ export function getHelpText(): string {
     "",
     chalk.bold("用法 (Usage):"),
     `  cph-pi [选项] [任务描述...]`,
+    `  cph-pi auth login [email]`,
+    `  cph-pi web [选项]`,
     `  bun run src/cli.ts [选项] [任务描述...]`,
     "",
     chalk.bold("选项 (Options):"),
@@ -304,10 +365,19 @@ export function getHelpText(): string {
     `  ${chalk.green("--max-hops, --hops <n>")}   连续自主接力跃迁上限 (默认: 50)`,
     `  ${chalk.green("--task <prompt>")}          非交互式直接执行任务并退出`,
     "",
+    chalk.bold("Web 界面服务 (Web Frontend):"),
+    `  cph-pi web [选项]`,
+    `    ${chalk.green("-p, --port <number>")}    Web 服务端口 (默认: 3000)`,
+    `    ${chalk.green("--host <string>")}        Web 监听地址 (默认: 127.0.0.1)`,
+    `    ${chalk.green("--no-open")}              禁用自动打开默认浏览器`,
+    "",
+    chalk.bold("账号授权与换票 (Authentication):"),
+    `  cph-pi auth login [email]               通过浏览器交互式 PKCE 刷新或新增账号凭据`,
+    "",
     chalk.bold("交互模式命令 (Interactive Commands):"),
     `  ${chalk.yellow("/help")}        显示终端帮助与交互快捷键`,
     `  ${chalk.yellow("/status")}      查看当前会话诊断卡与账号池状态`,
-    `  ${chalk.yellow("/accounts")}    查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+    `  ${chalk.yellow("/accounts")}    查看或配置账号池 (/accounts login|enable|disable|set|reset)`,
     `  ${chalk.yellow("/agent [id|clear]")} 查看、绑定或解除工作区专属智能体`,
     `  ${chalk.yellow("/model [tone]")}    查看或动态切换模型风格`,
     `  ${chalk.yellow("/debug [on|off|path]")} 查看、开启或关闭终端输出实时落盘`,
