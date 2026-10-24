@@ -385,4 +385,109 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(upgraded.folders["packages/core"].lastSyncedAt).toBeDefined();
     });
   });
+
+  describe("6. Three-Phase Dual-Track Sync Pipeline (Task 2)", () => {
+    it("should actively sync local empty folders during Prewarm/SyncWorkspace", () => {
+      if (!IS_WINDOWS) return;
+      const emptySub = path.join(tmpWorkspace, "components", "empty-box");
+      fs.mkdirSync(emptySub, { recursive: true });
+
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[FOLDER-SYNCED] components/empty-box");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(manifest.folders["components/empty-box"]).toBeDefined();
+    });
+
+    it("DEFENSE INVARIANT: should retain local empty folders when other files are pruned", () => {
+      if (!IS_WINDOWS) return;
+      const emptySub = path.join(tmpWorkspace, "preserved-empty");
+      fs.mkdirSync(emptySub, { recursive: true });
+
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      // 初始运行：写入 emptySub
+      runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      // 人工在 manifest 中模拟一个孤儿文件，触发 prunedCount > 0
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      manifest.files["orphan.txt"] = { sha256: "fake", size: 10, uniqueId: "g1" };
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest), "utf8");
+
+      // 第二次运行，触发 pruning
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[PRUNED] orphan.txt");
+      // 验证核心不变性：本地存在的空目录绝对安全保留
+      expect(res.stdout).not.toContain("[FOLDER-RECYCLED] preserved-empty");
+      const updated = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(updated.folders["preserved-empty"]).toBeDefined();
+    });
+
+    it("should recycle true orphan folders bottom-up (deepest first)", () => {
+      if (!IS_WINDOWS) return;
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      // 模拟云端历史清单存在 a/b/c 嵌套目录，但在本地该目录已被完全删除
+      const manifest = {
+        version: 2,
+        files: {},
+        folders: {
+          "nested/sub/leaf": { lastSyncedAt: new Date().toISOString() },
+          "nested/sub": { lastSyncedAt: new Date().toISOString() },
+          "nested": { lastSyncedAt: new Date().toISOString() },
+        },
+      };
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest), "utf8");
+
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "SyncWorkspace",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      // 验证回收日志包含所有孤儿目录，且从清单中抹除
+      expect(res.stdout).toContain("[FOLDER-RECYCLED] nested/sub/leaf");
+      expect(res.stdout).toContain("[FOLDER-RECYCLED] nested/sub");
+      expect(res.stdout).toContain("[FOLDER-RECYCLED] nested");
+
+      const recycledLines = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("[FOLDER-RECYCLED]"));
+      expect(recycledLines).toEqual([
+        "[FOLDER-RECYCLED] nested/sub/leaf",
+        "[FOLDER-RECYCLED] nested/sub",
+        "[FOLDER-RECYCLED] nested",
+      ]);
+
+      const updated = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(updated.folders["nested/sub/leaf"]).toBeUndefined();
+      expect(updated.folders["nested/sub"]).toBeUndefined();
+      expect(updated.folders["nested"]).toBeUndefined();
+    });
+  });
 });

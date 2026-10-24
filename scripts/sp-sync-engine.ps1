@@ -371,7 +371,7 @@ function Sync-Item {
 
 # 9. 动作调度
 switch ($Action) {
-    'Prewarm' {
+    { $_ -in 'Prewarm', 'SyncWorkspace' } {
         $startTime = [System.Diagnostics.Stopwatch]::StartNew()
         $manifest = if ($HardReset) { @{ version = 2; files = @{}; folders = @{} } } else { Get-SyncManifest -Path $ManifestPath }
 
@@ -398,19 +398,85 @@ switch ($Action) {
             $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
         })
 
-        # 1. 递归枚举云端实际存在的所有文件 (实现严格镜像对账)
+        # 1. 递归枚举云端实际存在的实体 (文件与目录双轨)
         $cloudFiles = @{}
+        $cloudFolders = @{}
+        $ctx = $null
         if (-not $MockTransport -and $SiteUrl) {
             try {
                 $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
                 if ($ctx) {
-                    $cloudFiles = Get-SharePointCloudFiles -Context $ctx -TargetFolder $TargetFolder
+                    $cloudEntities = Get-SharePointCloudEntities -Context $ctx -TargetFolder $TargetFolder
+                    $cloudFiles = $cloudEntities.files
+                    $cloudFolders = $cloudEntities.folders
                 }
             } catch {
-                Write-Warning "Failed to enumerate cloud files: $($_.Exception.Message)"
+                Write-Warning "Failed to enumerate cloud entities: $($_.Exception.Message)"
             }
         }
 
+        # 阶段 1：自顶向下预先补齐目录 (Top-Down Folder Pre-creation)
+        $localFolders = Get-LocalFolders -WorkspaceRoot $WorkspaceRoot
+        $foldersSyncedCount = 0
+        $folderResults = @()
+
+        $sortedLocalFolders = @($localFolders.Keys | Sort-Object { ($_ -split '/').Count })
+        foreach ($folderRel in $sortedLocalFolders) {
+            if ([string]::IsNullOrWhiteSpace($folderRel)) { continue }
+            $needSync = $false
+            if ($MockTransport) {
+                if (-not $manifest.folders.ContainsKey($folderRel)) {
+                    $needSync = $true
+                }
+            } else {
+                if (-not $cloudFolders.ContainsKey($folderRel)) {
+                    $needSync = $true
+                }
+            }
+
+            $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            if ($needSync) {
+                if ($MockTransport) {
+                    Write-Output "[FOLDER-SYNCED] $folderRel"
+                    $manifest.folders[$folderRel] = @{
+                        lastSyncedAt = $isoNow
+                    }
+                    $foldersSyncedCount++
+                    $folderResults += @{
+                        relativeFolder = $folderRel
+                        status = 'synced'
+                    }
+                } else {
+                    try {
+                        Ensure-SharePointFolder -Context $ctx -TargetFolder $TargetFolder -RelativeDir $folderRel | Out-Null
+                        Write-Output "[FOLDER-SYNCED] $folderRel"
+                        $manifest.folders[$folderRel] = @{
+                            lastSyncedAt = $isoNow
+                        }
+                        $foldersSyncedCount++
+                        $folderResults += @{
+                            relativeFolder = $folderRel
+                            status = 'synced'
+                        }
+                    } catch {
+                        Write-Output "[ERROR] Failed to ensure folder $folderRel : $($_.Exception.Message)"
+                        $folderResults += @{
+                            relativeFolder = $folderRel
+                            status = 'failed'
+                            error = $_.Exception.Message
+                        }
+                    }
+                }
+            } else {
+                if (-not $manifest.folders.ContainsKey($folderRel)) {
+                    $manifest.folders[$folderRel] = @{
+                        lastSyncedAt = $isoNow
+                    }
+                }
+            }
+        }
+
+        # 阶段 2：文件增量同步与孤儿文件回收 (File Incremental Sync & Pruning)
         $localSet = @{}
         $results = @()
         $syncedCount = 0
@@ -430,6 +496,7 @@ switch ($Action) {
 
             if ($existing -and $existing.sha256 -eq $sha256 -and ($MockTransport -or $cloudFiles.ContainsKey($norm))) {
                 $skippedCount++
+                Write-Output "[SKIP] $norm"
                 $results += @{
                     relativePath = $norm
                     status = 'skipped'
@@ -440,11 +507,10 @@ switch ($Action) {
             } else {
                 $uniqueId = "guid-$([System.Guid]::NewGuid().ToString().Substring(0, 8))"
                 try {
-                    if (-not $MockTransport) {
+
                         Push-FileToSharePoint -LocalFullPath $fullPath -RelativePath $norm `
                             -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
                             -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
-                    }
                     $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                     $manifest.files[$norm] = @{
                         sha256 = $sha256
@@ -453,6 +519,7 @@ switch ($Action) {
                         lastSyncedAt = $isoNow
                     }
                     $syncedCount++
+                    Write-Output "[SYNCED] $norm"
                     $results += @{
                         relativePath = $norm
                         status = 'synced'
@@ -461,6 +528,8 @@ switch ($Action) {
                         uniqueId = $uniqueId
                     }
                 } catch {
+                    Append-DirtyLog -Path $DirtyLogPath -File $norm -ErrorMessage $_.Exception.Message -Attempts 3
+                    Write-Output "[ERROR] Failed to sync $norm after 3 attempts: $($_.Exception.Message)"
                     $failedCount++
                     $results += @{
                         relativePath = $norm
@@ -517,35 +586,125 @@ switch ($Action) {
                 $manifest.files.Remove($mk)
             }
             $prunedCount++
+            Write-Output "[PRUNED] $mk"
             $results += @{
                 relativePath = $mk
                 status = 'recycled'
             }
         }
 
-        # 清理全空子目录 (例如 test/ 目录内文件全部移入回收站后清理空目录)
-        if (-not $MockTransport -and $SiteUrl -and $prunedCount -gt 0) {
-            try {
-                $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
-                if ($ctx) {
-                    $rootFolder = $ctx.Web.GetFolderByServerRelativeUrl($TargetFolder)
-                    $ctx.Load($rootFolder.Folders)
-                    $ctx.ExecuteQuery()
-                    foreach ($sub in $rootFolder.Folders) {
-                        if ($sub.Name.StartsWith("_") -or $sub.Name -eq "Forms") { continue }
-                        $ctx.Load($sub.Files)
-                        $ctx.Load($sub.Folders)
-                        $ctx.ExecuteQuery()
-                        if ($sub.Files.Count -eq 0 -and $sub.Folders.Count -eq 0) {
-                            $sub.Recycle() | Out-Null
-                            $ctx.ExecuteQuery()
+        # 阶段 3：自底向上安全回收孤儿目录 (Bottom-Up Safe Pruning)
+        $foldersPrunedCount = 0
+
+        # 收集孤儿目录候选
+        $candidateOrphanFolders = @{}
+        if ($MockTransport) {
+            foreach ($k in $manifest.folders.Keys) {
+                if (-not $localFolders.ContainsKey($k)) {
+                    $candidateOrphanFolders[$k] = $true
+                }
+            }
+        } else {
+            foreach ($k in $cloudFolders.Keys) {
+                if (-not $localFolders.ContainsKey($k)) {
+                    $candidateOrphanFolders[$k] = $true
+                }
+            }
+            foreach ($k in $manifest.folders.Keys) {
+                if (-not $localFolders.ContainsKey($k)) {
+                    $candidateOrphanFolders[$k] = $true
+                }
+            }
+        }
+
+        # 自底向上：按路径深度降序遍历 (深层优先)
+        $sortedOrphanFolders = @($candidateOrphanFolders.Keys | Sort-Object { ($_ -split '/').Count } -Descending)
+
+        foreach ($folderRel in $sortedOrphanFolders) {
+            if ([string]::IsNullOrWhiteSpace($folderRel) -or $folderRel -eq '.' -or $folderRel -eq '/') {
+                continue
+            }
+
+            # 硬门禁 1 (本地存续硬校验)：本地若依然存在该目录，绝对保留
+            if ($localFolders.ContainsKey($folderRel)) {
+                continue
+            }
+
+            # 硬门禁 2 (云端空闲硬校验)：确认该目录下无剩余文件与未回收子目录
+            $hasRemainingChildren = $false
+
+            if ($MockTransport) {
+                $prefix = "$folderRel/"
+                foreach ($fk in $manifest.files.Keys) {
+                    if ($fk.StartsWith($prefix)) {
+                        $hasRemainingChildren = $true
+                        break
+                    }
+                }
+                if (-not $hasRemainingChildren) {
+                    foreach ($dk in $manifest.folders.Keys) {
+                        if ($dk -ne $folderRel -and $dk.StartsWith($prefix)) {
+                            $hasRemainingChildren = $true
+                            break
                         }
                     }
                 }
-            } catch { }
+            } else {
+                $folderObj = $cloudFolders[$folderRel]
+                if ($folderObj) {
+                    try {
+                        $ctx.Load($folderObj.Files)
+                        $ctx.Load($folderObj.Folders)
+                        $ctx.ExecuteQuery()
+                        if ($folderObj.Files.Count -gt 0 -or $folderObj.Folders.Count -gt 0) {
+                            $hasRemainingChildren = $true
+                        }
+                    } catch {
+                        # 若云端目录已被删除或无法访问，允许清理状态
+                    }
+                }
+            }
+
+            if ($hasRemainingChildren) {
+                continue
+            }
+
+            # 两大硬门禁均通过，执行安全回收
+            if ($MockTransport) {
+                Write-Output "[FOLDER-RECYCLED] $folderRel"
+                if ($manifest.folders.ContainsKey($folderRel)) {
+                    $manifest.folders.Remove($folderRel)
+                }
+                $foldersPrunedCount++
+                $folderResults += @{
+                    relativeFolder = $folderRel
+                    status = 'recycled'
+                }
+            } else {
+                $folderObj = $cloudFolders[$folderRel]
+                if ($folderObj) {
+                    try {
+                        $folderObj.Recycle() | Out-Null
+                        $ctx.ExecuteQuery()
+                        Write-Output "[FOLDER-RECYCLED] $folderRel"
+                        $foldersPrunedCount++
+                        $folderResults += @{
+                            relativeFolder = $folderRel
+                            status = 'recycled'
+                        }
+                    } catch {
+                        Write-Warning "Failed to recycle cloud folder $folderRel : $($_.Exception.Message)"
+                    }
+                }
+                if ($manifest.folders.ContainsKey($folderRel)) {
+                    $manifest.folders.Remove($folderRel)
+                }
+            }
         }
 
-        $manifest.lastPrewarmAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $manifest.lastPrewarmAt = $isoNow
+        $manifest.lastFullSync = $isoNow
         Save-SyncManifest -Manifest $manifest -Path $ManifestPath
         $startTime.Stop()
 
@@ -553,12 +712,18 @@ switch ($Action) {
             workspaceRoot = $WorkspaceRoot
             targetFolder = $TargetFolder
             totalLocal = $localSet.Count
+            totalLocalFolders = $localFolders.Count
             syncedCount = $syncedCount
             skippedCount = $skippedCount
             prunedCount = $prunedCount
             failedCount = $failedCount
+            syncedFoldersCount = $foldersSyncedCount
+            prunedFoldersCount = $foldersPrunedCount
             durationMs = [int]$startTime.ElapsedMilliseconds
             results = $results
+            folderResults = $folderResults
+            status = 'completed'
+            totalFiles = $localSet.Count
         }
 
         Write-Output "###REPORT_JSON_START###"
@@ -744,52 +909,6 @@ switch ($Action) {
         Write-Output "###REPORT_JSON_END###"
     }
 
-    'SyncWorkspace' {
-        $manifest = Get-SyncManifest -Path $ManifestPath
-        $files = @()
-
-        try {
-            $gitOut = git -C $WorkspaceRoot ls-files --cached --others --exclude-standard 2>$null
-            if ($LASTEXITCODE -eq 0 -and $gitOut) {
-                $files = @($gitOut)
-            }
-        } catch { }
-
-        if ($files.Count -eq 0) {
-            $items = Get-ChildItem -Path $WorkspaceRoot -Recurse -File | Where-Object {
-                $_.FullName -notmatch '[\\/](\.git|node_modules|\.cph|dist|package)[\\/]'
-            }
-            foreach ($item in $items) {
-                $rel = $item.FullName.Substring($WorkspaceRoot.Length).TrimStart('\', '/')
-                $files += $rel
-            }
-        }
-
-        # 核心防泄漏过滤：无论来自 git 还是文件遍历，严禁同步 .cph / .git / node_modules 等内部物理状态
-        $files = @($files | Where-Object {
-            $_ -and ($_ -notmatch '(^|[\\/])(\.git|\.cph|node_modules|dist|package|Library)[\\/]')
-        })
-
-        foreach ($file in $files) {
-            if ([string]::IsNullOrWhiteSpace($file)) { continue }
-            Sync-Item -RelativePath $file -WorkspaceRoot $WorkspaceRoot -Manifest $manifest `
-                -ManifestPath $ManifestPath -DirtyLogPath $DirtyLogPath `
-                -SiteUrl $SiteUrl -TargetFolder $TargetFolder `
-                -MockTransport:$MockTransport -AllowLegacyFallback:$AllowLegacyFallback
-        }
-
-        $manifest.lastFullSync = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        Save-SyncManifest -Manifest $manifest -Path $ManifestPath
-
-        $report = @{
-            status = 'completed'
-            totalFiles = $files.Count
-        }
-        Write-Output "###REPORT_JSON_START###"
-        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
-        Write-Output "###REPORT_JSON_END###"
-    }
-
     'VerifyMirror' {
         $isValid = $false
         $reason = ""
@@ -850,6 +969,7 @@ switch ($Action) {
                 $folder = $ctx.Web.GetFolderByServerRelativeUrl($targetFolderClean)
                 $ctx.Load($folder)
                 $ctx.Load($folder.Files)
+                $ctx.Load($folder.Folders)
                 $ctx.ExecuteQuery()
 
                 $mirrorFile = $null
@@ -883,8 +1003,10 @@ switch ($Action) {
                     }
                 } else {
                     $cloudFiles = @($folder.Files)
+                    $cloudFoldersList = @($folder.Folders | Where-Object { -not ($_.Name.StartsWith("_") -or $_.Name -eq "Forms") })
                     $cloudFileCount = $cloudFiles.Count
-                    if ($cloudFileCount -eq 0) {
+                    $cloudFolderCount = $cloudFoldersList.Count
+                    if ($cloudFileCount -eq 0 -and $cloudFolderCount -eq 0) {
                         $isValid = $true
                         $overlapCount = 0
                         $reason = "Cloud folder is empty; initialized new mirror."
@@ -911,6 +1033,10 @@ switch ($Action) {
                         foreach ($lf in $localFiles) {
                             $localLookup[$lf.Replace('\', '/').TrimStart('/')] = $true
                         }
+                        $localFolders = Get-LocalFolders -WorkspaceRoot $WorkspaceRoot
+                        foreach ($ld in $localFolders.Keys) {
+                            $localLookup[$ld] = $true
+                        }
 
                         $overlapCount = 0
                         foreach ($cf in $cloudFiles) {
@@ -918,13 +1044,18 @@ switch ($Action) {
                                 $overlapCount++
                             }
                         }
+                        foreach ($cd in $cloudFoldersList) {
+                            if ($localLookup.ContainsKey($cd.Name)) {
+                                $overlapCount++
+                            }
+                        }
 
                         if ($overlapCount -eq 0) {
                             $isValid = $false
-                            $reason = "UNMATCHED_CLOUD_FOLDER: Cloud folder contains files but shares 0 overlap with local workspace."
+                            $reason = "UNMATCHED_CLOUD_FOLDER: Cloud folder contains files or folders but shares 0 overlap with local workspace."
                         } else {
                             $isValid = $true
-                            $reason = "Cloud files overlap with local workspace ($overlapCount matches)."
+                            $reason = "Cloud files or folders overlap with local workspace ($overlapCount matches)."
                         }
                     }
                 }
