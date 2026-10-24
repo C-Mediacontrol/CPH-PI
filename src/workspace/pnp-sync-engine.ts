@@ -32,6 +32,18 @@ export interface SyncFileResult {
   error?: string;
 }
 
+export interface FolderManifestEntry {
+  lastSyncedAt: string;
+  uniqueId?: string;
+}
+
+export interface SyncFolderResult {
+  relativePath: string;
+  status: "synced" | "skipped" | "pruned" | "failed";
+  uniqueId?: string;
+  error?: string;
+}
+
 export interface MirrorVerifyResult {
   valid: boolean;
   reason: string;
@@ -58,12 +70,16 @@ export interface PrewarmReport {
   workspaceRoot: string;
   targetFolder: string;
   totalLocal: number;
+  totalLocalFolders?: number;
   syncedCount: number;
   skippedCount: number;
   prunedCount: number;
   failedCount: number;
+  syncedFoldersCount?: number;
+  prunedFoldersCount?: number;
   durationMs: number;
   results: SyncFileResult[];
+  folderResults?: SyncFolderResult[];
 }
 
 export interface SyncManifestFileEntry {
@@ -76,10 +92,12 @@ export interface SyncManifestFileEntry {
 
 export interface SyncManifest {
   version: number;
+  lastFullSync?: string;
   lastPrewarmAt?: string;
-  siteUrl: string;
-  targetFolder: string;
+  siteUrl?: string;
+  targetFolder?: string;
   files: Record<string, SyncManifestFileEntry>;
+  folders?: Record<string, FolderManifestEntry>;
 }
 
 export class PnPWorkspaceSyncEngine {
@@ -118,7 +136,17 @@ export class PnPWorkspaceSyncEngine {
         if (raw.charCodeAt(0) === 0xfeff) {
           raw = raw.slice(1);
         }
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (parsed) {
+          if (!parsed.version || parsed.version < 2) {
+            parsed.version = 2;
+          }
+          if (!parsed.folders) {
+            parsed.folders = {};
+          }
+          return parsed as SyncManifest;
+        }
+        return null;
       } catch {
         return null;
       }
@@ -134,6 +162,10 @@ export class PnPWorkspaceSyncEngine {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    if (!manifest.version || manifest.version < 2) {
+      manifest.version = 2;
+    }
+    manifest.folders = manifest.folders || {};
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
   }
 
@@ -259,7 +291,30 @@ export class PnPWorkspaceSyncEngine {
       // Non-fatal if map writing fails
     }
 
-    return report as PrewarmReport;
+    const folderResults: SyncFolderResult[] | undefined = Array.isArray(report.folderResults)
+      ? report.folderResults.map((f: any) => ({
+          relativePath: f.relativePath || f.relativeFolder,
+          status: (f.status === "recycled" ? "pruned" : f.status) as ("synced" | "skipped" | "pruned" | "failed"),
+          uniqueId: f.uniqueId,
+          error: f.error,
+        }))
+      : undefined;
+
+    return {
+      workspaceRoot: report.workspaceRoot,
+      targetFolder: report.targetFolder,
+      totalLocal: report.totalLocal,
+      totalLocalFolders: report.totalLocalFolders,
+      syncedCount: report.syncedCount,
+      skippedCount: report.skippedCount,
+      prunedCount: report.prunedCount,
+      failedCount: report.failedCount,
+      syncedFoldersCount: report.syncedFoldersCount,
+      prunedFoldersCount: report.prunedFoldersCount,
+      durationMs: report.durationMs,
+      results: (report.results || []) as SyncFileResult[],
+      folderResults,
+    };
   }
 
   /**
@@ -298,6 +353,52 @@ export class PnPWorkspaceSyncEngine {
     };
 
     return result as SyncFileResult;
+  }
+
+  /**
+   * Ensure or sync a directory exists in SharePoint
+   */
+  public async syncFolder(
+    workspaceRoot: string,
+    relativeFolderPath: string,
+    targetFolder?: string,
+    options?: SyncFileOptions
+  ): Promise<SyncFolderResult> {
+    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const manifestPath = options?.manifestPath || path.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const dirtyLogPath = options?.dirtyLogPath || path.join(workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
+
+    const args = [
+      "-Action", "EnsureFolder",
+      "-WorkspaceRoot", workspaceRoot,
+      "-SourceFolder", relativeFolderPath,
+      "-TargetFolder", folder,
+      "-SiteUrl", siteUrl,
+      "-ManifestPath", manifestPath,
+      "-DirtyLogPath", dirtyLogPath,
+    ];
+
+    if (options?.mockTransport) {
+      args.push("-MockTransport");
+    }
+
+    const { report } = await this.executePowerShell(args, options?.signal);
+    const rawResult = report?.results?.[0];
+    const result: SyncFolderResult = rawResult
+      ? {
+          relativePath: rawResult.relativePath || rawResult.relativeFolder || relativeFolderPath,
+          status: (rawResult.status === "recycled" ? "pruned" : rawResult.status) || "synced",
+          uniqueId: rawResult.uniqueId,
+          error: rawResult.error,
+        }
+      : {
+          relativePath: relativeFolderPath,
+          status: "failed",
+          error: "No result returned",
+        };
+
+    return result;
   }
 
   /**
@@ -430,6 +531,17 @@ export class PnPWorkspaceSyncEngine {
           fileWebUrl = `${remoteRootUrl}/${k.replace(/\\/g, "/")}`;
         }
         lines.push(`- ${k.replace(/\\/g, "/")} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl})`);
+      }
+    }
+
+    if (manifest.folders && Object.keys(manifest.folders).length > 0) {
+      const folderKeys = Object.keys(manifest.folders).sort();
+      lines.push("");
+      lines.push("### [DIRECTORIES / EMPTY FOLDERS]");
+      for (const fk of folderKeys) {
+        const fEntry = manifest.folders[fk];
+        const lastSyncedStr = fEntry?.lastSyncedAt ? ` (LastSynced: ${fEntry.lastSyncedAt})` : "";
+        lines.push(`- ${fk.replace(/\\/g, "/")}${lastSyncedStr}`);
       }
     }
 
