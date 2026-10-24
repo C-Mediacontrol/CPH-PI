@@ -153,7 +153,7 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
 
       expect(fs.existsSync(manifestPath)).toBe(true);
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-      expect(manifest.version).toBe(1);
+      expect(manifest.version).toBe(2);
       expect(manifest.files["src/index.ts"]).toBeDefined();
       expect(manifest.files["src/index.ts"].sha256).toBeDefined();
       expect(manifest.files["README.md"]).toBeDefined();
@@ -293,6 +293,96 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(parsedLog.attempts).toBe(3);
       expect(parsedLog.error).toBeDefined();
       expect(parsedLog.timestamp).toBeDefined();
+    });
+  });
+
+  describe("5. Folder Dual-Track & EnsureFolder Action (Task 1)", () => {
+    it("should support -Action EnsureFolder in Mock mode and register into manifest", () => {
+      if (!IS_WINDOWS) return;
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "EnsureFolder",
+        "-SourceFolder", "src/empty-dir",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[FOLDER-SYNCED] src/empty-dir");
+      expect(fs.existsSync(manifestPath)).toBe(true);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(manifest.version).toBe(2);
+      expect(manifest.folders["src/empty-dir"]).toBeDefined();
+      expect(manifest.folders["src/empty-dir"].lastSyncedAt).toBeDefined();
+    });
+
+    it("should extract local folders excluding internal and git-ignored directories via Get-LocalFolders", () => {
+      if (!IS_WINDOWS) return;
+      fs.mkdirSync(path.join(tmpWorkspace, "src", "empty-dir"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "docs", "specs"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, ".git", "objects"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, ".cph", "state"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "node_modules", "pkg"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "Library", "ref"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "dist", "bin"), { recursive: true });
+      fs.mkdirSync(path.join(tmpWorkspace, "ignored-dir"), { recursive: true });
+
+      spawnSync("git", ["init"], { cwd: tmpWorkspace });
+      fs.writeFileSync(path.join(tmpWorkspace, ".gitignore"), "ignored-dir/\n");
+
+      const psScript = `
+        . '${SCRIPT_PATH.replace(/'/g, "''")}' -Action 'EnsureFolder' -SourceFolder 'init' -WorkspaceRoot '${tmpWorkspace.replace(/'/g, "''")}' -MockTransport | Out-Null
+        $localFolders = Get-LocalFolders -WorkspaceRoot '${tmpWorkspace.replace(/'/g, "''")}'
+        $localFolders.Keys | ForEach-Object { Write-Output "[LOCAL-FOLDER] $_" }
+      `;
+      const res = runPowerShell(["-Command", psScript]);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[LOCAL-FOLDER] src");
+      expect(res.stdout).toContain("[LOCAL-FOLDER] src/empty-dir");
+      expect(res.stdout).toContain("[LOCAL-FOLDER] docs");
+      expect(res.stdout).toContain("[LOCAL-FOLDER] docs/specs");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] .git");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] .cph");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] node_modules");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] Library");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] dist");
+      expect(res.stdout).not.toContain("[LOCAL-FOLDER] ignored-dir");
+    });
+
+    it("should upgrade manifest from version 1 to 2 seamlessly when EnsureFolder executes", () => {
+      if (!IS_WINDOWS) return;
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(
+        manifestPath,
+        JSON.stringify({
+          version: 1,
+          files: {
+            "existing.ts": { sha256: "hash123", size: 42, uniqueId: "u-1" },
+          },
+        })
+      );
+
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "EnsureFolder",
+        "-SourceFolder", "packages/core",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-MockTransport",
+      ]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[FOLDER-SYNCED] packages/core");
+      const upgraded = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(upgraded.version).toBe(2);
+      expect(upgraded.files["existing.ts"]).toBeDefined();
+      expect(upgraded.files["existing.ts"].sha256).toBe("hash123");
+      expect(upgraded.folders["packages/core"]).toBeDefined();
+      expect(upgraded.folders["packages/core"].lastSyncedAt).toBeDefined();
     });
   });
 });

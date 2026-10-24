@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     sp-sync-engine.ps1 - SharePoint 物理镜像同步引擎 (Windows PowerShell 5.1 强锁定)
 .DESCRIPTION
@@ -9,10 +9,11 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile', 'Prewarm', 'PullFile', 'VerifyMirror')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile', 'Prewarm', 'PullFile', 'VerifyMirror', 'EnsureFolder')][string]$Action,
     [string]$SiteUrl,
     [string]$TargetFolder = '/Shared Documents/workspace-mirror',
     [Alias('FilePath')][string]$SourceFile,
+    [Alias('FolderPath')][string]$SourceFolder = '',
     [string]$WorkspaceRoot,
     [string]$ManifestPath,
     [string]$DirtyLogPath,
@@ -71,8 +72,10 @@ function Get-FileSha256 {
 function Get-SyncManifest {
     param([string]$Path)
     $filesMap = @{}
+    $foldersMap = @{}
     $lastFullSync = $null
-    $version = 1
+    $lastPrewarmAt = $null
+    $version = 2
 
     if (Test-Path $Path) {
         try {
@@ -81,6 +84,7 @@ function Get-SyncManifest {
             if ($parsed) {
                 if ($parsed.version) { $version = [int]$parsed.version }
                 if ($parsed.lastFullSync) { $lastFullSync = $parsed.lastFullSync }
+                if ($parsed.lastPrewarmAt) { $lastPrewarmAt = $parsed.lastPrewarmAt }
                 if ($parsed.files) {
                     $parsed.files.PSObject.Properties | ForEach-Object {
                         $filesMap[$_.Name] = @{
@@ -91,16 +95,30 @@ function Get-SyncManifest {
                         }
                     }
                 }
+                if ($parsed.folders) {
+                    $parsed.folders.PSObject.Properties | ForEach-Object {
+                        $foldersMap[$_.Name] = @{
+                            lastSyncedAt = [string]$_.Value.lastSyncedAt
+                            uniqueId = [string]$_.Value.uniqueId
+                        }
+                    }
+                }
             }
         } catch {
             Write-Warning "Manifest parse warning: $($_.Exception.Message)"
         }
     }
 
+    if ($version -lt 2) {
+        $version = 2
+    }
+
     return @{
         version = $version
         lastFullSync = $lastFullSync
+        lastPrewarmAt = $lastPrewarmAt
         files = $filesMap
+        folders = $foldersMap
     }
 }
 
@@ -109,6 +127,12 @@ function Save-SyncManifest {
     $dir = [System.IO.Path]::GetDirectoryName($Path)
     if (-not (Test-Path $dir)) {
         [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+    }
+    if ($Manifest.version -lt 2) {
+        $Manifest.version = 2
+    }
+    if (-not $Manifest.folders) {
+        $Manifest.folders = @{}
     }
     $json = $Manifest | ConvertTo-Json -Depth 5
     [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
@@ -225,8 +249,31 @@ function Push-FileToSharePoint {
     throw $lastError
 }
 
-# 8. 递归枚举云端实际存在的所有文件 (实现严格镜像对账)
-function Get-SharePointCloudFiles {
+# 8. 本地目录与云端实体双轨采集
+function Get-LocalFolders {
+    param([string]$WorkspaceRoot)
+    $cleanRoot = [System.IO.Path]::GetFullPath($WorkspaceRoot).TrimEnd('\', '/')
+    $localFolders = @{}
+    $dirs = Get-ChildItem -Path $cleanRoot -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $norm = $_.FullName.Replace('\', '/') + '/'
+        $norm -notmatch '/(\.git|\.cph|node_modules|dist|package|Library)/'
+    }
+    foreach ($d in $dirs) {
+        $rel = $d.FullName.Substring($cleanRoot.Length).TrimStart('\', '/').Replace('\', '/')
+        if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+        # 校验 git check-ignore
+        try {
+            $check = git -C $cleanRoot check-ignore $rel 2>$null
+            if ($LASTEXITCODE -eq 0 -and $check) { continue }
+            $checkDir = git -C $cleanRoot check-ignore "$rel/" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $checkDir) { continue }
+        } catch { }
+        $localFolders[$rel] = $true
+    }
+    return $localFolders
+}
+
+function Get-SharePointCloudEntities {
     param(
         $Context,
         [string]$TargetFolder
@@ -237,8 +284,9 @@ function Get-SharePointCloudFiles {
     $rootServerRel = $folder.ServerRelativeUrl.TrimEnd('/')
 
     $cloudFiles = @{}
+    $cloudFolders = @{}
 
-    function Enumerate-FolderRecursively($currentFolder) {
+    function Enumerate-EntitiesRecursively($currentFolder) {
         $Context.Load($currentFolder.Files)
         $Context.Load($currentFolder.Folders)
         $Context.ExecuteQuery()
@@ -251,12 +299,28 @@ function Get-SharePointCloudFiles {
 
         foreach ($sub in $currentFolder.Folders) {
             if ($sub.Name.StartsWith("_") -or $sub.Name -eq "Forms") { continue }
-            Enumerate-FolderRecursively($sub)
+            $subRel = $sub.ServerRelativeUrl.Substring($rootServerRel.Length).TrimStart('/')
+            if (-not [string]::IsNullOrWhiteSpace($subRel)) {
+                $cloudFolders[$subRel] = $sub
+            }
+            Enumerate-EntitiesRecursively($sub)
         }
     }
 
-    Enumerate-FolderRecursively($folder)
-    return $cloudFiles
+    Enumerate-EntitiesRecursively($folder)
+    return @{
+        files = $cloudFiles
+        folders = $cloudFolders
+    }
+}
+
+function Get-SharePointCloudFiles {
+    param(
+        $Context,
+        [string]$TargetFolder
+    )
+    $entities = Get-SharePointCloudEntities -Context $Context -TargetFolder $TargetFolder
+    return $entities.files
 }
 
 # 9. 单个文件增量判定与同步
@@ -309,7 +373,7 @@ function Sync-Item {
 switch ($Action) {
     'Prewarm' {
         $startTime = [System.Diagnostics.Stopwatch]::StartNew()
-        $manifest = if ($HardReset) { @{ version = 1; files = @{} } } else { Get-SyncManifest -Path $ManifestPath }
+        $manifest = if ($HardReset) { @{ version = 2; files = @{}; folders = @{} } } else { Get-SyncManifest -Path $ManifestPath }
 
         $localFiles = @()
         try {
@@ -562,6 +626,61 @@ switch ($Action) {
                     size = $fileSize
                     sha256 = $sha256
                     uniqueId = $uniqueId
+                }
+            )
+        }
+
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+    }
+
+    'EnsureFolder' {
+        if (-not $SourceFolder) {
+            throw "SourceFolder is required for EnsureFolder action"
+        }
+        $cleanSource = $SourceFolder.Replace('\', '/').Trim('/')
+        if ([string]::IsNullOrWhiteSpace($cleanSource)) {
+            throw "SourceFolder cannot be empty or root"
+        }
+
+        $manifest = Get-SyncManifest -Path $ManifestPath
+        $isoNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $status = 'synced'
+
+        if ($MockTransport) {
+            Write-Output "[FOLDER-SYNCED] $cleanSource"
+            $manifest.folders[$cleanSource] = @{
+                lastSyncedAt = $isoNow
+            }
+            Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+        } else {
+            if (-not $SiteUrl) {
+                throw "SiteUrl is required when not in MockTransport mode"
+            }
+            $ctx = Get-DpsClientContext -SiteUrl $SiteUrl
+            if (-not $ctx) {
+                throw "Unable to acquire SharePoint client context for $SiteUrl"
+            }
+            try {
+                Ensure-SharePointFolder -Context $ctx -TargetFolder $TargetFolder -RelativeDir $cleanSource | Out-Null
+                $manifest.folders[$cleanSource] = @{
+                    lastSyncedAt = $isoNow
+                }
+                Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+                Write-Output "[FOLDER-SYNCED] $cleanSource"
+            } catch {
+                $status = 'failed'
+                Write-Output "[ERROR] Failed to ensure folder $cleanSource : $($_.Exception.Message)"
+            }
+        }
+
+        $report = @{
+            results = @(
+                @{
+                    relativePath = $cleanSource
+                    relativeFolder = $cleanSource
+                    status = $status
                 }
             )
         }
