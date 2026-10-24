@@ -1,0 +1,14 @@
+.lazyItem {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+  width: 100%;
+}
+
+.lazyPlaceholder {
+  width: 100%;
+  min-height: 80px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -105,3 +105,13 @@ code,
 pre {
   font-family: var(--ds-font-family-code);
 }
+
+/* ==========================================================================
+   Viewport & Rendering Performance Utilities
+   ========================================================================== */
+
+.contentVisibilityAuto {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+
