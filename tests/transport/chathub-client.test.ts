@@ -577,5 +577,127 @@ describe("ChatHub Transport Layer Unit Tests", () => {
       expect(res.annotation.messageAnnotationMetadata?.webUrl).toBe("https://contoso.sharepoint.com/doc.ts");
     });
   });
+
+  describe("SharePoint Enterprise Search optionsSets & isStartOfSession", () => {
+    it("should include 'cwc_flux_v3' in default optionsSets and default isStartOfSession to false in buildInvocationPayload", () => {
+      const client = new ChatHubClient(mockToken);
+      const payload = client.buildInvocationPayload({
+        text: "hello search",
+        conversationId: "conv-cwc-1",
+      });
+
+      expect(payload.type).toBe(4);
+      expect(payload.target).toBe("chat");
+      const args = payload.arguments[0];
+      expect(args.optionsSets).toContain("cwc_flux_v3");
+      const updateIdx = args.optionsSets.indexOf("update_textdoc_response_after_streaming");
+      const fluxIdx = args.optionsSets.indexOf("cwc_flux_v3");
+      expect(updateIdx).toBeGreaterThanOrEqual(0);
+      expect(fluxIdx).toBe(updateIdx + 1);
+      expect(args.isStartOfSession).toBe(false);
+    });
+
+    it("should set isStartOfSession to true when explicitly provided in buildInvocationPayload", () => {
+      const client = new ChatHubClient(mockToken);
+      const payload = client.buildInvocationPayload({
+        text: "first turn message",
+        conversationId: "conv-cwc-2",
+        isStartOfSession: true,
+      });
+
+      const args = payload.arguments[0];
+      expect(args.isStartOfSession).toBe(true);
+      expect(args.optionsSets).toContain("cwc_flux_v3");
+    });
+
+    it("should transmit 'cwc_flux_v3' and isStartOfSession in SignalR frame via sendMessage", async () => {
+      let receivedChatFrame: any = null;
+
+      mockServer = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response("Upgrade failed", { status: 500 });
+        },
+        websocket: {
+          message(ws, msg) {
+            const raw = typeof msg === "string" ? msg : msg.toString();
+            const frames = ChatHubClient.decodeSignalRFrames(raw);
+            for (const f of frames) {
+              if (f.protocol === "json") {
+                ws.send(ChatHubClient.encodeSignalR({}));
+              } else if (f.target === "chat") {
+                receivedChatFrame = f;
+                ws.send(
+                  ChatHubClient.encodeSignalR({
+                    type: 2,
+                    item: { result: { value: "Success" } },
+                  })
+                );
+              }
+            }
+          },
+        },
+      });
+
+      const client = new ChatHubClient(mockToken, {
+        wsBaseUrl: `ws://127.0.0.1:${mockServer.port}`,
+      });
+
+      await client.sendMessage({
+        text: "turn 1 prompt",
+        conversationId: "conv-turn-1",
+        isStartOfSession: true,
+      });
+
+      expect(receivedChatFrame).toBeDefined();
+      expect(receivedChatFrame.arguments[0].optionsSets).toContain("cwc_flux_v3");
+      expect(receivedChatFrame.arguments[0].isStartOfSession).toBe(true);
+    });
+
+    it("should default isStartOfSession to false in SignalR frame via sendMessage when omitted", async () => {
+      let receivedChatFrame: any = null;
+
+      mockServer = Bun.serve({
+        port: 0,
+        fetch(req, server) {
+          if (server.upgrade(req)) return;
+          return new Response("Upgrade failed", { status: 500 });
+        },
+        websocket: {
+          message(ws, msg) {
+            const raw = typeof msg === "string" ? msg : msg.toString();
+            const frames = ChatHubClient.decodeSignalRFrames(raw);
+            for (const f of frames) {
+              if (f.protocol === "json") {
+                ws.send(ChatHubClient.encodeSignalR({}));
+              } else if (f.target === "chat") {
+                receivedChatFrame = f;
+                ws.send(
+                  ChatHubClient.encodeSignalR({
+                    type: 2,
+                    item: { result: { value: "Success" } },
+                  })
+                );
+              }
+            }
+          },
+        },
+      });
+
+      const client = new ChatHubClient(mockToken, {
+        wsBaseUrl: `ws://127.0.0.1:${mockServer.port}`,
+      });
+
+      await client.sendMessage({
+        text: "turn 2 prompt",
+        conversationId: "conv-turn-2",
+      });
+
+      expect(receivedChatFrame).toBeDefined();
+      expect(receivedChatFrame.arguments[0].optionsSets).toContain("cwc_flux_v3");
+      expect(receivedChatFrame.arguments[0].isStartOfSession).toBe(false);
+    });
+  });
 });
 

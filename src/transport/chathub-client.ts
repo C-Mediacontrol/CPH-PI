@@ -5,10 +5,14 @@ import {
   type ChatHubOptions,
   type ChatMessagePayload,
   type SendMessageParams,
+  type SendMessageOptions,
+  type AttachmentAnnotation,
   type ChatResponse,
   type MessageCallbacks,
   type ChatHubEvents,
 } from "./types.ts";
+
+export type { SendMessageOptions } from "./types.ts";
 
 export class ChatHubClient {
   private token: ActiveSessionToken;
@@ -108,10 +112,107 @@ export class ChatHubClient {
   }
 
   /**
+   * Build the SignalR invocation frame payload for chat
+   */
+  public buildInvocationPayload(
+    options: SendMessageOptions | ChatMessagePayload | SendMessageParams
+  ): any {
+    return ChatHubClient.buildInvocationPayload(options, this.options);
+  }
+
+  public static buildInvocationPayload(
+    options: SendMessageOptions | ChatMessagePayload | SendMessageParams,
+    clientOptions?: ChatHubOptions
+  ): any {
+    const sessionId = options.sessionId || crypto.randomUUID();
+    const requestId = options.requestId || crypto.randomUUID();
+    const chatArguments: any = {
+      source: "officeweb",
+      clientCorrelationId: crypto.randomUUID(),
+      sessionId,
+      optionsSets: options.optionsSets || [
+        "search_result_progress_messages_with_search_queries",
+        "update_textdoc_response_after_streaming",
+        "cwc_flux_v3",
+        "deepleo_networking_timeout_10minutes_canmore",
+        "enable_search_result_progress_messages",
+        "cwc_fileupload_odb",
+        "enable_batch_token_processing",
+        "flux_v3_references",
+        "flux_v3_references_entities",
+        "flux_v3_references_ci",
+        "add_filestore_filetype",
+        "rich_responses",
+      ],
+      allowedMessageTypes: [
+        "Chat",
+        "Suggestion",
+        "Disengaged",
+        "Progress",
+        "EndOfRequest",
+        "InternalLoaderMessage",
+      ],
+      conversationId: options.conversationId,
+      traceId: crypto.randomUUID(),
+      isStartOfSession: options.isStartOfSession ?? false,
+      productThreadType: "Office",
+      clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
+      tone: options.tone || clientOptions?.modelTone || "Gpt_61_Sol_Reasoning",
+      streamingMode: "ConciseWithPadding",
+      message: {
+        author: "user",
+        inputMethod: "Keyboard",
+        text: options.text,
+        requestId,
+        locationInfo: {
+          timeZoneOffset: 8,
+          timeZone: clientOptions?.timeZone || "Asia/Shanghai",
+        },
+        locale: clientOptions?.locale || "zh-CN",
+        messageType: "Chat",
+        experienceType: "Default",
+      },
+      plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
+    };
+
+    if (clientOptions?.customAgentId) {
+      chatArguments.threadLevelGptId = {
+        id: clientOptions.customAgentId,
+        source: "MOS3",
+      };
+      chatArguments.gpts = [
+        {
+          id: clientOptions.customAgentId,
+          source: "MOS3",
+          version: "1.0.0",
+        },
+      ];
+    }
+
+    if (options.annotations && options.annotations.length > 0) {
+      chatArguments.message.entityAnnotationTypes = [
+        "People",
+        "File",
+        "Event",
+        "Email",
+        "TeamsMessage",
+      ];
+      chatArguments.message.messageAnnotations = options.annotations;
+    }
+
+    return {
+      arguments: [chatArguments],
+      invocationId: "0",
+      target: "chat",
+      type: 4,
+    };
+  }
+
+  /**
    * Send a prompt to Copilot and stream the response
    */
   public async sendMessage(
-    payload: ChatMessagePayload | SendMessageParams,
+    payload: SendMessageOptions | ChatMessagePayload | SendMessageParams,
     events?: MessageCallbacks | ChatHubEvents
   ): Promise<ChatResponse> {
     const signal = payload.signal;
@@ -123,10 +224,18 @@ export class ChatHubClient {
       throw abortErr;
     }
 
+    const sessionId = payload.sessionId || crypto.randomUUID();
+    const requestId = payload.requestId || crypto.randomUUID();
+    const invocationPayload: SendMessageOptions = {
+      ...payload,
+      sessionId,
+      requestId,
+    };
+
     const wsUrl = this.buildWsUrl(
-      payload.conversationId,
-      payload.sessionId,
-      payload.requestId
+      invocationPayload.conversationId,
+      invocationPayload.sessionId!,
+      invocationPayload.requestId!
     );
 
     return new Promise((resolve, reject) => {
@@ -250,83 +359,7 @@ export class ChatHubClient {
             if (!hasSentChat && Object.keys(msg).length === 0) {
               hasSentChat = true;
 
-              const chatArguments: any = {
-                source: "officeweb",
-                clientCorrelationId: crypto.randomUUID(),
-                sessionId: payload.sessionId,
-                optionsSets: payload.optionsSets || [
-                  "search_result_progress_messages_with_search_queries",
-                  "update_textdoc_response_after_streaming",
-                  "deepleo_networking_timeout_10minutes_canmore",
-                  "enable_search_result_progress_messages",
-                  "cwc_fileupload_odb",
-                  "enable_batch_token_processing",
-                  "flux_v3_references",
-                  "flux_v3_references_entities",
-                  "flux_v3_references_ci",
-                  "add_filestore_filetype",
-                  "rich_responses",
-                ],
-                allowedMessageTypes: [
-                  "Chat",
-                  "Suggestion",
-                  "Disengaged",
-                  "Progress",
-                  "EndOfRequest",
-                  "InternalLoaderMessage",
-                ],
-                conversationId: payload.conversationId,
-                traceId: crypto.randomUUID(),
-                isStartOfSession: payload.isStartOfSession ?? false,
-                productThreadType: "Office",
-                clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
-                tone: payload.tone || this.options.modelTone || "Gpt_61_Sol_Reasoning",
-                streamingMode: "ConciseWithPadding",
-                message: {
-                  author: "user",
-                  inputMethod: "Keyboard",
-                  text: payload.text,
-                  requestId: payload.requestId,
-                  locationInfo: { timeZoneOffset: 8, timeZone: this.options.timeZone || "Asia/Shanghai" },
-                  locale: this.options.locale || "zh-CN",
-                  messageType: "Chat",
-                  experienceType: "Default",
-                },
-                plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
-              };
-
-              if (this.options.customAgentId) {
-                chatArguments.threadLevelGptId = {
-                  id: this.options.customAgentId,
-                  source: "MOS3",
-                };
-                chatArguments.gpts = [
-                  {
-                    id: this.options.customAgentId,
-                    source: "MOS3",
-                    version: "1.0.0",
-                  },
-                ];
-              }
-
-              // Attach document / image annotations if provided
-              if (payload.annotations && payload.annotations.length > 0) {
-                chatArguments.message.entityAnnotationTypes = [
-                  "People",
-                  "File",
-                  "Event",
-                  "Email",
-                  "TeamsMessage",
-                ];
-                chatArguments.message.messageAnnotations = payload.annotations;
-              }
-
-              const chatFrame = {
-                arguments: [chatArguments],
-                invocationId: "0",
-                target: "chat",
-                type: 4,
-              };
+              const chatFrame = this.buildInvocationPayload(invocationPayload);
 
               const metricsFrame = {
                 arguments: [
@@ -429,9 +462,9 @@ export class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId!,
+                requestId: invocationPayload.requestId!,
                 rawMessages,
                 rawFrames,
               });
@@ -443,9 +476,9 @@ export class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId!,
+                requestId: invocationPayload.requestId!,
                 rawMessages,
                 rawFrames,
               });
@@ -475,9 +508,9 @@ export class ChatHubClient {
           settleResolve({
             text: fullText,
             reasoning: reasoningText,
-            conversationId: payload.conversationId,
-            sessionId: payload.sessionId,
-            requestId: payload.requestId,
+            conversationId: invocationPayload.conversationId,
+            sessionId: invocationPayload.sessionId!,
+            requestId: invocationPayload.requestId!,
             rawMessages,
             rawFrames,
           });

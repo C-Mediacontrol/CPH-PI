@@ -52,6 +52,18 @@ export interface SendMessageParams {
   signal?: AbortSignal;
 }
 
+export interface SendMessageOptions {
+  text: string;
+  conversationId: string;
+  sessionId?: string;
+  requestId?: string;
+  isStartOfSession?: boolean;
+  signal?: AbortSignal;
+  annotations?: AttachmentAnnotation[];
+  optionsSets?: string[];
+  tone?: string;
+}
+
 export interface StreamDelta {
   type: "text" | "reasoning" | "progress" | "tool_call" | "final";
   content: string;

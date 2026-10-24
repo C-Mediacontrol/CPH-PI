@@ -664,6 +664,7 @@ export class Orchestrator {
             conversationId,
             sessionId,
             requestId,
+            isStartOfSession: turn === 1,
             signal,
             annotations: currentAnnotations.length > 0 ? currentAnnotations : undefined,
           },

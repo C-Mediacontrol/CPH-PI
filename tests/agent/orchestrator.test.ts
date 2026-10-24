@@ -313,6 +313,33 @@ path: sample.txt
       expect(client.sentParams.length).toBe(2);
       expect(client.sentParams[0].annotations).toEqual([dummyAnnotation]);
       expect(client.sentParams[1].annotations).toBeUndefined();
+      expect(client.sentParams[0].isStartOfSession).toBe(true);
+      expect(client.sentParams[1].isStartOfSession).toBe(false);
+    });
+
+    it("should propagate isStartOfSession: true on Turn 1 and false on subsequent turns", async () => {
+      const mockResponses = [
+        `\`\`\`action
+tool: read_file
+path: sample.txt
+\`\`\``,
+        "FINAL_ANSWER: Done reading file.",
+      ];
+
+      const client = new MockChatHubClient(mockResponses);
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: client,
+      });
+
+      await orchestrator.run({
+        task: "Read sample file",
+      });
+
+      expect(client.sentParams.length).toBe(2);
+      expect(client.sentParams[0].isStartOfSession).toBe(true);
+      expect(client.sentParams[1].isStartOfSession).toBe(false);
     });
 
     it("should pass rootUserPrompt to disaster recovery blackbox and clean arbitratorPrompt of defeatist phrases", async () => {
