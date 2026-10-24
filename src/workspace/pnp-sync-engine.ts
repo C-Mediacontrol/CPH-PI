@@ -88,6 +88,7 @@ export interface SyncManifestFileEntry {
   uniqueId?: string;
   serverRelativeUrl?: string;
   lastSyncedAt?: string;
+  firstCreatedAt?: string | number;
 }
 
 export interface SyncManifest {
@@ -98,6 +99,51 @@ export interface SyncManifest {
   targetFolder?: string;
   files: Record<string, SyncManifestFileEntry>;
   folders?: Record<string, FolderManifestEntry>;
+}
+
+export function encodeUrlPathSegments(relPath: string): string {
+  return relPath
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((seg) => seg.length > 0)
+    .map((seg) => {
+      try {
+        return encodeURIComponent(decodeURIComponent(seg));
+      } catch {
+        return encodeURIComponent(seg);
+      }
+    })
+    .join("/");
+}
+
+const NON_INDEXABLE_EXTENSIONS = new Set([
+  ".dll",
+  ".dylib",
+  ".so",
+  ".exe",
+  ".pdb",
+  ".lib",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".7z",
+  ".rar",
+  ".aar",
+  ".jar",
+  ".onnx",
+  ".bin",
+  ".cache",
+  ".up2date",
+]);
+
+function isNonIndexableBinary(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  for (const ext of NON_INDEXABLE_EXTENSIONS) {
+    if (lower.endsWith(ext)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export class PnPWorkspaceSyncEngine {
@@ -486,6 +532,25 @@ export class PnPWorkspaceSyncEngine {
   }
 
   /**
+   * Reads .cph/state/virtual-repo-map.md from workspaceRoot if present and non-empty
+   */
+  public static readVirtualRepoMap(workspaceRoot?: string): string | undefined {
+    if (!workspaceRoot) {
+      return undefined;
+    }
+    const mapPath = path.join(workspaceRoot, ".cph", "state", "virtual-repo-map.md");
+    if (!fs.existsSync(mapPath)) {
+      return undefined;
+    }
+    try {
+      const content = fs.readFileSync(mapPath, "utf8").trim();
+      return content.length > 0 ? content : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Generate compact Virtual Repo Map Markdown
    */
   public static generateVirtualRepoMap(
@@ -500,12 +565,14 @@ export class PnPWorkspaceSyncEngine {
       origin = siteUrl.replace(/\/$/, "");
     }
     const folderClean = targetFolder.startsWith("/") ? targetFolder : `/${targetFolder}`;
+    const encodedFolder = encodeUrlPathSegments(folderClean);
     const remoteRootUrl = folderClean.startsWith("/sites/")
-      ? `${origin}${folderClean}`
-      : `${siteUrl.replace(/\/$/, "")}${folderClean}`;
+      ? `${origin}${encodedFolder ? `/${encodedFolder}` : ""}`
+      : `${siteUrl.replace(/\/$/, "")}${encodedFolder ? `/${encodedFolder}` : ""}`;
 
     const files = manifest.files || {};
-    const fileKeys = Object.keys(files).sort();
+    const allKeys = Object.keys(files).sort();
+    const fileKeys = allKeys.filter((k) => !isNonIndexableBinary(k));
 
     const lines: string[] = [
       "[SHAREPOINT REMOTE WORKSPACE]",
@@ -515,22 +582,51 @@ export class PnPWorkspaceSyncEngine {
       "Files Index:",
     ];
 
+    const MAX_MAP_FILES = 120;
     if (fileKeys.length === 0) {
       lines.push("- (No files recorded in sync manifest)");
     } else {
-      for (const k of fileKeys) {
+      const displayKeys = fileKeys.slice(0, MAX_MAP_FILES);
+      for (const k of displayKeys) {
         const item = files[k];
         const sizeKb = (item.size / 1024).toFixed(1);
         const guidStr = item.uniqueId ? ` | UniqueId: ${item.uniqueId}` : "";
         let fileWebUrl = "";
         if (item.serverRelativeUrl) {
+          const encodedServerUrl = encodeUrlPathSegments(item.serverRelativeUrl);
           fileWebUrl = item.serverRelativeUrl.startsWith("/sites/")
-            ? `${origin}${item.serverRelativeUrl}`
-            : `${siteUrl.replace(/\/$/, "")}/${item.serverRelativeUrl.replace(/^\//, "")}`;
+            ? `${origin}${encodedServerUrl ? `/${encodedServerUrl}` : ""}`
+            : `${siteUrl.replace(/\/$/, "")}${encodedServerUrl ? `/${encodedServerUrl}` : ""}`;
         } else {
-          fileWebUrl = `${remoteRootUrl}/${k.replace(/\\/g, "/")}`;
+          const encodedRelPath = encodeUrlPathSegments(k);
+          fileWebUrl = `${remoteRootUrl}/${encodedRelPath}`;
         }
-        lines.push(`- ${k.replace(/\\/g, "/")} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl})`);
+
+        let statusTag = "[CLOUD-READY]";
+        if (
+          item.firstCreatedAt !== undefined &&
+          item.firstCreatedAt !== null &&
+          item.lastSyncedAt !== undefined &&
+          item.lastSyncedAt !== null
+        ) {
+          if (String(item.firstCreatedAt) === String(item.lastSyncedAt)) {
+            const createdTime =
+              typeof item.firstCreatedAt === "number"
+                ? item.firstCreatedAt
+                : !Number.isNaN(Number(item.firstCreatedAt))
+                ? Number(item.firstCreatedAt)
+                : new Date(item.firstCreatedAt).getTime();
+            if (!Number.isNaN(createdTime) && Date.now() - createdTime < 60_000) {
+              statusTag = "[LOCAL-NEW: use read_file]";
+            }
+          }
+        }
+
+        lines.push(`- ${k.replace(/\\/g, "/")} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl} | Status: ${statusTag})`);
+      }
+
+      if (fileKeys.length > MAX_MAP_FILES) {
+        lines.push(`- ... (${fileKeys.length - MAX_MAP_FILES} more files synchronized at ${remoteRootUrl})`);
       }
     }
 

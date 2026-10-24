@@ -1,4 +1,7 @@
 import { describe, it, expect } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { PromptBuilder } from "../../src/protocol/prompt-builder.ts";
 
 describe("PromptBuilder Unit Tests", () => {
@@ -193,6 +196,92 @@ describe("PromptBuilder Unit Tests", () => {
         concurrencyWorkers: 4,
       });
       expect(turn2Prompt).toContain("- 并发集群容量: 4 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)");
+    });
+  });
+
+  describe("6. Virtual Repo Map Turn 1 Injection", () => {
+    it("should automatically inject virtual-repo-map.md into buildTurn1Prompt when present on disk", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-turn1-"));
+      try {
+        const stateDir = path.join(tmpDir, ".cph", "state");
+        fs.mkdirSync(stateDir, { recursive: true });
+        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- main.py (Size: 2KB)";
+        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+
+        const prompt = PromptBuilder.buildTurn1Prompt({
+          workspaceRoot: tmpDir,
+          task: "Review codebase",
+        });
+
+        expect(prompt).toContain("【本地宿主机与工作区事实 (Grounding Facts)】");
+        expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(prompt).toContain("Remote Root URL: https://site/target");
+        expect(prompt).toContain("main.py (Size: 2KB)");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should automatically inject virtual-repo-map.md into buildDirectAgentPrompt", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-direct-"));
+      try {
+        const stateDir = path.join(tmpDir, ".cph", "state");
+        fs.mkdirSync(stateDir, { recursive: true });
+        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- src/app.ts";
+        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+
+        // 1. Auto-loaded from disk
+        const prompt1 = PromptBuilder.buildDirectAgentPrompt(
+          tmpDir,
+          "Direct task",
+          "",
+          "- src/\n  - app.ts"
+        );
+        expect(prompt1).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+        expect(prompt1).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(prompt1).toContain("- src/app.ts");
+        // Verify virtual repo map appears after directory skeleton
+        const skeletonIdx = prompt1.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
+        const mapIdx = prompt1.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
+        const taskIdx = prompt1.indexOf("【用户正式需求】");
+        expect(skeletonIdx).toBeLessThan(mapIdx);
+        expect(mapIdx).toBeLessThan(taskIdx);
+
+        // 2. Explicitly passed parameter overrides or supplies map
+        const customMap = "[SHAREPOINT REMOTE WORKSPACE]\n- custom.ts";
+        const prompt2 = PromptBuilder.buildDirectAgentPrompt(
+          tmpDir,
+          "Direct task",
+          "",
+          "",
+          undefined,
+          customMap
+        );
+        expect(prompt2).toContain(customMap);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("should automatically inject virtual-repo-map.md into buildReGroundingPrompt when present on disk", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-reground-"));
+      try {
+        const stateDir = path.join(tmpDir, ".cph", "state");
+        fs.mkdirSync(stateDir, { recursive: true });
+        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- index.ts";
+        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+
+        const prompt = PromptBuilder.buildReGroundingPrompt({
+          workspaceRoot: tmpDir,
+          currentTask: "Continue migration",
+        });
+
+        expect(prompt).toContain("【本地宿主机与工作区事实 (Session Re-grounding)】");
+        expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(prompt).toContain("index.ts");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

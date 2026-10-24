@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile } from "fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -780,6 +780,105 @@ subagents:
         expect(successorNewSessionId).toContain("_gen2");
       });
     });
+  });
+
+  describe("8. Write-After-Sync Barrier (Task 3)", () => {
+    it("should trigger bounded write-after-sync barrier when sync-manifest.json exists and append Cloud Mirror note", async () => {
+      // Create sync-manifest.json with mockTransport
+      const stateDir = join(tempDir, ".cph", "state");
+      await mkdir(stateDir, { recursive: true });
+      const manifestPath = join(stateDir, "sync-manifest.json");
+      await writeFile(
+        manifestPath,
+        JSON.stringify({
+          version: 2,
+          siteUrl: "https://example.sharepoint.com/sites/TestSite",
+          targetFolder: "/sites/TestSite/Shared Documents",
+          mockTransport: true,
+          files: {},
+        }),
+        "utf8"
+      );
+
+      const mockResponses = [
+        `THOUGHT: Editing file
+\`\`\`action
+tool: edit
+path: sample.txt
+old_string: hello
+new_string: greetings
+\`\`\``,
+        `THOUGHT: Done
+FINAL_ANSWER: Edited file successfully`,
+      ];
+
+      const client = new MockChatHubClient(mockResponses);
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: client,
+      });
+
+      const result = await orchestrator.run({
+        task: "Update sample file",
+      });
+
+      expect(result.completed).toBe(true);
+      expect(client.sentPrompts.length).toBeGreaterThan(1);
+      // Turn 2 prompt should contain either the synced note or pending note (graceful fallback)
+      const turn2Prompt = client.sentPrompts[1];
+      expect(turn2Prompt).toMatch(/\[Cloud Mirror: (?:Synced sample\.txt to SharePoint|PENDING)/);
+
+      // Verify virtual-repo-map.md was created/updated
+      const mapPath = join(stateDir, "virtual-repo-map.md");
+      expect(await readFile(mapPath, "utf8")).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    }, 20000);
+
+    it("should NOT run write-after-sync barrier when modified file is inside .cph/", async () => {
+      const stateDir = join(tempDir, ".cph", "state");
+      await mkdir(stateDir, { recursive: true });
+      const manifestPath = join(stateDir, "sync-manifest.json");
+      await writeFile(
+        manifestPath,
+        JSON.stringify({
+          version: 2,
+          siteUrl: "https://example.sharepoint.com/sites/TestSite",
+          targetFolder: "/sites/TestSite/Shared Documents",
+          mockTransport: true,
+          files: {},
+        }),
+        "utf8"
+      );
+      const cphFile = join(stateDir, "internal.txt");
+      await writeFile(cphFile, "cph content", "utf8");
+
+      const mockResponses = [
+        `THOUGHT: Editing .cph file
+\`\`\`action
+tool: edit
+path: .cph/state/internal.txt
+old_string: cph content
+new_string: updated cph content
+\`\`\``,
+        `THOUGHT: Done
+FINAL_ANSWER: Edited .cph file`,
+      ];
+
+      const client = new MockChatHubClient(mockResponses);
+      const orchestrator = new Orchestrator({
+        workspaceRoot: tempDir,
+        bridge,
+        chatClient: client,
+      });
+
+      const result = await orchestrator.run({
+        task: "Update internal cph file",
+      });
+
+      expect(result.completed).toBe(true);
+      const turn2Prompt = client.sentPrompts[1];
+      expect(turn2Prompt).not.toContain("[Cloud Mirror:");
+    }, 20000);
   });
 });
 

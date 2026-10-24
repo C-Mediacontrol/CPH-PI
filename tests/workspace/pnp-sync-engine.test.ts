@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { PnPWorkspaceSyncEngine, type SyncManifest } from "../../src/workspace/pnp-sync-engine.ts";
+import { PnPWorkspaceSyncEngine, encodeUrlPathSegments, type SyncManifest } from "../../src/workspace/pnp-sync-engine.ts";
 
 describe("PnPWorkspaceSyncEngine Suite", () => {
   let tmpDir: string;
@@ -228,5 +228,162 @@ describe("PnPWorkspaceSyncEngine Suite", () => {
     expect(fs.existsSync(pulledPath)).toBe(true);
     expect(fs.readFileSync(pulledPath, "utf8")).toBe("MOCK PULL CONTENT");
   }, 30000);
+
+  it("should URL-encode path segments containing spaces in Virtual Repo Map", () => {
+    expect(encodeUrlPathSegments("Library/CNNJI QUERY/01 Team/query.sql")).toBe(
+      "Library/CNNJI%20QUERY/01%20Team/query.sql"
+    );
+    expect(encodeUrlPathSegments("Library\\CNNJI QUERY\\01 Team\\query.sql")).toBe(
+      "Library/CNNJI%20QUERY/01%20Team/query.sql"
+    );
+
+    const manifest: SyncManifest = {
+      version: 2,
+      siteUrl: "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN",
+      targetFolder: "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/WorkSpace/live test",
+      files: {
+        "Library/CNNJI QUERY/01 Team/query.sql": {
+          sha256: "hash123",
+          size: 4096,
+          uniqueId: "guid-query-1",
+        },
+      },
+    };
+
+    const map = PnPWorkspaceSyncEngine.generateVirtualRepoMap(
+      manifest,
+      manifest.siteUrl!,
+      manifest.targetFolder!
+    );
+
+    expect(map).toContain("Remote Root URL: https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/WorkSpace/live%20test");
+    expect(map).toContain("Web: https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/WorkSpace/live%20test/Library/CNNJI%20QUERY/01%20Team/query.sql");
+    expect(map).toContain("- Library/CNNJI QUERY/01 Team/query.sql (Size: 4.0KB | UniqueId: guid-query-1");
+  });
+
+  it("should compute [LOCAL-NEW: use read_file] vs [CLOUD-READY] status tags based on firstCreatedAt and lastSyncedAt", () => {
+    const nowIso = new Date().toISOString();
+    const oldIso = new Date(Date.now() - 3600_000).toISOString(); // 1 hour ago
+    const epochNow = Date.now();
+
+    const manifest: SyncManifest = {
+      version: 2,
+      siteUrl: "https://example.sharepoint.com/sites/TestSite",
+      targetFolder: "/sites/TestSite/Shared Documents",
+      files: {
+        "recent_new.py": {
+          sha256: "h1",
+          size: 1024,
+          firstCreatedAt: nowIso,
+          lastSyncedAt: nowIso,
+        },
+        "recent_epoch_new.ts": {
+          sha256: "h2",
+          size: 2048,
+          firstCreatedAt: epochNow,
+          lastSyncedAt: epochNow,
+        },
+        "old_file.md": {
+          sha256: "h3",
+          size: 512,
+          firstCreatedAt: oldIso,
+          lastSyncedAt: oldIso,
+        },
+        "re_synced.py": {
+          sha256: "h4",
+          size: 1024,
+          firstCreatedAt: oldIso,
+          lastSyncedAt: nowIso,
+        },
+        "legacy_file.txt": {
+          sha256: "h5",
+          size: 256,
+        },
+      },
+    };
+
+    const map = PnPWorkspaceSyncEngine.generateVirtualRepoMap(
+      manifest,
+      manifest.siteUrl!,
+      manifest.targetFolder!
+    );
+
+    expect(map).toContain("recent_new.py (Size: 1.0KB | Web: https://example.sharepoint.com/sites/TestSite/Shared%20Documents/recent_new.py | Status: [LOCAL-NEW: use read_file])");
+    expect(map).toContain("recent_epoch_new.ts (Size: 2.0KB | Web: https://example.sharepoint.com/sites/TestSite/Shared%20Documents/recent_epoch_new.ts | Status: [LOCAL-NEW: use read_file])");
+    expect(map).toContain("old_file.md (Size: 0.5KB | Web: https://example.sharepoint.com/sites/TestSite/Shared%20Documents/old_file.md | Status: [CLOUD-READY])");
+    expect(map).toContain("re_synced.py (Size: 1.0KB | Web: https://example.sharepoint.com/sites/TestSite/Shared%20Documents/re_synced.py | Status: [CLOUD-READY])");
+    expect(map).toContain("legacy_file.txt (Size: 0.3KB | Web: https://example.sharepoint.com/sites/TestSite/Shared%20Documents/legacy_file.txt | Status: [CLOUD-READY])");
+  });
+
+  it("should filter non-indexable binary extensions, cap at 120 files, and support readVirtualRepoMap", () => {
+    const files: Record<string, any> = {};
+
+    // Add 130 normal text/code files
+    for (let i = 1; i <= 130; i++) {
+      const pad = String(i).padStart(3, "0");
+      files[`src/module_${pad}.ts`] = {
+        sha256: `hash_${pad}`,
+        size: 1024,
+      };
+    }
+
+    // Add non-indexable binary files
+    files["native.dll"] = { sha256: "bin1", size: 50000 };
+    files["archive.zip"] = { sha256: "bin2", size: 60000 };
+    files["model.onnx"] = { sha256: "bin3", size: 70000 };
+    files["asset.Up2Date"] = { sha256: "bin4", size: 80000 };
+    files["cache.bin"] = { sha256: "bin5", size: 90000 };
+
+    const manifest: SyncManifest = {
+      version: 2,
+      siteUrl: "https://example.sharepoint.com/sites/TestSite",
+      targetFolder: "/sites/TestSite/Shared Documents",
+      files,
+    };
+
+    const map = PnPWorkspaceSyncEngine.generateVirtualRepoMap(
+      manifest,
+      manifest.siteUrl!,
+      manifest.targetFolder!
+    );
+
+    // Total Files should only count indexable files (130)
+    expect(map).toContain("Total Files: 130");
+
+    // Non-indexable files should be filtered out
+    expect(map).not.toContain("native.dll");
+    expect(map).not.toContain("archive.zip");
+    expect(map).not.toContain("model.onnx");
+    expect(map).not.toContain("asset.Up2Date");
+    expect(map).not.toContain("cache.bin");
+
+    // First 120 files should be included
+    expect(map).toContain("src/module_001.ts");
+    expect(map).toContain("src/module_120.ts");
+
+    // 121st file should NOT be individually rendered
+    expect(map).not.toContain("src/module_121.ts");
+
+    // Budget cap notice with remaining count
+    expect(map).toContain("- ... (10 more files synchronized at https://example.sharepoint.com/sites/TestSite/Shared%20Documents)");
+
+    // Test PnPWorkspaceSyncEngine.readVirtualRepoMap
+    expect(PnPWorkspaceSyncEngine.readVirtualRepoMap(undefined)).toBeUndefined();
+    expect(PnPWorkspaceSyncEngine.readVirtualRepoMap(tmpDir)).toBeUndefined();
+
+    const stateDir = path.join(tmpDir, ".cph", "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const mapPath = path.join(stateDir, "virtual-repo-map.md");
+
+    // Empty file returns undefined
+    fs.writeFileSync(mapPath, "   \n\t  ", "utf8");
+    expect(PnPWorkspaceSyncEngine.readVirtualRepoMap(tmpDir)).toBeUndefined();
+
+    // Non-empty file returns trimmed content
+    fs.writeFileSync(mapPath, map, "utf8");
+    const read = PnPWorkspaceSyncEngine.readVirtualRepoMap(tmpDir);
+    expect(read).toBeDefined();
+    expect(read).toBe(map.trim());
+  });
 });
 

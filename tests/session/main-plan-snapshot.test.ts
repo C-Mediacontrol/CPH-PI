@@ -115,4 +115,42 @@ describe("MainPlanSnapshot Engine", () => {
     expect(prompt).not.toContain("严禁");
     expect(prompt).not.toContain("切勿");
   });
+
+  it("should automatically inject virtual-repo-map.md right after directory skeleton in formatSuccessorTurn1Prompt", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-succ-map-"));
+    try {
+      const stateDir = path.join(tmpDir, ".cph", "state");
+      fs.mkdirSync(stateDir, { recursive: true });
+      const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://cmacgmgroup.sharepoint.com/sites/Test\n- Library/query.sql (Size: 1.0KB | Status: [CLOUD-READY])";
+      fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+
+      const snapshot = createMainPlanSnapshot({
+        originalSessionId: "main_ses_auto_map",
+        originalTask: "接力任务",
+        workspaceRoot: tmpDir,
+        plannedSubagents: [],
+      });
+
+      const dirSkeleton = "- Library/\n- package.json";
+      const prompt = formatSuccessorTurn1Prompt(
+        snapshot,
+        "子任务成果",
+        undefined,
+        2,
+        dirSkeleton
+      );
+
+      expect(prompt).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+      expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+      expect(prompt).toContain("Library/query.sql");
+
+      const skeletonIdx = prompt.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
+      const mapIdx = prompt.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
+      const originalTaskIdx = prompt.indexOf("### 1. 原始工程目标与规划思路");
+      expect(skeletonIdx).toBeLessThan(mapIdx);
+      expect(mapIdx).toBeLessThan(originalTaskIdx);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,3 +1,5 @@
+import { PnPWorkspaceSyncEngine } from "../workspace/pnp-sync-engine.ts";
+
 export interface Turn1PromptOptions {
   workspaceRoot: string;
   gitFacts?: string;
@@ -44,6 +46,8 @@ export class PromptBuilder {
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
     const treePreview = options.dirTree ? `\n【核心目录结构预览】\n${options.dirTree}\n` : "";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `\n${virtualRepoMap}\n` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
@@ -51,7 +55,7 @@ export class PromptBuilder {
 - 工作区绝对路径: ${wsNorm}
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}
+${treePreview}${repoMapSection}
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -102,7 +106,8 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
     task: string,
     activeSkillsSection = "",
     dirSkeleton = "",
-    concurrencyWorkers?: number
+    concurrencyWorkers?: number,
+    virtualRepoMap?: string
   ): string {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
 
@@ -115,6 +120,11 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
 
     if (dirSkeleton && dirSkeleton.trim() !== "") {
       prompt += `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`;
+    }
+
+    const effectiveRepoMap = virtualRepoMap ?? PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot);
+    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
+      prompt += `\n\n${effectiveRepoMap.trim()}`;
     }
 
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
@@ -355,13 +365,15 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `\n\n${virtualRepoMap.trim()}` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。本地物理环境已连接。
 
 【本地宿主机与工作区事实 (Session Re-grounding)】
 - 工作区绝对路径: ${wsNorm}
 - 最新 Git 仓库状态:
-${gitFacts}
+${gitFacts}${repoMapSection}
 
 【前序轮次执行摘要 (Context Transfer)】
 ${history}

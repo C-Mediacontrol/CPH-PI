@@ -10,6 +10,7 @@ import {
 } from "../transport/substrate-uploader.ts";
 import type { AttachmentAnnotation } from "../transport/types.ts";
 import { SnapshotGenerator, type SnapshotResult } from "../workspace/snapshot-generator.ts";
+import { PnPWorkspaceSyncEngine } from "../workspace/pnp-sync-engine.ts";
 import {
   ToolBridge,
   type CopilotAction,
@@ -1030,6 +1031,60 @@ export class Orchestrator {
             (parsed.action as any).targetPath;
           if (modFile && typeof modFile === "string") {
             this.lastModifiedFile = modFile;
+            const relMod = path.isAbsolute(modFile)
+              ? path.relative(this.workspaceRoot, modFile).replace(/\\/g, "/")
+              : modFile.replace(/\\/g, "/");
+            const cleanRel = relMod.replace(/^\.\//, "");
+            if (
+              cleanRel &&
+              !cleanRel.startsWith(".cph/") &&
+              !cleanRel.startsWith(".git/") &&
+              !cleanRel.startsWith("../") &&
+              !path.isAbsolute(cleanRel)
+            ) {
+              const manifestPath = path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
+              if (fs.existsSync(manifestPath)) {
+                const syncStart = Date.now();
+                const syncAbort = new AbortController();
+                let syncTimer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                  const engine = new PnPWorkspaceSyncEngine();
+                  const existingManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                  const siteUrl = existingManifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+                  const targetFolder = existingManifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+                  const mockTransport = Boolean((existingManifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+                  await Promise.race([
+                    engine.syncFile(this.workspaceRoot, cleanRel, targetFolder, {
+                      siteUrl,
+                      mockTransport,
+                      signal: syncAbort.signal,
+                    }),
+                    new Promise((_, reject) => {
+                      syncTimer = setTimeout(() => {
+                        syncAbort.abort();
+                        reject(new Error("SYNC_TIMEOUT"));
+                      }, 15000);
+                      (syncTimer as any)?.unref?.();
+                    }),
+                  ]);
+                  const updatedManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                  if (updatedManifest) {
+                    const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(updatedManifest, siteUrl, targetFolder);
+                    fs.writeFileSync(path.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md"), mapMd, "utf8");
+                  }
+                  const elapsedMs = Date.now() - syncStart;
+                  const syncNote = `\n[Cloud Mirror: Synced ${cleanRel} to SharePoint (${elapsedMs}ms)]`;
+                  toolResult.output = (toolResult.output || "") + syncNote;
+                  if (toolResult.rawOutput) toolResult.rawOutput += syncNote;
+                } catch {
+                  const pendingNote = `\n[Cloud Mirror: PENDING (local file updated; use read_file if re-reading)]`;
+                  toolResult.output = (toolResult.output || "") + pendingNote;
+                  if (toolResult.rawOutput) toolResult.rawOutput += pendingNote;
+                } finally {
+                  if (syncTimer) clearTimeout(syncTimer);
+                }
+              }
+            }
           }
         }
 
@@ -1064,37 +1119,6 @@ export class Orchestrator {
             `Target: ${targetFile} (Verified: Tests passed on disk)`,
             `Cloud Mirror: Synced to SharePoint`,
           ].join("\n");
-
-          // Trigger asynchronous silent sp-sync-engine.ps1
-          try {
-            const syncScript = path.join(this.workspaceRoot, "scripts", "sp-sync-engine.ps1");
-            if (fs.existsSync(syncScript)) {
-              const child = spawn(
-                "powershell.exe",
-                [
-                  "-NoProfile",
-                  "-ExecutionPolicy",
-                  "Bypass",
-                  "-File",
-                  syncScript,
-                  "-Action",
-                  "SyncSingleFile",
-                  "-SourceFile",
-                  targetFile,
-                  "-WorkspaceRoot",
-                  this.workspaceRoot,
-                ],
-                {
-                  cwd: this.workspaceRoot,
-                  stdio: "ignore",
-                  detached: true,
-                }
-              );
-              child.unref();
-            }
-          } catch {
-            // Background async trigger - do not block
-          }
         }
 
         // Check and trigger cloud document attachment upload for tool outputs (intercept full upload on green test)
