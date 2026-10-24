@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ScrollText,
   HardDrive,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '../../services/store';
 import type { LedgerEntry } from '../../types/protocol';
+import { LazyViewportItem } from '../common/LazyViewportItem';
 import css from './LedgerWALViewer.module.css';
 
 export function LedgerWALViewer(): React.JSX.Element {
@@ -23,6 +24,11 @@ export function LedgerWALViewer(): React.JSX.Element {
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failure'>('all');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState<number>(35);
+
+  useEffect(() => {
+    setVisibleCount(35);
+  }, [filterText, statusFilter]);
 
   const copyToClipboard = (text: string, key: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -53,6 +59,8 @@ export function LedgerWALViewer(): React.JSX.Element {
       );
     });
   }, [ledgerEntries, statusFilter, filterText]);
+
+  const displayedEntries = filteredEntries.slice(0, visibleCount);
 
   const metrics = useMemo(() => {
     const total = ledgerEntries.length;
@@ -175,106 +183,124 @@ export function LedgerWALViewer(): React.JSX.Element {
             </div>
           </div>
         ) : (
-          filteredEntries.map((entry: LedgerEntry) => {
-            const isExpanded = expandedId === entry.stepId;
-            const isSuccess = entry.exitCode === 0;
-            const timeStr = new Date(entry.timestamp).toLocaleTimeString();
+          <>
+            {displayedEntries.map((entry: LedgerEntry) => {
+              const isExpanded = expandedId === entry.stepId;
+              const isSuccess = entry.exitCode === 0;
+              const timeStr = new Date(entry.timestamp).toLocaleTimeString();
 
-            return (
-              <div
-                key={entry.stepId}
-                className={css.entryCard}
-                data-expanded={isExpanded}
-                onClick={() => setExpandedId(isExpanded ? null : entry.stepId)}
-              >
-                <div className={css.entryTop}>
-                  <div className={css.stepBadgeArea}>
-                    <span className={css.stepNum}>#{String(entry.stepId).padStart(2, '0')}</span>
-                    <span className={css.toolTag}>
-                      {getToolIcon(entry.toolName)}
-                      <span>{entry.toolName}</span>
-                    </span>
-                  </div>
-
-                  <span className={`${css.exitCode} ${isSuccess ? css.exitSuccess : css.exitFailure}`}>
-                    {isSuccess ? <CheckCircle2 size={11} style={{ display: 'inline', marginRight: 3 }} /> : <XCircle size={11} style={{ display: 'inline', marginRight: 3 }} />}
-                    exit {entry.exitCode}
-                  </span>
-                </div>
-
-                <div className={css.entryMetaRow}>
-                  <span className={css.metaItem}>
-                    <Clock size={11} />
-                    {entry.durationMs}ms
-                  </span>
-                  <span>•</span>
-                  <span>{timeStr}</span>
-                  <span>•</span>
-                  <span className={css.hashBadge} title={`参数哈希: ${entry.argsHash}`}>
-                    {entry.argsHash.slice(0, 15)}...
-                  </span>
-                  <button
-                    className={css.copyBtn}
-                    onClick={(e) => copyToClipboard(entry.argsHash, `hash-${entry.stepId}`, e)}
-                    title="复制完整参数哈希"
-                    type="button"
+              return (
+                <LazyViewportItem
+                  key={entry.stepId}
+                  fallbackHeight={isExpanded ? 160 : 54}
+                  forceActive={isExpanded}
+                >
+                  <div
+                    className={css.entryCard}
+                    data-expanded={isExpanded}
+                    onClick={() => setExpandedId(isExpanded ? null : entry.stepId)}
                   >
-                    {copiedKey === `hash-${entry.stepId}` ? <Check size={11} color="var(--dsw-static-green-500)" /> : <Copy size={11} />}
-                  </button>
-                </div>
+                    <div className={css.entryTop}>
+                      <div className={css.stepBadgeArea}>
+                        <span className={css.stepNum}>#{String(entry.stepId).padStart(2, '0')}</span>
+                        <span className={css.toolTag}>
+                          {getToolIcon(entry.toolName)}
+                          <span>{entry.toolName}</span>
+                        </span>
+                      </div>
 
-                {entry.evidencePath && (
-                  <div className={css.evidenceRow}>
-                    <span className={css.evidencePath} title={entry.evidencePath}>
-                      <HardDrive size={11} />
-                      <span>{entry.evidencePath}</span>
-                    </span>
-                    <button
-                      className={css.copyBtn}
-                      onClick={(e) => copyToClipboard(entry.evidencePath!, `ev-${entry.stepId}`, e)}
-                      title="复制证据落盘路径"
-                      type="button"
-                    >
-                      {copiedKey === `ev-${entry.stepId}` ? <Check size={11} color="var(--dsw-static-green-500)" /> : <Copy size={11} />}
-                    </button>
-                  </div>
-                )}
-
-                {isExpanded && (
-                  <div className={css.expandedDetail}>
-                    <div className={css.detailRow}>
-                      <span className={css.detailLabel}>步数序号:</span>
-                      <span className={css.detailValue}>第 #{entry.stepId} 步 (单调递增)</span>
-                    </div>
-                    <div className={css.detailRow}>
-                      <span className={css.detailLabel}>记录时间戳:</span>
-                      <span className={css.detailValue}>{new Date(entry.timestamp).toISOString()}</span>
-                    </div>
-                    <div className={css.detailRow}>
-                      <span className={css.detailLabel}>参数 SHA-256:</span>
-                      <span className={css.detailValue} style={{ wordBreak: 'break-all' }}>
-                        {entry.argsHash}
+                      <span className={`${css.exitCode} ${isSuccess ? css.exitSuccess : css.exitFailure}`}>
+                        {isSuccess ? <CheckCircle2 size={11} style={{ display: 'inline', marginRight: 3 }} /> : <XCircle size={11} style={{ display: 'inline', marginRight: 3 }} />}
+                        exit {entry.exitCode}
                       </span>
                     </div>
-                    <div className={css.detailRow}>
-                      <span className={css.detailLabel}>执行状态:</span>
-                      <span
-                        className={css.detailValue}
-                        style={{ color: isSuccess ? 'var(--dsw-static-green-500, #15803d)' : 'var(--dsw-static-red-500, #b91c1c)' }}
+
+                    <div className={css.entryMetaRow}>
+                      <span className={css.metaItem}>
+                        <Clock size={11} />
+                        {entry.durationMs}ms
+                      </span>
+                      <span>•</span>
+                      <span>{timeStr}</span>
+                      <span>•</span>
+                      <span className={css.hashBadge} title={`参数哈希: ${entry.argsHash}`}>
+                        {entry.argsHash.slice(0, 15)}...
+                      </span>
+                      <button
+                        className={css.copyBtn}
+                        onClick={(e) => copyToClipboard(entry.argsHash, `hash-${entry.stepId}`, e)}
+                        title="复制完整参数哈希"
+                        type="button"
                       >
-                        {isSuccess ? '执行成功 (Exit Code 0)' : `执行失败 (Exit Code ${entry.exitCode})`}
-                      </span>
+                        {copiedKey === `hash-${entry.stepId}` ? <Check size={11} color="var(--dsw-static-green-500)" /> : <Copy size={11} />}
+                      </button>
                     </div>
 
-                    <div className={css.ruleNotice}>
-                      <strong>正交分层持久化：</strong> 工具事实与证据物理落盘至{' '}
-                      <code>.cph/state/</code>，严格保障模型上下文不被长日志污染。
-                    </div>
+                    {entry.evidencePath && (
+                      <div className={css.evidenceRow}>
+                        <span className={css.evidencePath} title={entry.evidencePath}>
+                          <HardDrive size={11} />
+                          <span>{entry.evidencePath}</span>
+                        </span>
+                        <button
+                          className={css.copyBtn}
+                          onClick={(e) => copyToClipboard(entry.evidencePath!, `ev-${entry.stepId}`, e)}
+                          title="复制证据落盘路径"
+                          type="button"
+                        >
+                          {copiedKey === `ev-${entry.stepId}` ? <Check size={11} color="var(--dsw-static-green-500)" /> : <Copy size={11} />}
+                        </button>
+                      </div>
+                    )}
+
+                    {isExpanded && (
+                      <div className={css.expandedDetail}>
+                        <div className={css.detailRow}>
+                          <span className={css.detailLabel}>步数序号:</span>
+                          <span className={css.detailValue}>第 #{entry.stepId} 步 (单调递增)</span>
+                        </div>
+                        <div className={css.detailRow}>
+                          <span className={css.detailLabel}>记录时间戳:</span>
+                          <span className={css.detailValue}>{new Date(entry.timestamp).toISOString()}</span>
+                        </div>
+                        <div className={css.detailRow}>
+                          <span className={css.detailLabel}>参数 SHA-256:</span>
+                          <span className={css.detailValue} style={{ wordBreak: 'break-all' }}>
+                            {entry.argsHash}
+                          </span>
+                        </div>
+                        <div className={css.detailRow}>
+                          <span className={css.detailLabel}>执行状态:</span>
+                          <span
+                            className={css.detailValue}
+                            style={{ color: isSuccess ? 'var(--dsw-static-green-500, #15803d)' : 'var(--dsw-static-red-500, #b91c1c)' }}
+                          >
+                            {isSuccess ? '执行成功 (Exit Code 0)' : `执行失败 (Exit Code ${entry.exitCode})`}
+                          </span>
+                        </div>
+
+                        <div className={css.ruleNotice}>
+                          <strong>正交分层持久化：</strong> 工具事实与证据物理落盘至{' '}
+                          <code>.cph/state/</code>，严格保障模型上下文不被长日志污染。
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
+                </LazyViewportItem>
+              );
+            })}
+            {visibleCount < filteredEntries.length && (
+              <div className={css.loadMoreContainer}>
+                <button
+                  type="button"
+                  className={css.loadMoreBtn}
+                  onClick={() => setVisibleCount((prev) => prev + 35)}
+                >
+                  加载更多记录 (已展示 {displayedEntries.length} / {filteredEntries.length}，剩余 {filteredEntries.length - displayedEntries.length} 项)
+                </button>
               </div>
-            );
-          })
+            )}
+          </>
         )}
       </div>
     </div>

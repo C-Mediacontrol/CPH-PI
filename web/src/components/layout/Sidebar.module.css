@@ -312,6 +312,8 @@
 .sessionList {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -333,6 +335,8 @@
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 36px;
   transition: all var(--ds-transition-fast, 0.1s);
 }
 
