@@ -3,12 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 
-describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
+describe("Dual-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
   const root = path.resolve(__dirname, "../../");
 
   const promptFiles = [
     "cph-main-agent-prompt.txt",
-    "cph-researcher-agent-prompt.txt",
     "cph-coder-agent-prompt.txt",
     "cph-dev-agent-prompt.txt",
   ];
@@ -18,36 +17,53 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
     "skills/handoff/SKILL.md",
   ];
 
-  it("should uphold Rule 3 constructive guidance without negative prohibition words across all prompts and skills", () => {
-    const allFiles = [...promptFiles, ...skillFiles];
-    for (const relPath of allFiles) {
+  it("should ensure cph-researcher-agent-prompt.txt is retired and does not exist on disk", () => {
+    expect(fs.existsSync(path.join(root, "cph-researcher-agent-prompt.txt"))).toBe(false);
+  });
+
+  it("should uphold Rule 3 constructive guidance without negative prohibition words across dual-agent prompts and skills", () => {
+    const targetFiles = [
+      "cph-main-agent-prompt.txt",
+      "cph-coder-agent-prompt.txt",
+      "skills/subagent/SKILL.md",
+      "skills/handoff/SKILL.md",
+    ];
+    const negativeWords = ["严禁", "切勿", "不要", "禁止", "杜绝", "不得", "绝不允许"];
+    for (const relPath of targetFiles) {
       const fullPath = path.join(root, relPath);
       expect(fs.existsSync(fullPath)).toBe(true);
       const content = fs.readFileSync(fullPath, "utf8");
 
-      // Rule 3: No negative prohibition words like '严禁', '切勿'
-      expect(content).not.toContain("严禁");
-      expect(content).not.toContain("切勿");
+      for (const word of negativeWords) {
+        expect(content).not.toContain(word);
+      }
     }
   });
 
-  it("should enforce black-box abstraction without leaking harness internal transport mechanics", () => {
-    for (const relPath of promptFiles) {
+  it("should enforce black-box abstraction without leaking harness internal transport mechanics across all prompts and skills", () => {
+    const allFiles = [...promptFiles, ...skillFiles];
+    const forbiddenTerms = ["WebSocket", "SignalR", "账号池", "Chathub"];
+    for (const relPath of allFiles) {
       const content = fs.readFileSync(path.join(root, relPath), "utf8");
-      // Rule 6: Do not leak WebSocket, SignalR, account pool internals
-      expect(content).not.toContain("WebSocket");
-      expect(content).not.toContain("SignalR");
-      expect(content).not.toContain("账号池");
-      expect(content).not.toContain("Chathub");
+      for (const term of forbiddenTerms) {
+        expect(content).not.toContain(term);
+      }
     }
   });
 
-  it("should enforce full workspace snapshot awareness and DAG stage barrier contracts in cph-main-agent-prompt.txt", () => {
+  it("should enforce Cloud-First Grounding, DAG stage barrier, and traceable delivery contracts in cph-main-agent-prompt.txt", () => {
     const content = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
 
-    // Full workspace snapshot perception in Turn 1
-    expect(content).toMatch(/全景(?:代码)?快照|workspace-v1\.txt/);
+    // Cloud-First SharePoint Remote Workspace perception
+    expect(content).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(content).toContain("[CLOUD-READY]");
+    expect(content).toContain("[LOCAL-NEW: use read_file]");
+
+    // Physical plan and convergence gate
     expect(content).toContain("plan.md");
+    expect(content).toContain("FINAL_ANSWER");
+    expect(content).toContain("收敛门禁");
+    expect(content).toContain("已审阅文件与取证来源清单");
 
     // Commander role & DAG dependency scheduling
     expect(content).toContain("DAG");
@@ -57,42 +73,27 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
     expect(content).toMatch(/研判先于重构/);
     expect(content).toMatch(/实施先于集成/);
 
-    // Orthogonal concurrency
+    // Coder delegation & orthogonal concurrency
+    expect(content).toMatch(/role:\s*"coder"/);
     expect(content).toMatch(/正交.*并发/);
   });
 
-  it("should enforce scoped micro-slice input and read-only evidence contracts in cph-researcher-agent-prompt.txt", () => {
-    const content = fs.readFileSync(path.join(root, "cph-researcher-agent-prompt.txt"), "utf8");
-
-    // Scoped micro-slice perception
-    expect(content).toMatch(/微切片|局部切片/);
-
-    // Read-only investigation and verifiable evidence
-    expect(content).toContain("只读");
-    expect(content).toMatch(/证据/);
-    expect(content).toContain("read_file");
-    expect(content).toContain("run_command");
-    expect(content).toContain("FINAL_ANSWER");
-
-    // Tool boundaries: strictly read-only, no write_file or patch_file
-    expect(content).not.toContain("write_file");
-    expect(content).not.toContain("patch_file");
-  });
-
-  it("should enforce micro-slice input, surgical patching and test green-light loop in cph-coder-agent-prompt.txt", () => {
+  it("should enforce Cloud-First Grounding, surgical patching, and test green-light loop in cph-coder-agent-prompt.txt", () => {
     const content = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
 
-    // Scoped micro-slice perception
-    expect(content).toMatch(/微切片|局部切片|目标源码/);
+    // Cloud-First SharePoint Remote Workspace perception
+    expect(content).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(content).toContain("[LOCAL-NEW: use read_file]");
 
     // Surgical patching and test green-light loop
     expect(content).toContain("patch_file");
     expect(content).toMatch(/绿灯/);
     expect(content).toContain("run_command");
     expect(content).toContain("FINAL_ANSWER");
+    expect(content).toContain("handoff");
 
     // No raw write_file tool action
-    expect(content).not.toContain("tool: write_file");
+    expect(content).not.toContain('"tool": "write_file"');
   });
 
   it("should enforce end-to-end full snapshot perception and positive engineering delivery in cph-dev-agent-prompt.txt", () => {
@@ -110,17 +111,15 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
     expect(content).not.toContain("切勿");
   });
 
-  it("should enforce DAG causality dispatch, scoped micro-slice specs, and stage barriers in skills/subagent/SKILL.md", () => {
+  it("should enforce Cloud-First dispatch, DAG causality, and stage barriers in skills/subagent/SKILL.md", () => {
     const content = fs.readFileSync(path.join(root, "skills/subagent/SKILL.md"), "utf8");
+
+    // Cloud workspace anchoring
+    expect(content).toContain("[SHAREPOINT REMOTE WORKSPACE]");
 
     // DAG causality & dispatch guide
     expect(content).toContain("DAG");
     expect(content).toMatch(/因果/);
-
-    // Scoped micro-slice standards
-    expect(content).toMatch(/微切片/);
-    expect(content).toContain("targetFiles");
-    expect(content).toMatch(/prerequisite(?:Reports|Context)/);
 
     // Stage barriers & causality sequence
     expect(content).toContain("阶段屏障");
@@ -131,29 +130,33 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
     expect(content).toMatch(/研判先于重构/);
     expect(content).toMatch(/实施先于集成/);
 
-    // Disjoint concurrency
+    // Target files & orthogonal concurrency
+    expect(content).toContain("targetFiles");
     expect(content).toMatch(/正交.*并发/);
+    expect(content).toContain("plan.md");
+    expect(content).toContain("patch_file");
+    expect(content).toContain("FINAL_ANSWER");
   });
 
-  it("should enforce anti-amnesia contract, incremental snapshot alignment, and positive anti-early exit in skills/handoff/SKILL.md", () => {
+  it("should enforce Cloud-Anchored Handoff, plan.md alignment, P0/P1 tiers, and anti-early exit in skills/handoff/SKILL.md", () => {
     const content = fs.readFileSync(path.join(root, "skills/handoff/SKILL.md"), "utf8");
 
-    // Anti-amnesia contract: inherit plan.md and full snapshot, proceed with P0/P1 without re-confirming initial goals
-    expect(content).toMatch(/天然继承.*(?:plan\.md|物理清单)/);
-    expect(content).toMatch(/全景快照/);
-    expect(content).toMatch(/无需.*(?:重新向用户确认|重复确认).*初始.*目标/);
+    // Cloud workspace anchoring & natural inheritance
+    expect(content).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(content).toContain("[CLOUD-READY]");
+    expect(content).toContain("[LOCAL-NEW: use read_file]");
+    expect(content).toMatch(/天然继承/);
+    expect(content).toMatch(/无需.*重新向用户确认.*初始目标/);
 
-    // Incremental snapshot delivery
-    expect(content).toMatch(/workspace-vN\.txt|递增.*快照/);
-
-    // P0/P1 tiers and positive anti-early-exit invariant
+    // plan.md alignment, P0/P1 tiers, and anti-early-exit invariant
     expect(content).toContain("plan.md");
-    expect(content).toMatch(/P0/);
-    expect(content).toMatch(/P1/);
+    expect(content).toContain("P0");
+    expect(content).toContain("P1");
     expect(content).toContain("反早退");
+    expect(content).toContain("FINAL_ANSWER");
   });
 
-  it("should synchronize all 4 prompts, skills, and distribution artifacts into package/agent-bundle via package-agent-bundle.ts", () => {
+  it("should synchronize prompts, skills, and distribution artifacts into package/agent-bundle via package-agent-bundle.ts", () => {
     // Run packager script
     execSync("bun run scripts/package-agent-bundle.ts", { cwd: root, stdio: "pipe" });
 
@@ -168,13 +171,12 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
 
     expect(fs.existsSync(mainInstructions)).toBe(true);
     expect(fs.existsSync(coderInstructions)).toBe(true);
-    expect(fs.existsSync(researcherInstructions)).toBe(true);
+    expect(fs.existsSync(researcherInstructions)).toBe(false);
     expect(fs.existsSync(devInstructions)).toBe(true);
 
     // Verify content matches source prompts
     expect(fs.readFileSync(mainInstructions, "utf8")).toBe(fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8"));
     expect(fs.readFileSync(coderInstructions, "utf8")).toBe(fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8"));
-    expect(fs.readFileSync(researcherInstructions, "utf8")).toBe(fs.readFileSync(path.join(root, "cph-researcher-agent-prompt.txt"), "utf8"));
     expect(fs.readFileSync(devInstructions, "utf8")).toBe(fs.readFileSync(path.join(root, "cph-dev-agent-prompt.txt"), "utf8"));
 
     // 2. Verify raw prompts also preserved in package/agent-bundle/
@@ -183,6 +185,8 @@ describe("Tri-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
       expect(fs.existsSync(bundlePromptPath)).toBe(true);
       expect(fs.readFileSync(bundlePromptPath, "utf8")).toBe(fs.readFileSync(path.join(root, promptFile), "utf8"));
     }
+    // Verify cph-researcher-agent-prompt.txt does NOT exist in package/agent-bundle/
+    expect(fs.existsSync(path.join(packageBundleDir, "cph-researcher-agent-prompt.txt"))).toBe(false);
 
     // 3. Verify skills packaged in package/agent-bundle/skills/
     const subagentSkillPath = path.join(packageBundleDir, "skills", "subagent", "SKILL.md");

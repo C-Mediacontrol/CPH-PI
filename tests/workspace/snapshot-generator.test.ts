@@ -95,8 +95,8 @@ describe("SnapshotGenerator (Workspace Snapshot & Scoped Slice Engine)", () => {
       expect(hasJwt).toBe(true);
     });
 
-    it("should assert all 9 critical core files exist in current repository", () => {
-      expect(SnapshotGenerator.CRITICAL_CORE_FILES.length).toBe(9);
+    it("should assert all 8 critical core files exist in current repository", () => {
+      expect(SnapshotGenerator.CRITICAL_CORE_FILES.length).toBe(8);
       for (const relFile of SnapshotGenerator.CRITICAL_CORE_FILES) {
         const fullPath = path.join(repoRoot, relFile);
         expect(fs.existsSync(fullPath)).toBe(true);
@@ -224,13 +224,13 @@ describe("SnapshotGenerator (Workspace Snapshot & Scoped Slice Engine)", () => {
       expect(path.basename(result.snapshotPath)).toMatch(/^workspace-snapshot-[a-f0-9]+\.txt$/);
       expect(result.cloudFileName).toBe("workspace-v1.txt");
 
-      // 2. Dynamic range assertion [151, 175] (P2 anti-self-referencing)
+      // 2. Dynamic range assertion [151, 350] (incorporating web frontend source suite)
       expect(result.fileCount).toBeGreaterThanOrEqual(151);
-      expect(result.fileCount).toBeLessThanOrEqual(175);
+      expect(result.fileCount).toBeLessThanOrEqual(350);
 
-      // 3. Dynamic byte size assertion [1.25 MiB, 1.60 MiB]
+      // 3. Dynamic byte size assertion [1.25 MiB, 3.50 MiB]
       const minBytes = 1.25 * 1024 * 1024;
-      const maxBytes = 1.60 * 1024 * 1024;
+      const maxBytes = 3.50 * 1024 * 1024;
       expect(result.bytes).toBeGreaterThanOrEqual(minBytes);
       expect(result.bytes).toBeLessThanOrEqual(maxBytes);
 

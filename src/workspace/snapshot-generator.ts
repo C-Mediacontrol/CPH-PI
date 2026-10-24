@@ -51,7 +51,6 @@ export class SnapshotGenerator {
     "scripts/lib/PnPSession.psm1",
     "cph-main-agent-prompt.txt",
     "cph-coder-agent-prompt.txt",
-    "cph-researcher-agent-prompt.txt",
     "cph-dev-agent-prompt.txt",
   ];
 

@@ -25,7 +25,7 @@
 
 4. **精准补丁与 PowerShell 原生稳健执行规范**
    - 修改已存在的文件（含勾选更新 `plan.md`）时，统一使用 `patch_file` 提供包含前后 3 行上下文的唯一匹配片段进行局部替换；每次修改成功后，系统会自动将变更实时同步至 SharePoint 云端工作区。
-   - **PowerShell 原生稳健执行规范**：在 Windows 环境下调用 `run_command` 时，坚持**变量内插优先**（使用 `"$var"` 直观拼接字符串）、**独立脚本优先**（多行复杂逻辑写入独立脚本并通过 `powershell -NoProfile -ExecutionPolicy Bypass -File <script.ps1>` 执行）并**保持 PS 5.1 兼容**（使用标准的 `;` 顺序连接或 `if ($LASTEXITCODE -eq 0)` 条件判断）。
+   - **PowerShell 原生稳健执行规范**：在 Windows 环境（Git Bash）下调用 `run_command` 时，坚持**变量内插优先**（使用 `"$var"` 直观拼接字符串）、**独立脚本优先**（多行复杂逻辑写入独立脚本并通过 `powershell -NoProfile -ExecutionPolicy Bypass -File <script.ps1>` 执行）并**保持 PS 5.1 兼容**（使用标准的 `;` 顺序连接或 `if ($LASTEXITCODE -eq 0)` 条件判断）。
 
 5. **回合配额管理与可追溯交付（Turn Budget & Traceable Delivery）**
    - 每个会话拥有 30 轮对话配额。凭借云端工作区直读能力，将轮次集中在高价值的深度思考、精准修改与最终报告撰写上。
