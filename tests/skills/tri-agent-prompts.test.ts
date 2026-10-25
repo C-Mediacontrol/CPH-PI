@@ -169,10 +169,10 @@ describe("Dual-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(skillContent).toContain("成果回收与对账收敛");
   });
 
-  it("should verify SubagentRunner defaults unspecified roles to coder and preserves isInlineScoutTask export", async () => {
+  it("should verify SubagentRunner normalizes all subagent roles to coder and preserves isInlineScoutTask export", async () => {
     const runnerSource = fs.readFileSync(path.join(root, "src/agent/subagent-runner.ts"), "utf8");
     expect(runnerSource).toContain("export { isInlineScoutTask };");
-    expect(runnerSource).toMatch(/taskSpec\.role === "researcher" \? "researcher" : "coder"/);
+    expect(runnerSource).toContain('const role = "coder";');
 
     const { isInlineScoutTask } = await import("../../src/agent/subagent-runner.ts");
     expect(typeof isInlineScoutTask).toBe("function");
@@ -253,5 +253,19 @@ describe("Dual-Agent System Prompts & Subagent Skill Contracts", () => {
         expect(content).not.toContain(word);
       }
     }
+  });
+
+  it("should enforce autonomous two-tier reading strategy and deliverables landing contract in system prompts", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const coderPrompt = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
+
+    for (const prompt of [mainPrompt, coderPrompt]) {
+      expect(prompt).toContain("remote-workspace-catalog.md");
+      expect(prompt).toContain("第一优先级（云端优先）");
+      expect(prompt).toContain("第二优先级（本地兜底）");
+      expect(prompt).not.toMatch(/严禁|切勿|不要/);
+    }
+
+    expect(mainPrompt).toContain("【交付文件与落盘指引 / Deliverables】");
   });
 });
