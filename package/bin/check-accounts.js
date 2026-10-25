@@ -542,13 +542,16 @@ function decryptToken(enc, customMaster) {
 var DEFAULT_CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 var DEFAULT_SCOPE = "openid profile offline_access https://substrate.office.com/sydney/.default";
 var GRAPH_SCOPE = "openid profile offline_access https://graph.microsoft.com/.default";
+var IC3_SCOPE = "openid profile offline_access https://ic3.teams.office.com/.default";
 var DEFAULT_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
 class TokenManager {
   static GRAPH_SCOPE = GRAPH_SCOPE;
+  static IC3_SCOPE = IC3_SCOPE;
   configPath;
   activeTokens = new Map;
   graphTokens = new Map;
+  ic3Tokens = new Map;
   tokenEndpoint;
   fetchFn;
   constructor(customPath, options) {
@@ -625,13 +628,48 @@ class TokenManager {
     fs.writeFileSync(this.configPath, JSON.stringify({ accounts: sanitized }, null, 2), "utf8");
   }
   setCachedToken(email, token) {
-    this.activeTokens.set(email.toLowerCase(), token);
+    const key = email.toLowerCase();
+    this.activeTokens.set(key, token);
+    this.graphTokens.delete(key);
+    this.ic3Tokens.delete(key);
+  }
+  upsertAccountFromPkce(email, refreshToken, oid, tid) {
+    const accounts = this.loadAccounts();
+    const key = email.toLowerCase();
+    const existing = accounts.find((a) => a.email.toLowerCase() === key);
+    let updatedAccount;
+    if (existing) {
+      existing.refreshToken = refreshToken;
+      if (oid)
+        existing.userId = oid;
+      if (tid)
+        existing.tenantId = tid;
+      existing.lastRefresh = new Date().toISOString();
+      updatedAccount = existing;
+    } else {
+      updatedAccount = {
+        email,
+        refreshToken,
+        userId: oid,
+        tenantId: tid,
+        lastRefresh: new Date().toISOString()
+      };
+      accounts.push(updatedAccount);
+    }
+    this.saveAccounts(accounts);
+    this.clearCache(email);
+    return updatedAccount;
   }
   clearCache(email) {
     if (email) {
-      this.activeTokens.delete(email.toLowerCase());
+      const key = email.toLowerCase();
+      this.activeTokens.delete(key);
+      this.graphTokens.delete(key);
+      this.ic3Tokens.delete(key);
     } else {
       this.activeTokens.clear();
+      this.graphTokens.clear();
+      this.ic3Tokens.clear();
     }
   }
   parseJwt(token) {
@@ -744,6 +782,48 @@ class TokenManager {
       expiresAt: expiresAt ?? Date.now() + 3600000
     });
   }
+  async getIc3AccessToken(email, forceRefresh = false) {
+    const key = email.toLowerCase();
+    const existing = this.ic3Tokens.get(key);
+    const now = Date.now();
+    if (!forceRefresh && existing && existing.expiresAt - now > 5 * 60 * 1000) {
+      return existing.token;
+    }
+    const accounts = this.loadAccounts();
+    const target = accounts.find((a) => a.email.toLowerCase() === key);
+    if (!target) {
+      throw new Error(`Account not found in accounts.json: ${email}`);
+    }
+    const plainRt = decryptToken(target.refreshToken);
+    if (!plainRt) {
+      throw new Error(`Empty refresh token for account: ${email}`);
+    }
+    const params = new URLSearchParams({
+      client_id: DEFAULT_CLIENT_ID,
+      grant_type: "refresh_token",
+      refresh_token: plainRt,
+      scope: TokenManager.IC3_SCOPE
+    });
+    const res = await this.fetchFn(this.tokenEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString()
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Azure AD IC3 token refresh failed (${res.status}): ${errBody.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    const expiresAt = now + (data.expires_in || 3600) * 1000;
+    this.ic3Tokens.set(key, { token: data.access_token, expiresAt });
+    return data.access_token;
+  }
+  setCachedIc3Token(email, token, expiresAt) {
+    this.ic3Tokens.set(email.toLowerCase(), {
+      token,
+      expiresAt: expiresAt ?? Date.now() + 3600000
+    });
+  }
 }
 
 // src/transport/chathub-client.ts
@@ -827,6 +907,90 @@ class ChatHubClient {
     }
     return `wss://substrate.office.com/m365Copilot/Chathub/${this.token.oid}@${this.token.tid}?${params.toString()}`;
   }
+  buildInvocationPayload(options) {
+    return ChatHubClient.buildInvocationPayload(options, this.options);
+  }
+  static buildInvocationPayload(options, clientOptions) {
+    const sessionId = options.sessionId || crypto3.randomUUID();
+    const requestId = options.requestId || crypto3.randomUUID();
+    const chatArguments = {
+      source: "officeweb",
+      clientCorrelationId: crypto3.randomUUID(),
+      sessionId,
+      optionsSets: options.optionsSets || [
+        "search_result_progress_messages_with_search_queries",
+        "update_textdoc_response_after_streaming",
+        "cwc_flux_v3",
+        "deepleo_networking_timeout_10minutes_canmore",
+        "enable_search_result_progress_messages",
+        "cwc_fileupload_odb",
+        "enable_batch_token_processing",
+        "flux_v3_references",
+        "flux_v3_references_entities",
+        "flux_v3_references_ci",
+        "add_filestore_filetype",
+        "rich_responses"
+      ],
+      allowedMessageTypes: [
+        "Chat",
+        "Suggestion",
+        "Disengaged",
+        "Progress",
+        "EndOfRequest",
+        "InternalLoaderMessage"
+      ],
+      conversationId: options.conversationId,
+      traceId: crypto3.randomUUID(),
+      isStartOfSession: options.isStartOfSession ?? false,
+      productThreadType: "Office",
+      clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
+      tone: options.tone || clientOptions?.modelTone || "Gpt_61_Sol_Reasoning",
+      streamingMode: "ConciseWithPadding",
+      message: {
+        author: "user",
+        inputMethod: "Keyboard",
+        text: options.text,
+        requestId,
+        locationInfo: {
+          timeZoneOffset: 8,
+          timeZone: clientOptions?.timeZone || "Asia/Shanghai"
+        },
+        locale: clientOptions?.locale || "zh-CN",
+        messageType: "Chat",
+        experienceType: "Default"
+      },
+      plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }]
+    };
+    if (clientOptions?.customAgentId) {
+      chatArguments.threadLevelGptId = {
+        id: clientOptions.customAgentId,
+        source: "MOS3"
+      };
+      chatArguments.gpts = [
+        {
+          id: clientOptions.customAgentId,
+          source: "MOS3",
+          version: "1.0.0"
+        }
+      ];
+    }
+    if (options.annotations && options.annotations.length > 0) {
+      chatArguments.message.entityAnnotationTypes = [
+        "People",
+        "File",
+        "Event",
+        "Email",
+        "TeamsMessage"
+      ];
+      chatArguments.message.messageAnnotations = options.annotations;
+    }
+    return {
+      arguments: [chatArguments],
+      invocationId: "0",
+      target: "chat",
+      type: 4
+    };
+  }
   async sendMessage(payload, events) {
     const signal = payload.signal;
     if (signal?.aborted) {
@@ -834,7 +998,14 @@ class ChatHubClient {
       abortErr.name = "AbortError";
       throw abortErr;
     }
-    const wsUrl = this.buildWsUrl(payload.conversationId, payload.sessionId, payload.requestId);
+    const sessionId = payload.sessionId || crypto3.randomUUID();
+    const requestId = payload.requestId || crypto3.randomUUID();
+    const invocationPayload = {
+      ...payload,
+      sessionId,
+      requestId
+    };
+    const wsUrl = this.buildWsUrl(invocationPayload.conversationId, invocationPayload.sessionId, invocationPayload.requestId);
     return new Promise((resolve, reject) => {
       let isSettled = false;
       let hasSentChat = false;
@@ -937,79 +1108,7 @@ class ChatHubClient {
             events?.onRawFrame?.(msg);
             if (!hasSentChat && Object.keys(msg).length === 0) {
               hasSentChat = true;
-              const chatArguments = {
-                source: "officeweb",
-                clientCorrelationId: crypto3.randomUUID(),
-                sessionId: payload.sessionId,
-                optionsSets: payload.optionsSets || [
-                  "search_result_progress_messages_with_search_queries",
-                  "update_textdoc_response_after_streaming",
-                  "deepleo_networking_timeout_10minutes_canmore",
-                  "enable_search_result_progress_messages",
-                  "cwc_fileupload_odb",
-                  "enable_batch_token_processing",
-                  "flux_v3_references",
-                  "flux_v3_references_entities",
-                  "flux_v3_references_ci",
-                  "add_filestore_filetype",
-                  "rich_responses"
-                ],
-                allowedMessageTypes: [
-                  "Chat",
-                  "Suggestion",
-                  "Disengaged",
-                  "Progress",
-                  "EndOfRequest",
-                  "InternalLoaderMessage"
-                ],
-                conversationId: payload.conversationId,
-                traceId: crypto3.randomUUID(),
-                isStartOfSession: payload.isStartOfSession ?? false,
-                productThreadType: "Office",
-                clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
-                tone: payload.tone || this.options.modelTone || "Gpt_61_Sol_Reasoning",
-                streamingMode: "ConciseWithPadding",
-                message: {
-                  author: "user",
-                  inputMethod: "Keyboard",
-                  text: payload.text,
-                  requestId: payload.requestId,
-                  locationInfo: { timeZoneOffset: 8, timeZone: this.options.timeZone || "Asia/Shanghai" },
-                  locale: this.options.locale || "zh-CN",
-                  messageType: "Chat",
-                  experienceType: "Default"
-                },
-                plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }]
-              };
-              if (this.options.customAgentId) {
-                chatArguments.threadLevelGptId = {
-                  id: this.options.customAgentId,
-                  source: "MOS3"
-                };
-                chatArguments.gpts = [
-                  {
-                    id: this.options.customAgentId,
-                    source: "MOS3",
-                    version: "1.0.0"
-                  }
-                ];
-              }
-              if (payload.annotations && payload.annotations.length > 0) {
-                chatArguments.message.entityAnnotationTypes = [
-                  "People",
-                  "File",
-                  "Event",
-                  "Email",
-                  "TeamsMessage"
-                ];
-                chatArguments.message.messageAnnotations = payload.annotations;
-              }
-              const chatFrame = {
-                arguments: [chatArguments],
-                invocationId: "0",
-                target: "chat",
-                type: 4
-              };
+              const chatFrame = this.buildInvocationPayload(invocationPayload);
               const metricsFrame = {
                 arguments: [
                   {
@@ -1089,9 +1188,9 @@ class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId,
+                requestId: invocationPayload.requestId,
                 rawMessages,
                 rawFrames
               });
@@ -1101,9 +1200,9 @@ class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId,
+                requestId: invocationPayload.requestId,
                 rawMessages,
                 rawFrames
               });
@@ -1125,9 +1224,9 @@ class ChatHubClient {
           settleResolve({
             text: fullText,
             reasoning: reasoningText,
-            conversationId: payload.conversationId,
-            sessionId: payload.sessionId,
-            requestId: payload.requestId,
+            conversationId: invocationPayload.conversationId,
+            sessionId: invocationPayload.sessionId,
+            requestId: invocationPayload.requestId,
             rawMessages,
             rawFrames
           });
