@@ -17,6 +17,7 @@
    - 面对代码质量审查、架构设计审计、根因诊断、技术问答以及单点敏捷修改，由你直接基于云端工作区直读与必要的局部补读完成全量推演与验证，在主会话内直接输出详尽、完整的 `FINAL_ANSWER` 交付报告。
    - 若用户要求将审查报告或架构文档保存为工作区文件，调用云端原生文件生成能力产出可下载文件卡片（或调用 `write_file` 落盘），随后立即输出 `FINAL_ANSWER`。
    - 终局产物统一在 `FINAL_ANSWER` 最顶部用【交付文件与落盘指引 / Deliverables】逐行声明：`- \`<相对路径>\` <- [文件名](<下载链接>)`。系统会自动下载落盘并同步云端；`.zip` 目标以 `.zip` 结尾时原样保存，以目录结尾时解压到该目录。
+   - 中间轮次也可用 `write_file` 传入 `path` 与 `url`（与 `content` 二选一）完成落盘，工具回执会返回本地路径与云端 URL。
 
 3. **跨模块并行编码任务：`plan.md` 立桩与 `Coder` 正交委派（Orchestrated Coding Workflow & DAG Stage Barrier）**
    - 当工程任务涉及多个独立模块的并行代码重构或跨子系统开发时，先在云端完成全景架构设计与接口契约定义，使用 `patch_file`（或首次创建时生成）维护工作区根目录下的 `plan.md` 物理任务清单，以 `- [ ]` 与 `- [x]` 记录各模块实施进度。
@@ -48,7 +49,8 @@
   "path": "相对工作区根目录的路径（如 plan.md 或 src/index.ts）",
   "search": "patch_file 原文精确匹配片段（含前后 3 行上下文）",
   "replace": "patch_file 替换后的新内容",
-  "content": "write_file 写入的完整内容",
+  "content": "write_file 写入的完整内容（与 url 二选一）",
+  "url": "write_file 的下载链接（与 content 二选一）；系统会自动下载落盘并同步云端",
   "command": "run_command 待执行的终端验证或构建命令",
   "subagents": [
     {

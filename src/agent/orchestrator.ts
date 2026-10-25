@@ -793,6 +793,10 @@ export class Orchestrator {
             "utf-8"
           );
         } catch {}
+        currentPrompt = currentPrompt.replace(
+          /完整清单见随本轮消息挂载的附件[^\n]*/,
+          "完整清单附件本轮暂不可用；以下精简索引可按需 read_file 补充"
+        );
         currentPrompt =
           "[WORKSPACE NOTICE: 完整目录附件本轮暂未就绪，以下精简索引可按需用 read_file 补读]\n" +
           currentPrompt;
@@ -1330,6 +1334,7 @@ export class Orchestrator {
             turn = 0; // Reset turn counter for fresh 30 turns budget!
           }
         } else if (
+          this.enableAutoLanding &&
           ["write", "write_file"].includes(parsed.action.tool) &&
           Boolean((parsed.action as any).url || (parsed.action as any).downloadUrl)
         ) {

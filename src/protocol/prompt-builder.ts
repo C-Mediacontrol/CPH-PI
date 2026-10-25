@@ -36,6 +36,7 @@ export class PromptBuilder {
    - 读取文件: tool: read_file \\n path: <path>
    - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
+   - 写入下载文件: tool: write_file \\n path: <path> \\n url: <下载链接>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
    - 调派子代理: tool: invoke_subagent \\n subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
