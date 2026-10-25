@@ -93,6 +93,7 @@ export interface OrchestratorOptions {
   lineageTracker?: SessionLineageTracker;
   maxGenerations?: number;
   enableWorkspaceSnapshot?: boolean;
+  enableWorkspaceCatalog?: boolean;
   enableAutoLanding?: boolean;
   /** Injectable landing service for tests / custom deployments. */
   autoLandingService?: LandingService;
@@ -214,6 +215,7 @@ export class Orchestrator {
   public generation: number = 1;
   private maxGenerations: number;
   public enableWorkspaceSnapshot: boolean;
+  public enableWorkspaceCatalog: boolean;
   public enableAutoLanding: boolean;
   private autoLandingService?: LandingService;
   public lastNextSnapshotMeta?: SnapshotResult;
@@ -259,6 +261,7 @@ export class Orchestrator {
         : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
+    this.enableWorkspaceCatalog = options.enableWorkspaceCatalog ?? true;
     this.enableAutoLanding = options.enableAutoLanding ?? true;
     this.autoLandingService = options.autoLandingService;
     this.isHandshakePending =
@@ -403,10 +406,79 @@ export class Orchestrator {
   }
 
   /**
+   * Generate and attach the per-account workspace catalog.
+   *
+   * Cache key = account email + content hash. The catalog is a supplemental,
+   * complete index next to the inline [SHAREPOINT REMOTE WORKSPACE] map.
+   */
+  public async ensureWorkspaceCatalogAttachment(
+    accountEmail: string
+  ): Promise<UploadDocumentResult | null> {
+    if (!this.workspaceRoot) return null;
+
+    const { markdown } = PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot);
+    const catalogPath = path.join(
+      this.workspaceRoot,
+      ".cph",
+      "state",
+      "remote-workspace-catalog.md"
+    );
+    fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+    fs.writeFileSync(catalogPath, markdown, "utf8");
+
+    const hash = crypto
+      .createHash("sha256")
+      .update(markdown.replace(/^- 生成时间: .*$/m, ""))
+      .digest("hex");
+    const cacheFile = path.join(
+      this.workspaceRoot,
+      ".cph",
+      "state",
+      "workspace-catalog-cache.json"
+    );
+
+    let cache: { entries?: Record<string, any> } = { entries: {} };
+    if (fs.existsSync(cacheFile)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+        if (parsed && typeof parsed === "object") cache = parsed;
+      } catch {
+        cache = { entries: {} };
+      }
+    }
+    if (!cache.entries || typeof cache.entries !== "object") cache.entries = {};
+
+    const key = (accountEmail || "default").toLowerCase();
+    const cached = cache.entries![key];
+    if (cached && cached.hash === hash && cached.uploadResult?.annotation) {
+      return cached.uploadResult as UploadDocumentResult;
+    }
+
+    const graphToken = await this.acquireGraphToken();
+    if (!graphToken) {
+      throw new Error("No Graph access token available for workspace catalog upload");
+    }
+
+    const uploadResult = await SubstrateUploader.uploadDocumentToOneDrive(
+      graphToken,
+      markdown,
+      "remote-workspace-catalog.md"
+    );
+
+    cache.entries![key] = {
+      hash,
+      uploadResult,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf8");
+
+    return uploadResult;
+  }
+
+  /**
    * Persist a physical delivery report for auditability.
    */
-  private writeDeliveryReport(result: LandingResult, source: string): void {
-    try {
+  private writeDeliveryReport(result: LandingResult, source: string): void {    try {
       const stateDir = path.join(this.workspaceRoot, ".cph", "state");
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(
@@ -679,6 +751,41 @@ export class Orchestrator {
       ? [...options.initialAnnotations]
       : [];
 
+    // Turn 1: Workspace Catalog Attachment (supplemental complete index)
+    const isWorkspaceCatalogEnabled =
+      options.enableWorkspaceCatalog !== undefined
+        ? options.enableWorkspaceCatalog
+        : this.enableWorkspaceCatalog;
+
+    if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+      try {
+        const catalogResult = await this.ensureWorkspaceCatalogAttachment(
+          (client as any)?.token?.email || this.activeAccountEmail
+        );
+        if (catalogResult?.annotation) {
+          currentAnnotations.push(catalogResult.annotation);
+          events?.onAttachmentUploaded?.(catalogResult, "workspace_catalog");
+        }
+      } catch (err: any) {
+        try {
+          const errLogPath = path.join(
+            this.workspaceRoot,
+            ".cph",
+            "state",
+            "upload-error.log"
+          );
+          fs.mkdirSync(path.dirname(errLogPath), { recursive: true });
+          fs.appendFileSync(
+            errLogPath,
+            `[${new Date().toISOString()}] workspace catalog upload failed:\n${
+              err?.stack || err?.message || String(err)
+            }\n\n`,
+            "utf-8"
+          );
+        } catch {}
+      }
+    }
+
     // Turn 1: Workspace Snapshot Attachment, Cache Check & Explicit Fault Tolerance
     const isWorkspaceSnapshotEnabled =
       options.enableWorkspaceSnapshot !== undefined
@@ -829,6 +936,23 @@ export class Orchestrator {
                   customAgentId: this.customAgentId,
                 });
                 this.activeAccountEmail = (client as any)?.token?.email || nextToken.email || "";
+
+                if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+                  try {
+                    const nextCatalog = await this.ensureWorkspaceCatalogAttachment(
+                      this.activeAccountEmail
+                    );
+                    if (nextCatalog?.annotation) {
+                      currentAnnotations = currentAnnotations.filter(
+                        (anno) =>
+                          (anno as any).messageAnnotationMetadata?.fileName !==
+                          "remote-workspace-catalog.md"
+                      );
+                      currentAnnotations.push(nextCatalog.annotation);
+                      events?.onAttachmentUploaded?.(nextCatalog, "workspace_catalog");
+                    }
+                  } catch {}
+                }
               }
             },
           }
