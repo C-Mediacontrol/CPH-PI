@@ -27,18 +27,15 @@ export interface Turn2TaskPromptOptions {
 }
 
 export class PromptBuilder {
-  public static readonly CLOUD_CATALOG_ATTACHMENT_HINT =
-    "【云端工作区受控目录】已挂载云端附件: remote-workspace-catalog.md（包含全量本地相对路径与云端 SharePoint WebUrl 映射索引，支持两级自主读取决策）";
-
   public static readonly PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
    - 读取文件: tool: read_file \\n path: <path>
-   - 局部修改: tool: patch_file \\n path: <path> \\n old_string: <old> \\n new_string: <new>
+   - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
-   - 调派子代理 (仅跨模块并行编码): tool: invoke_subagent \\n subagents: [{"role": "coder", "prompt": "<具体独立编码切片任务>"}]
-2. 代码质量审查、架构审计与根因诊断任务无需调派子代理，主控直接基于云端与本地事实输出最终交付总结：
+   - 调派子代理: tool: invoke_subagent \\n subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
+2. 当所有目标已达成且验证充分时，直接在独立一行输出最终交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
 
   /**
@@ -49,11 +46,8 @@ export class PromptBuilder {
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
     const treePreview = options.dirTree ? `\n【核心目录结构预览】\n${options.dirTree}\n` : "";
-    const hasCatalog = Boolean(
-      PnPWorkspaceSyncEngine.readCatalogMarkdown(options.workspaceRoot) ||
-      PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot)
-    );
-    const catalogSection = hasCatalog ? `\n${PromptBuilder.CLOUD_CATALOG_ATTACHMENT_HINT}\n` : "";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `\n${virtualRepoMap}\n` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
@@ -61,7 +55,7 @@ export class PromptBuilder {
 - 工作区绝对路径: ${wsNorm}
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}${catalogSection}
+${treePreview}${repoMapSection}
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -93,10 +87,10 @@ tool: ask_question
 question: <问题内容>
 options: 选项A | 选项B (可选)
 \`\`\`
-6. 调派子代理执行独立并行编码任务（代码质量审查与分析任务无需派发子代理，主控一步直出）：
+6. 调派子代理并发执行独立切片审查或研发任务：
 \`\`\`action
 tool: invoke_subagent
-subagents: [{"role": "coder", "prompt": "<具体独立编码任务>"}]
+subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
 \`\`\`
 
 ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${options.skillsSection}\n\n` : ""}${options.task ? `【当前用户任务】\n${options.task}\n\n` : ""}${this.PROTOCOL_REMINDER}`;
@@ -121,20 +115,16 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
 - 工作区绝对路径: ${wsNorm}`;
 
     if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
-      prompt += `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (仅在跨模块并行编码施工时按需调度)`;
+      prompt += `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
     }
 
     if (dirSkeleton && dirSkeleton.trim() !== "") {
       prompt += `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`;
     }
 
-    const hasCatalog = Boolean(
-      (virtualRepoMap && virtualRepoMap.trim() !== "") ||
-      PnPWorkspaceSyncEngine.readCatalogMarkdown(workspaceRoot) ||
-      PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot)
-    );
-    if (hasCatalog) {
-      prompt += `\n\n${PromptBuilder.CLOUD_CATALOG_ATTACHMENT_HINT}`;
+    const effectiveRepoMap = virtualRepoMap ?? PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot);
+    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
+      prompt += `\n\n${effectiveRepoMap.trim()}`;
     }
 
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
@@ -213,7 +203,7 @@ command: git status
 
     const clusterFact =
       finalConcurrencyWorkers !== undefined && finalConcurrencyWorkers > 0
-        ? `\n- 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (仅在跨模块并行编码施工时按需调度)`
+        ? `\n- 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
         : "";
 
     return `${toolHeader}
@@ -332,7 +322,7 @@ ${this.PROTOCOL_REMINDER}`;
 
     const clusterFact =
       concurrencyWorkers !== undefined && concurrencyWorkers > 0
-        ? `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (仅在跨模块并行编码施工时按需调度)`
+        ? `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
         : "";
 
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
@@ -375,18 +365,15 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
-    const hasCatalog = Boolean(
-      PnPWorkspaceSyncEngine.readCatalogMarkdown(options.workspaceRoot) ||
-      PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot)
-    );
-    const catalogSection = hasCatalog ? `\n\n${PromptBuilder.CLOUD_CATALOG_ATTACHMENT_HINT}` : "";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `\n\n${virtualRepoMap.trim()}` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。本地物理环境已连接。
 
 【本地宿主机与工作区事实 (Session Re-grounding)】
 - 工作区绝对路径: ${wsNorm}
 - 最新 Git 仓库状态:
-${gitFacts}${catalogSection}
+${gitFacts}${repoMapSection}
 
 【前序轮次执行摘要 (Context Transfer)】
 ${history}

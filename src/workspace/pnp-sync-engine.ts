@@ -324,9 +324,15 @@ export class PnPWorkspaceSyncEngine {
 
     const { report } = await this.executePowerShell(args, options.signal);
 
-    // After prewarm, update Catalog and Virtual Repo Map in .cph/state/
+    // After prewarm, update Virtual Repo Map in .cph/state/virtual-repo-map.md
     try {
-      PnPWorkspaceSyncEngine.generateCatalogMarkdown(options.workspaceRoot, { siteUrl, targetFolder });
+      const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+      if (manifest) {
+        const mapContent = PnPWorkspaceSyncEngine.generateVirtualRepoMap(manifest, siteUrl, targetFolder);
+        const mapPath = path.join(options.workspaceRoot, ".cph", "state", "virtual-repo-map.md");
+        fs.mkdirSync(path.dirname(mapPath), { recursive: true });
+        fs.writeFileSync(mapPath, mapContent, "utf8");
+      }
     } catch {
       // Non-fatal if map writing fails
     }
@@ -526,56 +532,6 @@ export class PnPWorkspaceSyncEngine {
   }
 
   /**
-   * Static helper to run workspace synchronization
-   */
-  public static async syncWorkspace(
-    workspaceRoot: string,
-    targetFolder?: string,
-    options?: { siteUrl?: string; mockTransport?: boolean; signal?: AbortSignal }
-  ): Promise<PrewarmReport> {
-    const engine = new PnPWorkspaceSyncEngine();
-    return engine.prewarm({
-      workspaceRoot,
-      targetFolder,
-      ...options,
-    });
-  }
-
-  /**
-   * Instance method to run workspace synchronization (alias to prewarm)
-   */
-  public async syncWorkspace(
-    workspaceRoot: string,
-    targetFolder?: string,
-    options?: PrewarmOptions
-  ): Promise<PrewarmReport> {
-    return this.prewarm({
-      workspaceRoot,
-      targetFolder,
-      ...options,
-    });
-  }
-
-  /**
-   * Reads .cph/state/remote-workspace-catalog.md from workspaceRoot if present and non-empty
-   */
-  public static readCatalogMarkdown(workspaceRoot?: string): string | undefined {
-    if (!workspaceRoot) {
-      return undefined;
-    }
-    const catalogPath = path.join(workspaceRoot, ".cph", "state", "remote-workspace-catalog.md");
-    if (!fs.existsSync(catalogPath)) {
-      return undefined;
-    }
-    try {
-      const content = fs.readFileSync(catalogPath, "utf8").trim();
-      return content.length > 0 ? content : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
    * Reads .cph/state/virtual-repo-map.md from workspaceRoot if present and non-empty
    */
   public static readVirtualRepoMap(workspaceRoot?: string): string | undefined {
@@ -592,108 +548,6 @@ export class PnPWorkspaceSyncEngine {
     } catch {
       return undefined;
     }
-  }
-
-  /**
-   * Generate standardized remote-workspace-catalog.md and persist to .cph/state/
-   * (also preserves virtual-repo-map.md for backward compatibility)
-   */
-  public static generateCatalogMarkdown(
-    workspaceRoot: string,
-    options?: { siteUrl?: string; targetFolder?: string }
-  ): string {
-    const wsNorm = workspaceRoot.replace(/\\/g, "/");
-    const manifestPath = path.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
-    const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-
-    const siteUrl = options?.siteUrl || manifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-    const targetFolder = options?.targetFolder || manifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-
-    let origin = "";
-    try {
-      origin = new URL(siteUrl).origin;
-    } catch {
-      origin = siteUrl.replace(/\/$/, "");
-    }
-    const folderClean = targetFolder.startsWith("/") ? targetFolder : `/${targetFolder}`;
-    const encodedFolder = encodeUrlPathSegments(folderClean);
-    const remoteRootUrl = folderClean.startsWith("/sites/")
-      ? `${origin}${encodedFolder ? `/${encodedFolder}` : ""}`
-      : `${siteUrl.replace(/\/$/, "")}${encodedFolder ? `/${encodedFolder}` : ""}`;
-
-    const files = manifest?.files || {};
-    const allKeys = Object.keys(files).sort();
-    const fileKeys = allKeys.filter((k) => !isNonIndexableBinary(k));
-
-    const lines: string[] = [
-      "# Remote Workspace Catalog (云端工作区全量目录映射表)",
-      "",
-      `- **Remote Root URL**: ${remoteRootUrl}`,
-      `- **Local SSOT**: ${wsNorm}`,
-      `- **Total Files**: ${fileKeys.length}`,
-      "",
-      "## 文件映射清单 (File Mapping Index)",
-      "",
-      "| 本地相对路径 | 云端 SharePoint WebUrl | 体积 | 状态 |",
-      "|---|---|---|---|",
-    ];
-
-    for (const k of fileKeys) {
-      const item = files[k];
-      const sizeKb = ((item?.size ?? 0) / 1024).toFixed(1);
-      let fileWebUrl = "";
-      if (item?.serverRelativeUrl) {
-        const encodedServerUrl = encodeUrlPathSegments(item.serverRelativeUrl);
-        fileWebUrl = item.serverRelativeUrl.startsWith("/sites/")
-          ? `${origin}${encodedServerUrl ? `/${encodedServerUrl}` : ""}`
-          : `${siteUrl.replace(/\/$/, "")}${encodedServerUrl ? `/${encodedServerUrl}` : ""}`;
-      } else {
-        const encodedRelPath = encodeUrlPathSegments(k);
-        fileWebUrl = `${remoteRootUrl}/${encodedRelPath}`;
-      }
-
-      let statusTag = "[CLOUD-READY]";
-      if (
-        item?.firstCreatedAt !== undefined &&
-        item?.firstCreatedAt !== null &&
-        item?.lastSyncedAt !== undefined &&
-        item?.lastSyncedAt !== null
-      ) {
-        if (String(item.firstCreatedAt) === String(item.lastSyncedAt)) {
-          const createdTime =
-            typeof item.firstCreatedAt === "number"
-              ? item.firstCreatedAt
-              : !Number.isNaN(Number(item.firstCreatedAt))
-              ? Number(item.firstCreatedAt)
-              : new Date(item.firstCreatedAt).getTime();
-          if (!Number.isNaN(createdTime) && Date.now() - createdTime < 60_000) {
-            statusTag = "[LOCAL-NEW: use read_file]";
-          }
-        }
-      }
-
-      const relPathClean = k.replace(/\\/g, "/");
-      lines.push(`| \`${relPathClean}\` | ${fileWebUrl} | ${sizeKb}KB | ${statusTag} |`);
-    }
-
-    const content = lines.join("\n");
-
-    // Automatically persist to .cph/state/remote-workspace-catalog.md
-    // and maintain .cph/state/virtual-repo-map.md backward compatibility
-    try {
-      const stateDir = path.join(workspaceRoot, ".cph", "state");
-      fs.mkdirSync(stateDir, { recursive: true });
-      fs.writeFileSync(path.join(stateDir, "remote-workspace-catalog.md"), content, "utf8");
-
-      if (manifest) {
-        const legacyMapContent = PnPWorkspaceSyncEngine.generateVirtualRepoMap(manifest, siteUrl, targetFolder);
-        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), legacyMapContent, "utf8");
-      }
-    } catch {
-      // Non-fatal if writing to disk fails
-    }
-
-    return content;
   }
 
   /**
