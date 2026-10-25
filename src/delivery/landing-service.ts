@@ -46,7 +46,7 @@ export class LandingService {
           downloadUrl: item.url,
           destinationPath: item.destinationPath,
           isDirectory,
-          isZip: item.isZipTarget || isDirectory,
+          isZip: item.isZipTarget,
           fileName: item.fileName,
         });
 

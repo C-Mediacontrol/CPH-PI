@@ -141,6 +141,21 @@ describe("FilePorter.deliverToWorkspace", () => {
     expect(authHeader).toBe("Bearer ic3-token");
   });
 
+  test("lands a single text file into a directory target", async () => {
+    const root = tmpWorkspace();
+    const porter = new FilePorter({
+      cwd: root,
+      fetchFn: (async () => textResponse("single")) as any,
+    });
+    const res = await porter.deliverToWorkspace({
+      downloadUrl: "https://tenant.sharepoint.com/sites/x/report.md",
+      destinationPath: "test/",
+    });
+    expect(res.extractedFromZip).toBe(false);
+    expect(res.landedFiles).toEqual(["test/report.md"]);
+    expect(fs.readFileSync(path.join(root, "test", "report.md"), "utf-8")).toBe("single");
+  });
+
   test("keeps explicit .zip destination as a zip file", async () => {
     const root = tmpWorkspace();
     const zip = new AdmZip();
