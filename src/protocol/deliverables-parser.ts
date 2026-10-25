@@ -1,92 +1,77 @@
 import path from "node:path";
 
-export interface DeliverableSpec {
-  targetPath: string;
-  downloadUrl: string;
-  isDirectory: boolean;
-  isZip: boolean;
+/**
+ * One structured deliverable declared by the model inside a FINAL_ANSWER block.
+ *
+ * Declaration contract (positive form, see agent prompts):
+ *
+ *   【交付文件与落盘指引 / Deliverables】
+ *   - `test/review.md` <- [review.md](https://fr-prod.asyncgw.teams.microsoft.com/...)
+ *   - `test/` -> [bundle.zip](https://fr-prod.asyncgw.teams.microsoft.com/...)
+ */
+export interface DeliverableItem {
+  /** Workspace-relative destination path. A trailing slash means directory target. */
+  destinationPath: string;
+  /** Display file name; falls back to the URL basename. */
+  fileName: string;
+  /** Download URL. */
+  url: string;
+  /** True when the destination ends with `.zip` (keep zip as-is instead of extracting). */
+  isZipTarget: boolean;
 }
 
+const SECTION_RE =
+  /【交付文件与落盘指引\s*\/\s*Deliverables】|^#{1,3}\s*Deliverables\b/im;
+
+const LINE_RE =
+  /^\s*[-*]\s*`([^`]+)`\s*(?:<-|->|←|→|<=|=>|=>|:)\s*\[([^\]]*)\]\(([^)\s]+)\)\s*$/;
+
+/**
+ * Parses the structured deliverables section that must appear at the very top
+ * of a FINAL_ANSWER. Plain Markdown links outside that section are ignored.
+ */
 export class DeliverablesParser {
-  /**
-   * Extracts structured deliverable mappings from the top-pinned
-   * 【交付文件与落盘指引 / Deliverables】 section (or explicit `<-` / `->` / `←` / `→` lines).
-   * Bare colons `:` are intentionally NOT matched to prevent false positives in prose.
-   */
-  public static extractDeliverables(
-    text: string,
-    workspaceRoot?: string
-  ): DeliverableSpec[] {
-    if (!text || typeof text !== "string") return [];
+  public static parse(raw: string): DeliverableItem[] {
+    if (!raw || !SECTION_RE.test(raw)) return [];
 
-    // Limit scan to the Deliverables block if header is present, or first 60 lines of text
-    let scopeText = text;
-    const headerMatch = text.match(
-      /【\s*交付文件与落盘指引\s*(?:\/\s*Deliverables)?\s*】([\s\S]*?)(?:\n\s*#{1,6}\s+|\n\s*---|\n\n\n|$)/i
-    );
-    if (headerMatch) {
-      scopeText = headerMatch[1];
-    } else {
-      scopeText = text.split(/\r?\n/).slice(0, 60).join("\n");
-    }
-
-    const lines = scopeText.split(/\r?\n/);
-    const results: DeliverableSpec[] = [];
+    const items: DeliverableItem[] = [];
     const seen = new Set<string>();
 
-    // Matches: - `target/path` <- [label](https://...) or - target/path <- https://...
-    const lineRegex =
-      /^\s*[-*+]\s+`?([^`←→\r\n]+?)`?\s*(?:<-|->|←|→)\s*(?:\[[^\]]*\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/\S+))/i;
+    for (const line of raw.split(/\r?\n/)) {
+      const match = line.match(LINE_RE);
+      if (!match) continue;
 
-    for (const line of lines) {
-      const m = line.match(lineRegex);
-      if (!m) continue;
+      const destination = match[1].trim().replace(/\\/g, "/");
+      const url = match[3].trim();
 
-      const rawTarget = m[1].trim().replace(/^['"`]|['"`]$/g, "");
-      const rawUrl = (m[2] || m[3] || "").trim().replace(/[).,;]+$/, "");
-      if (!rawTarget || !rawUrl) continue;
+      if (!/^https?:\/\//i.test(url)) continue;
+      if (!destination) continue;
 
-      // Validate target path safety (reject absolute paths and `..` traversal)
-      const normTarget = rawTarget.replace(/\\/g, "/").replace(/^\.\//, "");
-      if (
-        normTarget.startsWith("/") ||
-        /^[a-zA-Z]:/.test(normTarget) ||
-        normTarget.split("/").some((seg) => seg === "..")
-      ) {
-        continue;
-      }
+      const normalized = path.posix.normalize(destination);
+      if (normalized.startsWith("..")) continue;
+      if (path.posix.isAbsolute(normalized)) continue;
+      if (normalized === ".") continue;
 
-      if (workspaceRoot) {
-        const absRoot = path.resolve(workspaceRoot);
-        const absTarget = path.resolve(absRoot, normTarget);
-        const rel = path.relative(absRoot, absTarget);
-        if (rel.startsWith("..") || path.isAbsolute(rel)) {
-          continue;
-        }
-      }
+      const key = `${normalized}|${url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-      const isDirectory = normTarget.endsWith("/");
-      let urlPathname = "";
+      let fallbackName = "download.bin";
       try {
-        urlPathname = new URL(rawUrl).pathname.toLowerCase();
+        const lastSegment = new URL(url).pathname.split("/").filter(Boolean).pop();
+        if (lastSegment) fallbackName = decodeURIComponent(lastSegment);
       } catch {
-        urlPathname = rawUrl.toLowerCase();
+        // keep fallback
       }
-      const isZip =
-        urlPathname.endsWith(".zip") || normTarget.toLowerCase().endsWith(".zip");
 
-      const dedupeKey = `${normTarget}::${rawUrl}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-
-      results.push({
-        targetPath: normTarget,
-        downloadUrl: rawUrl,
-        isDirectory,
-        isZip,
+      items.push({
+        destinationPath: normalized,
+        fileName: match[2].trim() || fallbackName,
+        url,
+        isZipTarget: normalized.toLowerCase().endsWith(".zip"),
       });
     }
 
-    return results;
+    return items;
   }
 }

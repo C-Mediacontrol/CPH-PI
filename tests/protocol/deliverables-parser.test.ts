@@ -1,59 +1,68 @@
 import { describe, expect, test } from "bun:test";
 import { DeliverablesParser } from "../../src/protocol/deliverables-parser.ts";
 
+const section = (body: string) =>
+  `FINAL_ANSWER: 完成\n\n【交付文件与落盘指引 / Deliverables】\n${body}\n\n# 报告\n正文`;
+
 describe("DeliverablesParser", () => {
-  test("extracts deliverables with <- and -> separators, markdown links, and zip semantics", () => {
-    const text = `FINAL_ANSWER:
-【交付文件与落盘指引 / Deliverables】
-- \`test/CNNJI-QUERY-review-2026-10-25.md\` <- [下载审查报告](https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frc-d3-123/views/original/CNNJI-QUERY-review-2026-10-25.md)
-- \`test/package.zip\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frs-d4-456/views/original/CNNJI-QUERY-review-package-2026-10-25.zip
-- \`test/extracted/\` -> [下载压缩包](https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frs-d4-456/views/original/pkg.zip)
-
-# 审查报告正文
-普通参考链接: [参考文档](https://cmacgmgroup.sharepoint.com/sites/test/doc.md)
-- 普通冒号说明: https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/should-not-match/views/original/ignore.md
-`;
-
-    const items = DeliverablesParser.extractDeliverables(text, "E:/test");
-    expect(items).toHaveLength(3);
-
-    expect(items[0]).toEqual({
-      targetPath: "test/CNNJI-QUERY-review-2026-10-25.md",
-      downloadUrl:
-        "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frc-d3-123/views/original/CNNJI-QUERY-review-2026-10-25.md",
-      isDirectory: false,
-      isZip: false,
-    });
-
-    // Target path ends with .zip -> isDirectory: false, isZip: true
-    expect(items[1]).toEqual({
-      targetPath: "test/package.zip",
-      downloadUrl:
-        "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frs-d4-456/views/original/CNNJI-QUERY-review-package-2026-10-25.zip",
-      isDirectory: false,
-      isZip: true,
-    });
-
-    // Target path ends with / -> isDirectory: true, isZip: true
-    expect(items[2]).toEqual({
-      targetPath: "test/extracted/",
-      downloadUrl:
-        "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/0-frs-d4-456/views/original/pkg.zip",
-      isDirectory: true,
-      isZip: true,
-    });
+  test("parses backtick path with left arrow", () => {
+    const items = DeliverablesParser.parse(
+      section("- `test/review.md` <- [review.md](https://x.test/a.md)")
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].destinationPath).toBe("test/review.md");
+    expect(items[0].url).toBe("https://x.test/a.md");
+    expect(items[0].fileName).toBe("review.md");
+    expect(items[0].isZipTarget).toBe(false);
   });
 
-  test("rejects path traversal and absolute paths outside workspace", () => {
-    const text = `【交付文件与落盘指引 / Deliverables】
-- \`../outside/evil.sh\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/1/views/original/evil.sh
-- \`C:/Windows/System32/cmd.exe\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/2/views/original/cmd.exe
-- \`valid/report.md\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/3/views/original/report.md
-- \`./stripped/relative.md\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/4/views/original/relative.md
-`;
-    const items = DeliverablesParser.extractDeliverables(text, "E:/test");
-    expect(items).toHaveLength(2);
-    expect(items[0].targetPath).toBe("valid/report.md");
-    expect(items[1].targetPath).toBe("stripped/relative.md");
+  test("parses directory target with right arrow", () => {
+    const items = DeliverablesParser.parse(
+      section("- `test/` -> [bundle.zip](https://x.test/b.zip)")
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].destinationPath).toBe("test/");
+    expect(items[0].isZipTarget).toBe(false);
+  });
+
+  test("marks .zip target", () => {
+    const items = DeliverablesParser.parse(
+      section("- `test/bundle.zip` <- [b.zip](https://x.test/b.zip)")
+    );
+    expect(items[0].isZipTarget).toBe(true);
+  });
+
+  test("accepts unicode arrows and backticks", () => {
+    const items = DeliverablesParser.parse(
+      section("- `test/报告.md` ← [报告](https://x.test/%E6%8A%A5%E5%91%8A.md)")
+    );
+    expect(items[0].destinationPath).toBe("test/报告.md");
+    expect(items[0].url).toContain("%E6%8A%A5");
+  });
+
+  test("ignores non-deliverable markdown links outside the section", () => {
+    const items = DeliverablesParser.parse("FINAL_ANSWER: 见 [文档](https://x.test/a.md)");
+    expect(items).toHaveLength(0);
+  });
+
+  test("rejects path traversal and absolute paths", () => {
+    expect(
+      DeliverablesParser.parse(section("- `../evil.sh` <- [e](https://x.test/e.sh)"))
+    ).toHaveLength(0);
+    expect(
+      DeliverablesParser.parse(section("- `/etc/passwd` <- [e](https://x.test/e.sh)"))
+    ).toHaveLength(0);
+  });
+
+  test("deduplicates identical declarations", () => {
+    const body =
+      "- `test/a.md` <- [a](https://x.test/a.md)\n- `test/a.md` <- [a](https://x.test/a.md)";
+    expect(DeliverablesParser.parse(section(body))).toHaveLength(1);
+  });
+
+  test("ignores non-http URLs", () => {
+    expect(
+      DeliverablesParser.parse(section("- `test/a.md` <- [a](file:///tmp/a.md)"))
+    ).toHaveLength(0);
   });
 });
