@@ -50,7 +50,20 @@
    - `工作区文件 203 | 已同步可索引 145 | 本地独有 14 | 不可索引 44`
    - 抽样 `Library/CNNJI QUERY/shared/modules/JsygtBatch.psm1` → `[CLOUD-READY]`，URL 属于 `WorkSpace/test_workspace`。
 
-## 5. 新增/变更测试清单
+## 5. 真实工作区首轮提示词仿真（只读）
+
+用 `E:\test_workspace` 与用户原任务（含 `.../test_workspace/Library/CNNJI QUERY` URL）调用 `PromptBuilder.buildTurn1Prompt`：
+
+```json
+{"chars":25605,"hasInlineMap":true,"hasCatalogNote":true,"hasTargetUrl":true,"hasScope":true,"hasTruncation":true}
+```
+
+- 首轮提示词 25.6KB（旧版约 32KB，目标 ≤30KB）；
+- 内联映射表存在，包含目标文件 `JsygtBatch.psm1` 的 `test_workspace` URL；
+- 任务范围识别为 `Library/CNNJI QUERY`，其余文件按 24KB 预算截断并指向 catalog 附件；
+- catalog 附件说明存在。
+
+## 6. 新增/变更测试清单
 
 | 测试文件 | 覆盖能力 |
 |---|---|
