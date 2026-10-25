@@ -10,6 +10,14 @@
 
 **Spec:** `.docs/specs/2026-10-26-rollback-baseline-and-two-features-design.md`
 
+## 实施状态（2026-10-26 更新）
+
+- Task 1–13 已完成并各自提交；Task 14 的总结文档已产出。
+- 自动化：953 tests / 123 files，952 pass / 1 fail（历史 ACL 环境失败），无新增失败。
+- 构建/打包/Web 冒烟均通过；`E:\test_workspace` 云端 manifest 已校正（stale=0），真实 sync `skipped=83 / synced=62 / pruned=0 / failed=0`。
+- 剩余：真实 Copilot 任务验收（需用户上传 bundle 后执行，见 `.docs/reports/2026-10-26-live-acceptance-checklist.md`）。
+- 交付总结：`.docs/reports/2026-10-26-rollback-fix-summary.md`。
+
 ## Global Constraints
 
 - 行为基线：`30d22da`。除本计划列出的改动外，不修改其提示词措辞、技能内容、工具协议与读取顺序。
