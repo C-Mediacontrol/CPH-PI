@@ -7,9 +7,10 @@ describe("Dual-Agent System Prompts & Subagent Skill Contracts", () => {
 
   it("should enforce Cloud-First Grounding and direct reading in cph-main-agent-prompt.txt", () => {
     const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
-    expect(mainPrompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(mainPrompt).toContain("remote-workspace-catalog.md");
     expect(mainPrompt).toContain("[CLOUD-READY]");
-    expect(mainPrompt).toContain("[LOCAL-NEW: use read_file]");
+    expect(mainPrompt).toContain("[LOCAL-NEW]");
+    expect(mainPrompt).toContain("[LOCAL-ONLY]");
     expect(mainPrompt).toContain("CPH-Main（全栈云原生主控与首席架构师智能体）");
   });
 
@@ -238,6 +239,41 @@ describe("Dual-Agent System Prompts & Subagent Skill Contracts", () => {
     expect(fs.existsSync(path.join(root, "docs/PowerShell-Agent-Guide.pdf"))).toBe(true);
   });
 
+  it("should register cloud attachment remote-workspace-catalog.md and reading priority in both main and coder prompts", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const coderPrompt = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
+
+    for (const prompt of [mainPrompt, coderPrompt]) {
+      expect(prompt).toContain("remote-workspace-catalog.md");
+      expect(prompt).toContain("[CLOUD-READY]");
+      expect(prompt).toContain("[LOCAL-NEW]");
+      expect(prompt).toContain("[LOCAL-ONLY]");
+      expect(prompt).toMatch(/云端.*优先.*本地.*read_file/);
+    }
+  });
+
+  it("should register url parameter in write_file and post-write cloud sync receipts in main prompt", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    expect(mainPrompt).toContain('"tool": "patch_file | write_file | read_file | run_command | invoke_subagent"');
+    expect(mainPrompt).toContain('"url":');
+    expect(mainPrompt).toMatch(/write_file.*(?:url|下载链接)/);
+    expect(mainPrompt).toContain("已同步至云端工作区");
+  });
+
+  it("should register top-pinned Deliverables format and .zip path semantics in FINAL_ANSWER", () => {
+    const mainPrompt = fs.readFileSync(path.join(root, "cph-main-agent-prompt.txt"), "utf8");
+    const coderPrompt = fs.readFileSync(path.join(root, "cph-coder-agent-prompt.txt"), "utf8");
+
+    for (const prompt of [mainPrompt, coderPrompt]) {
+      expect(prompt).toContain("【交付文件与落盘指引 / Deliverables】");
+      expect(prompt).toMatch(/`.*`\s*(?:<-|->|←|→)\s*\[.*\]\(.*\)/);
+      expect(prompt).toContain(".zip");
+    }
+
+    expect(mainPrompt).toContain("原样保存");
+    expect(mainPrompt).toContain("解压");
+  });
+
   it("should uphold Rule 3 constructive guidance without negative prohibition words across dual-agent prompts and skills", () => {
     const files = [
       "cph-main-agent-prompt.txt",
@@ -246,7 +282,7 @@ describe("Dual-Agent System Prompts & Subagent Skill Contracts", () => {
       "skills/handoff/SKILL.md",
     ];
 
-    const negativeWords = ["严禁", "切勿", "不要", "禁止", "杜绝", "不得", "绝不允许"];
+    const negativeWords = ["严禁", "切勿", "不要", "禁止", "杜绝", "不得", "绝不", "绝不允许"];
     for (const file of files) {
       const content = fs.readFileSync(path.join(root, file), "utf8");
       for (const word of negativeWords) {

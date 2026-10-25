@@ -285,7 +285,8 @@ export class SubagentRunner {
           }
           const taskSpec = item.task;
           const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-          const role = taskSpec.role === "researcher" ? "researcher" : "coder";
+          // Dual-Agent architecture: normalize any non-coder roles (including legacy researcher) to coder
+          const role = "coder";
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
             settled[item.index] = { status: "fulfilled", value: report };
@@ -303,7 +304,8 @@ export class SubagentRunner {
             const item = stageTasks[itemIndex];
             const taskSpec = item.task;
             const subId = `sub-${item.index + 1}-${crypto.randomBytes(3).toString("hex")}`;
-            const role = taskSpec.role === "researcher" ? "researcher" : "coder";
+            // Dual-Agent architecture: normalize any non-coder roles (including legacy researcher) to coder
+            const role = "coder";
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
               settled[item.index] = { status: "fulfilled", value: report };
@@ -381,7 +383,7 @@ export class SubagentRunner {
 
     return settled.map((result, idx) => {
       const task = tasks[idx] || ({} as SubagentTaskSpec);
-      const role = task.role === "researcher" ? "researcher" : "coder";
+      const role = "coder";
       const description = task.description || `Task ${idx + 1}`;
 
       if (result?.status === "fulfilled" && result.value) {
@@ -441,8 +443,9 @@ export class SubagentRunner {
     events?: any
   ): Promise<SubagentTaskReport> {
     const startTime = Date.now();
-    const customAgentId = role === "coder" ? this.coderAgentId : this.researcherAgentId;
-    let currentSessionId = `${this.mainSessionId}_${subId}_${role}`;
+    // Dual-Agent architecture: all subagents are dispatched to the coder agent
+    const customAgentId = this.coderAgentId;
+    let currentSessionId = `${this.mainSessionId}_${subId}_coder`;
 
     let subagentAccount = "";
     try {
@@ -489,7 +492,7 @@ export class SubagentRunner {
       try {
         let graphToken: string | undefined;
         if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
-          graphToken = await this.pool.getGraphAccessToken();
+          graphToken = await this.pool.getGraphAccessToken(subagentAccount || undefined);
         }
         if (graphToken) {
           const sliceResult = SnapshotGenerator.generateScopedSubagentSlice(
@@ -522,7 +525,7 @@ export class SubagentRunner {
       try {
         let graphToken: string | undefined;
         if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
-          graphToken = await this.pool.getGraphAccessToken();
+          graphToken = await this.pool.getGraphAccessToken(subagentAccount || undefined);
         }
         if (graphToken) {
           const fileContent = fs.readFileSync(targetFilePath, "utf8");

@@ -45,17 +45,15 @@ export class PromptBuilder {
   public static buildTurn1Prompt(options: Turn1PromptOptions): string {
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
-    const treePreview = options.dirTree ? `\n【核心目录结构预览】\n${options.dirTree}\n` : "";
-    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
-    const repoMapSection = virtualRepoMap ? `\n${virtualRepoMap}\n` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
 【本地宿主机与工作区事实 (Grounding Facts)】
 - 工作区绝对路径: ${wsNorm}
+- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}${repoMapSection}
+
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -112,19 +110,11 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
 
     let prompt = `【本地宿主机工作区事实】
-- 工作区绝对路径: ${wsNorm}`;
+- 工作区绝对路径: ${wsNorm}
+- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）`;
 
     if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
       prompt += `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
-    }
-
-    if (dirSkeleton && dirSkeleton.trim() !== "") {
-      prompt += `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`;
-    }
-
-    const effectiveRepoMap = virtualRepoMap ?? PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot);
-    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
-      prompt += `\n\n${effectiveRepoMap.trim()}`;
     }
 
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
@@ -146,15 +136,15 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
     dirTree?: string
   ): string {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
-    const treePreview = dirTree ? `\n【当前工作区精简目录树】\n${dirTree}\n` : "";
 
     return `你是一个运行在本地宿主机的 CPH-PI 自主编程智能体。你的工具链路已直接接入物理操作系统。
 
 【本地宿主机工作区事实】
 - 工作区绝对路径: ${wsNorm}
+- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）
 - Git 仓库客观状态:
 ${gitFacts}
-${treePreview}
+
 【第一轮基准探测握手 (Turn 1 Grounding Handshake)】
 这是新会话的第一轮交互。为验证本地真实工具调用链路与工作区文件系统连接，请第一步务必输出 action 块检查工作区状态（例如读取目标文件或执行探测命令）：
 \`\`\`action
@@ -365,15 +355,14 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
-    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
-    const repoMapSection = virtualRepoMap ? `\n\n${virtualRepoMap.trim()}` : "";
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。本地物理环境已连接。
 
 【本地宿主机与工作区事实 (Session Re-grounding)】
 - 工作区绝对路径: ${wsNorm}
+- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）
 - 最新 Git 仓库状态:
-${gitFacts}${repoMapSection}
+${gitFacts}
 
 【前序轮次执行摘要 (Context Transfer)】
 ${history}
@@ -381,6 +370,26 @@ ${history}
 ${options.skillsSection ? `【当前已激活的技能】\n${options.skillsSection}\n\n` : ""}
 ${options.currentTask ? `【当前推进中的任务】\n${options.currentTask}\n\n` : ""}
 ${this.PROTOCOL_REMINDER}`;
+  }
+
+  /**
+   * Builds standardized tool result receipt when files are landed to disk and synced to cloud.
+   */
+  public static buildFileSavedAndSyncedReceipt(params: {
+    toolName: string;
+    landedFiles: Array<{ relPath: string; cloudWebUrl?: string }>;
+    taskInvariant?: string;
+  }): string {
+    const lines = params.landedFiles.map((item) =>
+      item.cloudWebUrl
+        ? `✔ 文件已落盘至本地: ${item.relPath}\n✔ 已同步至云端工作区: ${item.cloudWebUrl}`
+        : `✔ 文件已落盘至本地: ${item.relPath}`
+    );
+    const invariantBlock =
+      params.taskInvariant && params.taskInvariant.trim() !== ""
+        ? `\n【当前推进战役北极星 (Task Invariant)】:\n${params.taskInvariant.trim()}\n`
+        : "";
+    return `[TOOL_RESULT for ${params.toolName} - SUCCESS]:\n${lines.join("\n")}\n${invariantBlock}\n${this.PROTOCOL_REMINDER}`;
   }
 
   /**

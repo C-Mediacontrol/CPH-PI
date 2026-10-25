@@ -9,8 +9,9 @@ import {
   type UploadDocumentResult,
 } from "../transport/substrate-uploader.ts";
 import type { AttachmentAnnotation } from "../transport/types.ts";
+import { FilePorter } from "../transport/file-porter.ts";
 import { SnapshotGenerator, type SnapshotResult } from "../workspace/snapshot-generator.ts";
-import { PnPWorkspaceSyncEngine } from "../workspace/pnp-sync-engine.ts";
+import { PnPWorkspaceSyncEngine, isNonIndexableBinary } from "../workspace/pnp-sync-engine.ts";
 import {
   ToolBridge,
   type CopilotAction,
@@ -18,6 +19,7 @@ import {
 } from "../protocol/tool-bridge.ts";
 import { PromptBuilder } from "../protocol/prompt-builder.ts";
 import { ResilientParser } from "../protocol/resilient-parser.ts";
+import { DeliverablesParser } from "../protocol/deliverables-parser.ts";
 import { CompactionService, type TurnRecord } from "./compaction.ts";
 import { BlackboxCompactor } from "./blackbox-compactor.ts";
 import { RefusalGuard } from "./refusal-guard.ts";
@@ -90,6 +92,7 @@ export interface OrchestratorOptions {
   lineageTracker?: SessionLineageTracker;
   maxGenerations?: number;
   enableWorkspaceSnapshot?: boolean;
+  enableWorkspaceCatalog?: boolean;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -128,6 +131,7 @@ export interface OrchestratorRunOptions {
   initialAnnotations?: AttachmentAnnotation[];
   rootUserPrompt?: string;
   enableWorkspaceSnapshot?: boolean;
+  enableWorkspaceCatalog?: boolean;
 }
 
 export interface OrchestratorRunResult {
@@ -145,6 +149,9 @@ export interface OrchestratorRunResult {
     reasoning?: string;
     response?: string;
   };
+  deliveryStatus?: "ok" | "partial" | "failed";
+  landedDeliverables?: string[];
+  deliveryReport?: any;
 }
 
 /**
@@ -218,6 +225,8 @@ export class Orchestrator {
   private conversationId: string = crypto.randomUUID();
   private sessionId: string;
   private lastHandoffDocPath?: string;
+  private activeAccountEmail: string = "";
+  private enableWorkspaceCatalog: boolean;
 
   constructor(options: OrchestratorOptions = {}) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -228,6 +237,7 @@ export class Orchestrator {
     this.pool = options.pool;
     this.bridge = options.bridge || new ToolBridge(this.workspaceRoot);
     this.chatClient = options.chatClient || options.client;
+    this.activeAccountEmail = (this.chatClient as any)?.token?.email || "";
     this.arbitratorChatClient = options.arbitratorChatClient;
     this.chatClientFactory = options.chatClientFactory;
     this.activeSkills = options.activeSkills;
@@ -250,6 +260,7 @@ export class Orchestrator {
         : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
+    this.enableWorkspaceCatalog = options.enableWorkspaceCatalog ?? true;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
         ? options.isHandshakePending
@@ -319,7 +330,8 @@ export class Orchestrator {
   /**
    * Acquire a Microsoft Graph access token from provider or account pool
    */
-  public async acquireGraphToken(): Promise<string | undefined> {
+  public async acquireGraphToken(email?: string): Promise<string | undefined> {
+    const targetEmail = email || this.activeAccountEmail || undefined;
     if (this.graphTokenProvider) {
       try {
         return await this.graphTokenProvider();
@@ -329,12 +341,205 @@ export class Orchestrator {
     }
     if (this.pool && typeof (this.pool as any).getGraphAccessToken === "function") {
       try {
-        return await (this.pool as any).getGraphAccessToken();
+        return await (this.pool as any).getGraphAccessToken(targetEmail);
       } catch {
         return undefined;
       }
     }
     return undefined;
+  }
+
+  /**
+   * Acquire an IC3 Teams access token from account pool for file downloads
+   */
+  public async acquireIc3Token(email?: string): Promise<string | undefined> {
+    const targetEmail = email || this.activeAccountEmail || undefined;
+    if (this.pool && typeof (this.pool as any).getIc3AccessToken === "function") {
+      try {
+        return await (this.pool as any).getIc3AccessToken(targetEmail);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Generates remote-workspace-catalog.md, hashes it, checks per-account cache,
+   * and uploads to OneDrive via SubstrateUploader if not cached.
+   */
+  public async ensureWorkspaceCatalogAttachment(
+    email?: string,
+    signal?: AbortSignal,
+    events?: OrchestratorEvents
+  ): Promise<AttachmentAnnotation | null> {
+    if (!this.workspaceRoot) return null;
+    try {
+      const catalogMd = PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot);
+      const catalogPath = path.join(this.workspaceRoot, ".cph", "state", "remote-workspace-catalog.md");
+      fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+      fs.writeFileSync(catalogPath, catalogMd, "utf8");
+
+      const catalogHash = crypto.createHash("sha256").update(catalogMd, "utf8").digest("hex");
+      const cacheFile = path.join(this.workspaceRoot, ".cph", "state", "workspace-catalog-cache.json");
+      const emailKey = (email || this.activeAccountEmail || "default").toLowerCase();
+
+      let cacheData: {
+        entries?: Record<string, { hash: string; uploadResult: UploadDocumentResult; updatedAt: string }>;
+      } = { entries: {} };
+
+      if (fs.existsSync(cacheFile)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+          if (parsed && typeof parsed === "object") {
+            cacheData = parsed.entries ? parsed : { entries: {} };
+          }
+        } catch {
+          cacheData = { entries: {} };
+        }
+      }
+      if (!cacheData.entries) cacheData.entries = {};
+
+      const cachedEntry = cacheData.entries[emailKey];
+      if (cachedEntry && cachedEntry.hash === catalogHash && cachedEntry.uploadResult?.annotation) {
+        events?.onAttachmentUploaded?.(cachedEntry.uploadResult, "workspace_catalog");
+        return cachedEntry.uploadResult.annotation;
+      }
+
+      const targetEmail = email || this.activeAccountEmail;
+      const graphToken = await this.acquireGraphToken(targetEmail);
+      if (!graphToken) {
+        return null;
+      }
+
+      const uploadResult = await SubstrateUploader.uploadDocumentToOneDrive(
+        graphToken,
+        catalogMd,
+        "remote-workspace-catalog.md",
+        signal
+      );
+
+      cacheData.entries[emailKey] = {
+        hash: catalogHash,
+        uploadResult,
+        updatedAt: new Date().toISOString(),
+      };
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf8");
+      events?.onAttachmentUploaded?.(uploadResult, "workspace_catalog");
+      return uploadResult.annotation;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Syncs landed files to SharePoint using AbortController with 15s timeout.
+   * Skips non-indexable binaries. Returns array of landed file statuses and cloud web URLs.
+   */
+  private async syncLandedFilesToCloud(
+    landedRelPaths: string[]
+  ): Promise<Array<{ relPath: string; cloudWebUrl?: string; status: string }>> {
+    const results: Array<{ relPath: string; cloudWebUrl?: string; status: string }> = [];
+    if (!this.workspaceRoot || landedRelPaths.length === 0) return results;
+
+    const target = PnPWorkspaceSyncEngine.resolveCloudTarget(this.workspaceRoot);
+    const engine = new PnPWorkspaceSyncEngine();
+
+    for (const rawRel of landedRelPaths) {
+      const relPath = rawRel.replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!relPath || relPath.startsWith(".cph/") || relPath.startsWith(".git/")) {
+        continue;
+      }
+
+      // Non-indexable binaries (.zip, etc.) must NOT be synced to SharePoint
+      if (isNonIndexableBinary(relPath)) {
+        results.push({
+          relPath,
+          status: "skipped_binary",
+        });
+        continue;
+      }
+
+      if (!target) {
+        results.push({
+          relPath,
+          status: "no_cloud_target",
+        });
+        continue;
+      }
+
+      const syncAbort = new AbortController();
+      let syncTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const isMockTransport = Boolean(target.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+        const syncPromise = engine.syncFile(this.workspaceRoot, relPath, target.targetFolder, {
+          siteUrl: target.siteUrl,
+          mockTransport: isMockTransport,
+          signal: syncAbort.signal,
+        });
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          syncTimer = setTimeout(() => {
+            syncAbort.abort();
+            reject(new Error("SYNC_TIMEOUT"));
+          }, 15000);
+          (syncTimer as any)?.unref?.();
+        });
+
+        const syncRes = await Promise.race([syncPromise, timeoutPromise]);
+        if (syncRes.status === "synced" || syncRes.status === "skipped") {
+          const cloudWebUrl = syncRes.serverRelativeUrl
+            ? PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+                target.siteUrl,
+                target.targetFolder,
+                undefined,
+                syncRes.serverRelativeUrl
+              )
+            : PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+                target.siteUrl,
+                target.targetFolder,
+                relPath
+              );
+          results.push({
+            relPath,
+            cloudWebUrl,
+            status: syncRes.status,
+          });
+        } else {
+          results.push({
+            relPath,
+            status: syncRes.status || "failed",
+          });
+        }
+      } catch {
+        results.push({
+          relPath,
+          status: "failed",
+        });
+      } finally {
+        if (syncTimer) clearTimeout(syncTimer);
+      }
+    }
+
+    // Refresh catalog markdown and virtual-repo-map once after syncing all files
+    try {
+      const catalogMd = PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot);
+      const catalogPath = path.join(this.workspaceRoot, ".cph", "state", "remote-workspace-catalog.md");
+      fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
+      fs.writeFileSync(catalogPath, catalogMd, "utf8");
+
+      if (target) {
+        const manifest = PnPWorkspaceSyncEngine.loadManifest(path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json"));
+        if (manifest) {
+          const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(manifest, target.siteUrl, target.targetFolder);
+          const mapPath = path.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md");
+          fs.writeFileSync(mapPath, mapMd, "utf8");
+        }
+      }
+    } catch {}
+
+    return results;
   }
 
   public getWorkspaceRoot(): string {
@@ -463,6 +668,7 @@ export class Orchestrator {
           forAgentId: this.customAgentId,
           sessionId: this.sessionId,
         });
+        this.activeAccountEmail = token?.email || "";
         client = this.chatClientFactory
           ? this.chatClientFactory(token, {
               modelTone: this.modelTone,
@@ -488,6 +694,8 @@ export class Orchestrator {
         }
         throw err;
       }
+    } else {
+      this.activeAccountEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
     }
 
     // 1. Gather objective facts for Turn 1 Grounding
@@ -539,6 +747,25 @@ export class Orchestrator {
       ? [...options.initialAnnotations]
       : [];
 
+    // Turn 1: Workspace Catalog Attachment per leased account
+    const isWorkspaceCatalogEnabled =
+      options.enableWorkspaceCatalog !== undefined
+        ? options.enableWorkspaceCatalog
+        : this.enableWorkspaceCatalog;
+
+    if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+      try {
+        const catalogAnno = await this.ensureWorkspaceCatalogAttachment(
+          this.activeAccountEmail,
+          signal,
+          events
+        );
+        if (catalogAnno) {
+          currentAnnotations.push(catalogAnno);
+        }
+      } catch {}
+    }
+
     // Turn 1: Workspace Snapshot Attachment, Cache Check & Explicit Fault Tolerance
     const isWorkspaceSnapshotEnabled =
       options.enableWorkspaceSnapshot !== undefined
@@ -559,11 +786,8 @@ export class Orchestrator {
           "state",
           "workspace-snapshot-cache.json"
         );
-        let cached: {
-          snapshotHash?: string;
-          uploadResult?: UploadDocumentResult;
-          updatedAt?: string;
-        } | null = null;
+        const accountKey = (this.activeAccountEmail || "default").toLowerCase();
+        let cached: any = null;
 
         if (fs.existsSync(cacheFile)) {
           try {
@@ -572,18 +796,26 @@ export class Orchestrator {
             cached = null;
           }
         }
+        if (!cached || typeof cached !== "object") {
+          cached = { entries: {} };
+        }
+        if (!cached.entries) {
+          cached.entries = {};
+        }
+
+        const cachedEntry = cached.entries[accountKey] || (!this.activeAccountEmail ? cached : undefined);
 
         if (
-          cached &&
-          cached.snapshotHash === snap.hash &&
-          cached.uploadResult?.annotation
+          cachedEntry &&
+          cachedEntry.snapshotHash === snap.hash &&
+          cachedEntry.uploadResult?.annotation
         ) {
           // Unchanged hash: directly reuse cached annotation
-          currentAnnotations.unshift(cached.uploadResult.annotation);
-          events?.onAttachmentUploaded?.(cached.uploadResult, "workspace_snapshot");
+          currentAnnotations.unshift(cachedEntry.uploadResult.annotation);
+          events?.onAttachmentUploaded?.(cachedEntry.uploadResult, "workspace_snapshot");
         } else {
           // Upload new snapshot buffer
-          const graphToken = await this.acquireGraphToken();
+          const graphToken = await this.acquireGraphToken(this.activeAccountEmail);
           if (!graphToken) {
             throw new Error("No Graph access token available for workspace snapshot upload");
           }
@@ -595,14 +827,18 @@ export class Orchestrator {
             signal
           );
 
-          // Persist full annotation cache
-          const cacheData = {
+          // Persist full annotation cache under entries[accountKey] while preserving top-level backward compatibility
+          const entryData = {
             snapshotHash: snap.hash,
             uploadResult,
             updatedAt: new Date().toISOString(),
           };
+          cached.entries[accountKey] = entryData;
+          cached.snapshotHash = snap.hash;
+          cached.uploadResult = uploadResult;
+          cached.updatedAt = entryData.updatedAt;
           fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-          fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
+          fs.writeFileSync(cacheFile, JSON.stringify(cached, null, 2), "utf-8");
 
           currentAnnotations.unshift(uploadResult.annotation);
           events?.onAttachmentUploaded?.(uploadResult, "workspace_snapshot");
@@ -683,11 +919,32 @@ export class Orchestrator {
               if (this.pool) {
                 this.pool.markThrottled(email);
                 const nextToken = await this.pool.getNextAvailableToken();
+                this.activeAccountEmail = nextToken.email;
                 events?.onAccountSwitched?.(email, nextToken.email);
-                client = new ChatHubClient(nextToken, {
-                  modelTone: this.modelTone,
-                  customAgentId: this.customAgentId,
-                });
+                client = this.chatClientFactory
+                  ? this.chatClientFactory(nextToken, {
+                      modelTone: this.modelTone,
+                      customAgentId: this.customAgentId,
+                    })
+                  : new ChatHubClient(nextToken, {
+                      modelTone: this.modelTone,
+                      customAgentId: this.customAgentId,
+                    });
+                if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+                  try {
+                    const newCatalogAnno = await this.ensureWorkspaceCatalogAttachment(
+                      this.activeAccountEmail,
+                      signal,
+                      events
+                    );
+                    if (newCatalogAnno) {
+                      currentAnnotations = currentAnnotations.filter(
+                        (a) => !a.fileName?.includes("remote-workspace-catalog")
+                      );
+                      currentAnnotations.push(newCatalogAnno);
+                    }
+                  } catch {}
+                }
               }
             },
           }
@@ -764,14 +1021,20 @@ export class Orchestrator {
 
           if (strategy.shouldSwitchAccount && this.pool) {
             try {
-              const currentEmail = (client as any)?.token?.email || "";
+              const currentEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
               if (currentEmail) this.pool.markThrottled(currentEmail);
               const nextToken = await this.pool.getNextAvailableToken();
+              this.activeAccountEmail = nextToken.email;
               events?.onAccountSwitched?.(currentEmail, nextToken.email);
-              client = new ChatHubClient(nextToken, {
-                modelTone: this.modelTone,
-                customAgentId: this.customAgentId,
-              });
+              client = this.chatClientFactory
+                ? this.chatClientFactory(nextToken, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId,
+                  })
+                : new ChatHubClient(nextToken, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId,
+                  });
             } catch {
               // Pool exhausted or single account; proceed with prompt retry
             }
@@ -797,13 +1060,19 @@ export class Orchestrator {
         // 连续空响应超限，尝试切换可用账号或触发灾备，避免死循环（空响应非429限流，保持账号健康状态，仅轮换至下一个可用账号）
         if (this.pool) {
           try {
-            const currentEmail = (client as any)?.token?.email || "";
+            const currentEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
             const nextToken = await this.pool.getNextAvailableToken();
+            this.activeAccountEmail = nextToken.email;
             events?.onAccountSwitched?.(currentEmail, nextToken.email);
-            client = new ChatHubClient(nextToken, {
-              modelTone: this.modelTone,
-              customAgentId: this.customAgentId,
-            });
+            client = this.chatClientFactory
+              ? this.chatClientFactory(nextToken, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId,
+                })
+              : new ChatHubClient(nextToken, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId,
+                });
             emptyResponseRetries = 0;
             continue;
           } catch {}
@@ -830,7 +1099,104 @@ export class Orchestrator {
           continue;
         }
 
-        const finalAnswer = parsed.answer.summary || parsed.answer.raw;
+        let finalAnswer = parsed.answer.summary || parsed.answer.raw;
+        let deliveryStatus: "ok" | "partial" | "failed" | undefined = undefined;
+        let landedDeliverables: string[] = [];
+        let deliveryReport: any = null;
+
+        if (this.workspaceRoot) {
+          const deliverables = DeliverablesParser.extractDeliverables(
+            turnResponseText,
+            this.workspaceRoot
+          );
+
+          if (deliverables.length > 0) {
+            const currentEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
+            const porter = new FilePorter({
+              cwd: this.workspaceRoot,
+              ic3TokenProvider: () => this.acquireIc3Token(currentEmail),
+              graphTokenProvider: () => this.acquireGraphToken(currentEmail),
+            });
+
+            const deliveryItems: any[] = [];
+            let landedCount = 0;
+            let syncedCount = 0;
+            let failedCount = 0;
+
+            for (const item of deliverables) {
+              try {
+                const deliverRes = await porter.deliverToWorkspace({
+                  downloadUrl: item.downloadUrl,
+                  destinationPath: item.targetPath,
+                  isDirectory: item.isDirectory,
+                  isZip: item.isZip,
+                });
+                landedDeliverables.push(...deliverRes.landedFiles);
+                landedCount++;
+
+                // Sync indexable landed files to SharePoint
+                const syncResList = await this.syncLandedFilesToCloud(deliverRes.landedFiles);
+                const hasSynced = syncResList.some((s) => s.cloudWebUrl);
+                if (hasSynced) syncedCount++;
+
+                deliveryItems.push({
+                  targetPath: item.targetPath,
+                  downloadUrl: item.downloadUrl,
+                  landedPaths: deliverRes.landedFiles,
+                  status: "landed",
+                  cloudSyncStatus: hasSynced ? "synced" : "skipped_or_failed",
+                  syncResults: syncResList,
+                });
+              } catch (deliverErr: any) {
+                failedCount++;
+                deliveryItems.push({
+                  targetPath: item.targetPath,
+                  downloadUrl: item.downloadUrl,
+                  landedPaths: [],
+                  status: "failed",
+                  error: deliverErr?.message || String(deliverErr),
+                });
+              }
+            }
+
+            if (failedCount === 0) {
+              deliveryStatus = "ok";
+            } else if (landedCount > 0) {
+              deliveryStatus = "partial";
+            } else {
+              deliveryStatus = "failed";
+            }
+
+            deliveryReport = {
+              timestamp: new Date().toISOString(),
+              totalDeliverables: deliverables.length,
+              landedCount,
+              syncedCount,
+              failedCount,
+              deliveryStatus,
+              items: deliveryItems,
+            };
+
+            const reportPath = path.join(
+              this.workspaceRoot,
+              ".cph",
+              "state",
+              "delivery-report.json"
+            );
+            fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+            fs.writeFileSync(reportPath, JSON.stringify(deliveryReport, null, 2), "utf8");
+
+            const verificationSummary = [
+              "\n\n【Harness 物理落盘与云端同步核验】",
+              `- 本地物理落盘: ${landedCount}/${deliverables.length} 个文件成功落盘`,
+              `- 云端工作区同步: ${syncedCount}/${deliverables.length} 个文件已同步至 SharePoint`,
+              ...(failedCount > 0 ? [`- 交付失败: ${failedCount} 个文件处理异常`] : []),
+            ].join("\n");
+
+            finalAnswer += verificationSummary;
+          }
+        }
+
         history.push({
           turn,
           userInput: currentPrompt,
@@ -847,6 +1213,9 @@ export class Orchestrator {
           completed: true,
           history,
           handedOff: false,
+          deliveryStatus,
+          landedDeliverables: landedDeliverables.length > 0 ? landedDeliverables : undefined,
+          deliveryReport,
         };
       }
 
@@ -903,8 +1272,59 @@ export class Orchestrator {
 
         let toolResult: ToolBridgeResult;
         let isInlineScout = false;
+        let landedRelPaths: string[] = [];
 
-        if (parsed.action.tool === "invoke_subagent") {
+        const actionUrl = (parsed.action as any).downloadUrl || (parsed.action as any).url;
+        const actionContent = (parsed.action as any).content;
+        const isWriteFileWithUrl =
+          parsed.action.tool === "write_file" &&
+          typeof actionUrl === "string" &&
+          actionUrl.trim() !== "" &&
+          (actionContent === undefined || actionContent === null);
+
+        if (isWriteFileWithUrl) {
+          const destPath =
+            (parsed.action as any).path ||
+            (parsed.action as any).file ||
+            (parsed.action as any).filePath ||
+            (parsed.action as any).targetPath ||
+            "deliverables/";
+
+          try {
+            const currentEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
+            const porter = new FilePorter({
+              cwd: this.workspaceRoot,
+              ic3TokenProvider: () => this.acquireIc3Token(currentEmail),
+              graphTokenProvider: () => this.acquireGraphToken(currentEmail),
+            });
+            const isDir = destPath.endsWith("/") || destPath.endsWith("\\");
+            const isZip = destPath.toLowerCase().endsWith(".zip") || actionUrl.toLowerCase().includes(".zip");
+            const deliverRes = await porter.deliverToWorkspace({
+              downloadUrl: actionUrl.trim(),
+              destinationPath: destPath,
+              isDirectory: isDir,
+              isZip,
+            });
+            landedRelPaths = deliverRes.landedFiles;
+            toolResult = {
+              actionName: "write_file",
+              piToolName: "write",
+              target: destPath,
+              success: true,
+              output: `文件已下载并落盘至: ${landedRelPaths.join(", ")}`,
+              formatted: `文件已下载并落盘至: ${landedRelPaths.join(", ")}`,
+            };
+          } catch (porterErr: any) {
+            toolResult = {
+              actionName: "write_file",
+              piToolName: "write",
+              target: destPath,
+              success: false,
+              output: `文件下载失败: ${porterErr?.message || porterErr}`,
+              formatted: `文件下载失败: ${porterErr?.message || porterErr}`,
+            };
+          }
+        } else if (parsed.action.tool === "invoke_subagent") {
           const thought = parsed.thought || (parsed as any).action?.thought || "";
           const subagents = (parsed.action as any).subagents || [];
           isInlineScout = isInlineScoutTask(subagents);
@@ -991,6 +1411,7 @@ export class Orchestrator {
                   sessionId: nextSessionId,
                   ...(this.customAgentId ? { forAgentId: this.customAgentId } : {}),
                 });
+                this.activeAccountEmail = token?.email || "";
                 client = this.chatClientFactory
                   ? this.chatClientFactory(token, {
                       modelTone: this.modelTone,
@@ -1000,6 +1421,19 @@ export class Orchestrator {
                       modelTone: this.modelTone,
                       customAgentId: this.customAgentId,
                     });
+              } catch {}
+            }
+
+            if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+              try {
+                const successorCatalogAnno = await this.ensureWorkspaceCatalogAttachment(
+                  this.activeAccountEmail,
+                  signal,
+                  events
+                );
+                if (successorCatalogAnno) {
+                  currentAnnotations = [successorCatalogAnno];
+                }
               } catch {}
             }
 
@@ -1013,77 +1447,50 @@ export class Orchestrator {
           }
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
+          if (
+            toolResult.success &&
+            (parsed.action.tool === "edit" ||
+              parsed.action.tool === "patch_file" ||
+              parsed.action.tool === "write_file" ||
+              parsed.action.tool === "file_porter")
+          ) {
+            const modFile =
+              (parsed.action as any).path ||
+              (parsed.action as any).file ||
+              (parsed.action as any).filePath ||
+              (parsed.action as any).targetPath;
+            if (modFile && typeof modFile === "string") {
+              const relMod = path.isAbsolute(modFile)
+                ? path.relative(this.workspaceRoot, modFile).replace(/\\/g, "/")
+                : modFile.replace(/\\/g, "/");
+              const cleanRel = relMod.replace(/^\.\//, "");
+              if (
+                cleanRel &&
+                !cleanRel.startsWith(".cph/") &&
+                !cleanRel.startsWith(".git/") &&
+                !cleanRel.startsWith("../") &&
+                !path.isAbsolute(cleanRel)
+              ) {
+                landedRelPaths = [cleanRel];
+              }
+            }
+          }
         }
 
         events?.onToolEnd?.(toolResult);
 
-        // Track last modified file for edit/patch_file/write_file
-        if (
-          toolResult.success &&
-          (parsed.action.tool === "edit" ||
-            parsed.action.tool === "patch_file" ||
-            parsed.action.tool === "write_file")
-        ) {
-          const modFile =
-            (parsed.action as any).path ||
-            (parsed.action as any).file ||
-            (parsed.action as any).filePath ||
-            (parsed.action as any).targetPath;
-          if (modFile && typeof modFile === "string") {
-            this.lastModifiedFile = modFile;
-            const relMod = path.isAbsolute(modFile)
-              ? path.relative(this.workspaceRoot, modFile).replace(/\\/g, "/")
-              : modFile.replace(/\\/g, "/");
-            const cleanRel = relMod.replace(/^\.\//, "");
-            if (
-              cleanRel &&
-              !cleanRel.startsWith(".cph/") &&
-              !cleanRel.startsWith(".git/") &&
-              !cleanRel.startsWith("../") &&
-              !path.isAbsolute(cleanRel)
-            ) {
-              const manifestPath = path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
-              if (fs.existsSync(manifestPath)) {
-                const syncStart = Date.now();
-                const syncAbort = new AbortController();
-                let syncTimer: ReturnType<typeof setTimeout> | undefined;
-                try {
-                  const engine = new PnPWorkspaceSyncEngine();
-                  const existingManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-                  const siteUrl = existingManifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-                  const targetFolder = existingManifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-                  const mockTransport = Boolean((existingManifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
-                  await Promise.race([
-                    engine.syncFile(this.workspaceRoot, cleanRel, targetFolder, {
-                      siteUrl,
-                      mockTransport,
-                      signal: syncAbort.signal,
-                    }),
-                    new Promise((_, reject) => {
-                      syncTimer = setTimeout(() => {
-                        syncAbort.abort();
-                        reject(new Error("SYNC_TIMEOUT"));
-                      }, 15000);
-                      (syncTimer as any)?.unref?.();
-                    }),
-                  ]);
-                  const updatedManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-                  if (updatedManifest) {
-                    const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(updatedManifest, siteUrl, targetFolder);
-                    fs.writeFileSync(path.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md"), mapMd, "utf8");
-                  }
-                  const elapsedMs = Date.now() - syncStart;
-                  const syncNote = `\n[Cloud Mirror: Synced ${cleanRel} to SharePoint (${elapsedMs}ms)]`;
-                  toolResult.output = (toolResult.output || "") + syncNote;
-                  if (toolResult.rawOutput) toolResult.rawOutput += syncNote;
-                } catch {
-                  const pendingNote = `\n[Cloud Mirror: PENDING (local file updated; use read_file if re-reading)]`;
-                  toolResult.output = (toolResult.output || "") + pendingNote;
-                  if (toolResult.rawOutput) toolResult.rawOutput += pendingNote;
-                } finally {
-                  if (syncTimer) clearTimeout(syncTimer);
-                }
-              }
+        // Run SharePoint sync for landed files
+        let syncResults: Array<{ relPath: string; cloudWebUrl?: string; status: string }> = [];
+        if (toolResult.success && landedRelPaths.length > 0) {
+          this.lastModifiedFile = landedRelPaths[0];
+          syncResults = await this.syncLandedFilesToCloud(landedRelPaths);
+          if (parsed.action.tool === "edit" || parsed.action.tool === "patch_file") {
+            for (const item of syncResults) {
+              const syncNote = item.cloudWebUrl
+                ? `\n[Cloud Mirror: Synced ${item.relPath} to SharePoint]`
+                : `\n[Cloud Mirror: Local only (${item.relPath})]`;
+              toolResult.output = (toolResult.output || "") + syncNote;
+              if (toolResult.rawOutput) toolResult.rawOutput += syncNote;
             }
           }
         }
@@ -1220,7 +1627,21 @@ export class Orchestrator {
           }
         } else {
           const currentTask = this.pendingTask || task || "";
-          if (uploadedAttachment) {
+          if (
+            toolResult.success &&
+            (parsed.action.tool === "write_file" || parsed.action.tool === "file_porter") &&
+            syncResults &&
+            syncResults.length > 0
+          ) {
+            currentPrompt = PromptBuilder.buildFileSavedAndSyncedReceipt({
+              toolName: parsed.action.tool || toolResult.actionName,
+              landedFiles: syncResults.map((r) => ({
+                relPath: r.relPath,
+                cloudWebUrl: r.cloudWebUrl,
+              })),
+              taskInvariant: currentTask,
+            });
+          } else if (uploadedAttachment) {
             const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
             currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(
               parsed.action.tool || toolResult.actionName,

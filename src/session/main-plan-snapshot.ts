@@ -122,23 +122,13 @@ export function formatSuccessorTurn1Prompt(
 
   const wsNorm = snapshot.workspaceRoot ? snapshot.workspaceRoot.replace(/\\/g, "/") : "";
   const workspaceFact = wsNorm ? `\n- **工作区绝对路径**: ${wsNorm}` : "";
-  const skeletonFact =
-    dirSkeleton && dirSkeleton.trim() !== ""
-      ? `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`
-      : "";
-
-  const virtualRepoMap = snapshot.workspaceRoot
-    ? PnPWorkspaceSyncEngine.readVirtualRepoMap(snapshot.workspaceRoot)
-    : undefined;
-  const repoMapFact =
-    virtualRepoMap && virtualRepoMap.trim() !== ""
-      ? `\n\n${virtualRepoMap.trim()}`
-      : "";
+  const catalogFact =
+    "\n- **工作区目录与云端文件索引**: 已作为云端附件 `remote-workspace-catalog.md` 随本轮消息挂载";
 
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
-【本地宿主机工作区事实】${workspaceFact}${clusterFact}${skeletonFact}${repoMapFact}
+【本地宿主机工作区事实】${workspaceFact}${catalogFact}${clusterFact}
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:

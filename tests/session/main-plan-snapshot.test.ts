@@ -107,8 +107,9 @@ describe("MainPlanSnapshot Engine", () => {
 
     expect(prompt).toContain("【本地宿主机工作区事实】");
     expect(prompt).toContain("- **工作区绝对路径**: E:/test");
-    expect(prompt).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
-    expect(prompt).toContain("- Library/");
+    expect(prompt).toContain("remote-workspace-catalog.md");
+    expect(prompt).not.toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+    expect(prompt).not.toContain("- Library/");
     expect(prompt).toContain("- **并发集群容量**: 4 个并行 Worker");
     expect(prompt).toContain("【自闭环攻坚心智】");
     expect(prompt).toContain("无需中断执行向用户重问初始需求");
@@ -116,7 +117,7 @@ describe("MainPlanSnapshot Engine", () => {
     expect(prompt).not.toContain("切勿");
   });
 
-  it("should automatically inject virtual-repo-map.md right after directory skeleton in formatSuccessorTurn1Prompt", () => {
+  it("should reference remote-workspace-catalog.md attachment instead of inlining virtual-repo-map.md or skeleton in formatSuccessorTurn1Prompt", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-succ-map-"));
     try {
       const stateDir = path.join(tmpDir, ".cph", "state");
@@ -140,15 +141,10 @@ describe("MainPlanSnapshot Engine", () => {
         dirSkeleton
       );
 
-      expect(prompt).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
-      expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-      expect(prompt).toContain("Library/query.sql");
-
-      const skeletonIdx = prompt.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
-      const mapIdx = prompt.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
-      const originalTaskIdx = prompt.indexOf("### 1. 原始工程目标与规划思路");
-      expect(skeletonIdx).toBeLessThan(mapIdx);
-      expect(mapIdx).toBeLessThan(originalTaskIdx);
+      expect(prompt).toContain("remote-workspace-catalog.md");
+      expect(prompt).not.toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+      expect(prompt).not.toContain("[SHAREPOINT REMOTE WORKSPACE]");
+      expect(prompt).not.toContain("Library/query.sql");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

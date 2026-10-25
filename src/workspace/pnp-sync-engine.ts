@@ -116,7 +116,7 @@ export function encodeUrlPathSegments(relPath: string): string {
     .join("/");
 }
 
-const NON_INDEXABLE_EXTENSIONS = new Set([
+export const NON_INDEXABLE_EXTENSIONS = new Set([
   ".dll",
   ".dylib",
   ".so",
@@ -136,7 +136,7 @@ const NON_INDEXABLE_EXTENSIONS = new Set([
   ".up2date",
 ]);
 
-function isNonIndexableBinary(filePath: string): boolean {
+export function isNonIndexableBinary(filePath: string): boolean {
   const lower = filePath.toLowerCase();
   for (const ext of NON_INDEXABLE_EXTENSIONS) {
     if (lower.endsWith(ext)) {
@@ -147,6 +147,7 @@ function isNonIndexableBinary(filePath: string): boolean {
 }
 
 export class PnPWorkspaceSyncEngine {
+  public static isNonIndexableBinary = isNonIndexableBinary;
   public static DEFAULT_SITE_URL = "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN";
   public static DEFAULT_TARGET_FOLDER =
     "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/03 AFR/AFR SCHK/06_Training/New Hire Training/2025/Vincent Fu/WorkSpace/live test";
@@ -238,13 +239,21 @@ export class PnPWorkspaceSyncEngine {
 
       if (signal) {
         if (signal.aborted) {
-          child.kill();
+          try {
+            child.kill();
+          } catch {}
           return reject(new Error("Operation aborted"));
         }
-        signal.addEventListener("abort", () => {
-          child.kill();
-          reject(new Error("Operation aborted"));
-        });
+        signal.addEventListener(
+          "abort",
+          () => {
+            try {
+              child.kill();
+            } catch {}
+            reject(new Error("Operation aborted"));
+          },
+          { once: true }
+        );
       }
 
       child.stdout.on("data", (chunk) => {
@@ -548,6 +557,237 @@ export class PnPWorkspaceSyncEngine {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Resolves the cloud SharePoint target configuration.
+   * If targetFolder is not configured in manifest or process.env.CPH_SP_TARGET_FOLDER, returns null.
+   * Never silently falls back to personal default folder.
+   */
+  public static resolveCloudTarget(
+    workspaceRoot: string,
+    manifest?: SyncManifest | null
+  ): { siteUrl: string; targetFolder: string; mockTransport?: boolean } | null {
+    const loaded =
+      manifest ??
+      this.loadManifest(path.join(workspaceRoot, ".cph", "state", "sync-manifest.json"));
+    const targetFolder =
+      loaded?.targetFolder?.trim() || process.env.CPH_SP_TARGET_FOLDER?.trim() || "";
+    if (!targetFolder) {
+      return null;
+    }
+    const siteUrl =
+      loaded?.siteUrl?.trim() ||
+      process.env.CPH_SP_SITE_URL?.trim() ||
+      this.DEFAULT_SITE_URL;
+    return {
+      siteUrl,
+      targetFolder,
+      ...(loaded?.mockTransport !== undefined ? { mockTransport: Boolean(loaded.mockTransport) } : {}),
+    };
+  }
+
+  /**
+   * Builds normalized SharePoint Web URL without duplicate /sites/... prefixes and with encoded spaces.
+   */
+  public static buildSharePointWebUrl(
+    siteUrl: string,
+    targetFolder: string,
+    relPath?: string,
+    serverRelativeUrl?: string
+  ): string {
+    const cleanSite = siteUrl.replace(/\/+$/, "");
+    let origin = cleanSite;
+    let sitePathPrefix = "";
+    try {
+      const u = new URL(cleanSite);
+      origin = u.origin;
+      sitePathPrefix = u.pathname.replace(/\/+$/, "");
+    } catch {}
+
+    if (serverRelativeUrl) {
+      const normSrv = serverRelativeUrl.startsWith("/")
+        ? serverRelativeUrl
+        : `/${serverRelativeUrl}`;
+      const encodedSrv = encodeUrlPathSegments(normSrv);
+      if (sitePathPrefix && normSrv.toLowerCase().startsWith(sitePathPrefix.toLowerCase() + "/")) {
+        return `${origin}/${encodedSrv}`;
+      }
+      return `${cleanSite}/${encodedSrv}`;
+    }
+
+    let cleanFolder = targetFolder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const sitePrefixNoSlash = sitePathPrefix.replace(/^\/+/, "");
+    if (
+      sitePrefixNoSlash &&
+      cleanFolder.toLowerCase().startsWith(sitePrefixNoSlash.toLowerCase() + "/")
+    ) {
+      cleanFolder = cleanFolder.slice(sitePrefixNoSlash.length + 1);
+    }
+    const encodedFolder = encodeUrlPathSegments(cleanFolder);
+    const baseUrl = encodedFolder ? `${cleanSite}/${encodedFolder}` : cleanSite;
+    if (!relPath) return baseUrl;
+    const encodedRel = encodeUrlPathSegments(relPath);
+    return encodedRel ? `${baseUrl}/${encodedRel}` : baseUrl;
+  }
+
+  /**
+   * Generates a comprehensive Markdown catalog of the workspace for cloud attachment.
+   * Produces 2-level directory skeleton and full file mapping with status tags.
+   */
+  public static generateCatalogMarkdown(
+    workspaceRoot: string,
+    manifest?: SyncManifest | null,
+    siteUrl?: string,
+    targetFolder?: string
+  ): string {
+    const target = this.resolveCloudTarget(workspaceRoot, manifest);
+    const effSiteUrl = siteUrl?.trim() || target?.siteUrl;
+    const effTargetFolder = targetFolder?.trim() || target?.targetFolder;
+    const remoteRootUrl =
+      effSiteUrl && effTargetFolder
+        ? this.buildSharePointWebUrl(effSiteUrl, effTargetFolder)
+        : undefined;
+
+    const loadedManifest =
+      manifest ??
+      this.loadManifest(path.join(workspaceRoot, ".cph", "state", "sync-manifest.json"));
+
+    const ignored = new Set([
+      ".git",
+      ".cph",
+      "node_modules",
+      "dist",
+      "build",
+      ".next",
+    ]);
+
+    // 1. Directory Skeleton (2-level)
+    const skeletonLines: string[] = [];
+    try {
+      if (fs.existsSync(workspaceRoot)) {
+        const topEntries = fs
+          .readdirSync(workspaceRoot, { withFileTypes: true })
+          .filter((e) => !ignored.has(e.name))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        for (const entry of topEntries) {
+          if (entry.isDirectory()) {
+            skeletonLines.push(`- ${entry.name}/`);
+            try {
+              const subPath = path.join(workspaceRoot, entry.name);
+              const subEntries = fs
+                .readdirSync(subPath, { withFileTypes: true })
+                .filter((se) => !ignored.has(se.name))
+                .sort((a, b) => a.name.localeCompare(b.name));
+              for (const sub of subEntries) {
+                skeletonLines.push(`  - ${sub.name}${sub.isDirectory() ? "/" : ""}`);
+              }
+            } catch {}
+          } else {
+            skeletonLines.push(`- ${entry.name}`);
+          }
+        }
+      }
+    } catch {}
+
+    if (skeletonLines.length === 0) {
+      skeletonLines.push("- (Empty workspace)");
+    }
+
+    // 2. File Mapping Index
+    const scannedFiles: string[] = [];
+    function scanDir(curDir: string, relPrefix: string) {
+      try {
+        if (!fs.existsSync(curDir)) return;
+        const items = fs
+          .readdirSync(curDir, { withFileTypes: true })
+          .sort((a, b) => a.name.localeCompare(b.name));
+        for (const item of items) {
+          if (ignored.has(item.name)) continue;
+          const rel = relPrefix ? `${relPrefix}/${item.name}` : item.name;
+          if (item.isDirectory()) {
+            scanDir(path.join(curDir, item.name), rel);
+          } else if (item.isFile()) {
+            scannedFiles.push(rel.replace(/\\/g, "/"));
+          }
+        }
+      } catch {}
+    }
+    scanDir(workspaceRoot, "");
+
+    const manifestFiles = loadedManifest?.files || {};
+    const fileLines: string[] = [];
+    const now = Date.now();
+
+    for (const rel of scannedFiles) {
+      let sizeKb = "0.0";
+      try {
+        const stat = fs.statSync(path.join(workspaceRoot, rel));
+        sizeKb = (stat.size / 1024).toFixed(1);
+      } catch {}
+
+      const item = manifestFiles[rel];
+      if (item && effSiteUrl && effTargetFolder) {
+        const guidStr = item.uniqueId ? ` | UniqueId: ${item.uniqueId}` : "";
+        const fileWebUrl = this.buildSharePointWebUrl(
+          effSiteUrl,
+          effTargetFolder,
+          rel,
+          item.serverRelativeUrl
+        );
+
+        let statusTag = "[CLOUD-READY]";
+        if (
+          item.firstCreatedAt !== undefined &&
+          item.firstCreatedAt !== null &&
+          item.lastSyncedAt !== undefined &&
+          item.lastSyncedAt !== null
+        ) {
+          if (String(item.firstCreatedAt) === String(item.lastSyncedAt)) {
+            const createdTime =
+              typeof item.firstCreatedAt === "number"
+                ? item.firstCreatedAt
+                : !Number.isNaN(Number(item.firstCreatedAt))
+                ? Number(item.firstCreatedAt)
+                : new Date(item.firstCreatedAt).getTime();
+            if (!Number.isNaN(createdTime) && now - createdTime < 60_000) {
+              statusTag = "[LOCAL-NEW: use read_file]";
+            }
+          }
+        }
+
+        fileLines.push(
+          `- ${rel} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl} | Status: ${statusTag})`
+        );
+      } else {
+        fileLines.push(
+          `- ${rel} (Size: ${sizeKb}KB | Status: [LOCAL-ONLY: local disk only])`
+        );
+      }
+    }
+
+    if (fileLines.length === 0) {
+      fileLines.push("- (No files found)");
+    }
+
+    const guidance =
+      "Guidance: All repository files are grounded at the SharePoint paths above. You may cite, inspect or trace them directly by relative path or URL.";
+
+    return [
+      "# 远程工作区目录与文件索引 (Remote Workspace Catalog)",
+      "",
+      `- **工作区绝对路径 (Workspace Root)**: ${workspaceRoot.replace(/\\/g, "/")}`,
+      `- **云端工作区根直链 (Remote Root URL)**: ${remoteRootUrl || "未配置 (Local disk only)"}`,
+      "",
+      "## 1. 工作区目录结构 (Directory Skeleton)",
+      skeletonLines.join("\n"),
+      "",
+      "## 2. 文件映射清单 (File Mapping Index)",
+      fileLines.join("\n"),
+      "",
+      guidance,
+    ].join("\n");
   }
 
   /**

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { PromptBuilder } from "../../src/protocol/prompt-builder.ts";
+import { PnPWorkspaceSyncEngine, type SyncManifest } from "../../src/workspace/pnp-sync-engine.ts";
+import { formatSuccessorTurn1Prompt, type MainPlanSnapshot } from "../../src/session/main-plan-snapshot.ts";
 
 describe("PromptBuilder Unit Tests", () => {
   describe("1. Turn 1 Grounding Handshake Prompt", () => {
@@ -199,8 +201,8 @@ describe("PromptBuilder Unit Tests", () => {
     });
   });
 
-  describe("6. Virtual Repo Map Turn 1 Injection", () => {
-    it("should automatically inject virtual-repo-map.md into buildTurn1Prompt when present on disk", () => {
+  describe("6. Remote Workspace Catalog Pointer & Zero Inline Injection", () => {
+    it("buildTurn1Prompt should reference remote-workspace-catalog.md and not inline virtual-repo-map.md or dirTree", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-turn1-"));
       try {
         const stateDir = path.join(tmpDir, ".cph", "state");
@@ -211,18 +213,22 @@ describe("PromptBuilder Unit Tests", () => {
         const prompt = PromptBuilder.buildTurn1Prompt({
           workspaceRoot: tmpDir,
           task: "Review codebase",
+          dirTree: "src/\n  app.ts",
         });
 
         expect(prompt).toContain("【本地宿主机与工作区事实 (Grounding Facts)】");
-        expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-        expect(prompt).toContain("Remote Root URL: https://site/target");
-        expect(prompt).toContain("main.py (Size: 2KB)");
+        expect(prompt).toContain(
+          "- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）"
+        );
+        expect(prompt).not.toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(prompt).not.toContain("【核心目录结构预览】");
+        expect(prompt).not.toContain("main.py (Size: 2KB)");
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
-    it("should automatically inject virtual-repo-map.md into buildDirectAgentPrompt", () => {
+    it("buildDirectAgentPrompt and formatSuccessorTurn1Prompt do NOT inline dirSkeleton or virtualRepoMap, and reference remote-workspace-catalog.md", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-direct-"));
       try {
         const stateDir = path.join(tmpDir, ".cph", "state");
@@ -230,40 +236,50 @@ describe("PromptBuilder Unit Tests", () => {
         const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- src/app.ts";
         fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
 
-        // 1. Auto-loaded from disk
+        // 1. buildDirectAgentPrompt should reference remote-workspace-catalog.md and strip inline skeleton/repoMap
         const prompt1 = PromptBuilder.buildDirectAgentPrompt(
           tmpDir,
           "Direct task",
           "",
+          "- src/\n  - app.ts",
+          undefined,
+          mapContent
+        );
+        expect(prompt1).toContain(
+          "- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）"
+        );
+        expect(prompt1).not.toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+        expect(prompt1).not.toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(prompt1).not.toContain("- src/app.ts");
+
+        // 2. formatSuccessorTurn1Prompt should reference remote-workspace-catalog.md and strip inline facts
+        const snapshot: MainPlanSnapshot = {
+          snapshotId: "snap-123",
+          originalSessionId: "session-1",
+          originalTask: "Test task",
+          thought: "Some thoughts",
+          workspaceRoot: tmpDir,
+          gitBaseline: "HEAD",
+          plannedSubagents: [],
+          createdAt: Date.now(),
+        };
+
+        const successorPrompt = formatSuccessorTurn1Prompt(
+          snapshot,
+          "Reports summary",
+          undefined,
+          4,
           "- src/\n  - app.ts"
         );
-        expect(prompt1).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
-        expect(prompt1).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-        expect(prompt1).toContain("- src/app.ts");
-        // Verify virtual repo map appears after directory skeleton
-        const skeletonIdx = prompt1.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
-        const mapIdx = prompt1.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
-        const taskIdx = prompt1.indexOf("【用户正式需求】");
-        expect(skeletonIdx).toBeLessThan(mapIdx);
-        expect(mapIdx).toBeLessThan(taskIdx);
-
-        // 2. Explicitly passed parameter overrides or supplies map
-        const customMap = "[SHAREPOINT REMOTE WORKSPACE]\n- custom.ts";
-        const prompt2 = PromptBuilder.buildDirectAgentPrompt(
-          tmpDir,
-          "Direct task",
-          "",
-          "",
-          undefined,
-          customMap
-        );
-        expect(prompt2).toContain(customMap);
+        expect(successorPrompt).not.toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
+        expect(successorPrompt).not.toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(successorPrompt).toContain("remote-workspace-catalog.md");
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
-    it("should automatically inject virtual-repo-map.md into buildReGroundingPrompt when present on disk", () => {
+    it("buildHandshakePrompt and buildReGroundingPrompt should reference remote-workspace-catalog.md without inlining dirTree or virtualRepoMap", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-reground-"));
       try {
         const stateDir = path.join(tmpDir, ".cph", "state");
@@ -271,17 +287,220 @@ describe("PromptBuilder Unit Tests", () => {
         const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- index.ts";
         fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
 
-        const prompt = PromptBuilder.buildReGroundingPrompt({
+        const handshakePrompt = PromptBuilder.buildHandshakePrompt(
+          tmpDir,
+          "Git status: clean",
+          "src/\n  index.ts"
+        );
+        expect(handshakePrompt).toContain(
+          "- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）"
+        );
+        expect(handshakePrompt).not.toContain("【当前工作区精简目录树】");
+
+        const reGroundPrompt = PromptBuilder.buildReGroundingPrompt({
           workspaceRoot: tmpDir,
           currentTask: "Continue migration",
         });
-
-        expect(prompt).toContain("【本地宿主机与工作区事实 (Session Re-grounding)】");
-        expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-        expect(prompt).toContain("index.ts");
+        expect(reGroundPrompt).toContain(
+          "- 工作区目录与云端文件索引: 已作为云端附件【remote-workspace-catalog.md】随本轮消息挂载（含 2 层目录树与 SharePoint 文件直链清单）"
+        );
+        expect(reGroundPrompt).not.toContain("[SHAREPOINT REMOTE WORKSPACE]");
+        expect(reGroundPrompt).not.toContain("index.ts");
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("7. SharePoint Web URL Deduplication & Normalization", () => {
+    it("buildSharePointWebUrl should deduplicate site path prefix and encode spaces as %20", () => {
+      const siteUrl = "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN";
+
+      // 1. targetFolder without /sites/ prefix
+      const url1 = PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+        siteUrl,
+        "AFRASIA/01 Team/live test",
+        "src/my file.ts"
+      );
+      expect(url1).toBe(
+        "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/live%20test/src/my%20file.ts"
+      );
+      expect(url1).not.toContain("CMA-GBSC_BKGDOMAIN/sites");
+
+      // 2. targetFolder with /sites/CMA-GBSC_BKGDOMAIN/ prefix -> deduplicate
+      const url2 = PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+        siteUrl,
+        "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/live test",
+        "src/my file.ts"
+      );
+      expect(url2).toBe(
+        "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/live%20test/src/my%20file.ts"
+      );
+
+      // 3. serverRelativeUrl with /sites/ prefix -> uses origin and encodes
+      const url3 = PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+        siteUrl,
+        "unused",
+        undefined,
+        "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/doc with spaces.pdf"
+      );
+      expect(url3).toBe(
+        "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/doc%20with%20spaces.pdf"
+      );
+
+      // 4. without relPath -> returns base folder URL
+      const url4 = PnPWorkspaceSyncEngine.buildSharePointWebUrl(
+        siteUrl,
+        "AFRASIA/01 Team"
+      );
+      expect(url4).toBe(
+        "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team"
+      );
+    });
+  });
+
+  describe("8. Cloud Target Resolution Guard", () => {
+    it("resolveCloudTarget should return null when targetFolder is not configured (never falling back to personal default)", () => {
+      const origEnv = process.env.CPH_SP_TARGET_FOLDER;
+      const origSite = process.env.CPH_SP_SITE_URL;
+      try {
+        delete process.env.CPH_SP_TARGET_FOLDER;
+        delete process.env.CPH_SP_SITE_URL;
+
+        // 1. empty manifest -> returns null (never defaults to personal path)
+        const res1 = PnPWorkspaceSyncEngine.resolveCloudTarget("E:/empty-ws", {
+          version: 2,
+          files: {},
+        });
+        expect(res1).toBeNull();
+
+        // 2. manifest with targetFolder -> returns resolved target
+        const res2 = PnPWorkspaceSyncEngine.resolveCloudTarget("E:/empty-ws", {
+          version: 2,
+          files: {},
+          targetFolder: "Custom/Folder",
+          siteUrl: "https://custom.sharepoint.com/sites/CustomSite",
+        });
+        expect(res2).toEqual({
+          siteUrl: "https://custom.sharepoint.com/sites/CustomSite",
+          targetFolder: "Custom/Folder",
+        });
+
+        // 3. environment variable provides targetFolder when manifest lacks it
+        process.env.CPH_SP_TARGET_FOLDER = "Env/Target/Folder";
+        const res3 = PnPWorkspaceSyncEngine.resolveCloudTarget("E:/empty-ws", null);
+        expect(res3).toEqual({
+          siteUrl: PnPWorkspaceSyncEngine.DEFAULT_SITE_URL,
+          targetFolder: "Env/Target/Folder",
+        });
+      } finally {
+        if (origEnv !== undefined) process.env.CPH_SP_TARGET_FOLDER = origEnv;
+        else delete process.env.CPH_SP_TARGET_FOLDER;
+        if (origSite !== undefined) process.env.CPH_SP_SITE_URL = origSite;
+        else delete process.env.CPH_SP_SITE_URL;
+      }
+    });
+  });
+
+  describe("9. Pure Catalog Markdown Generation", () => {
+    it("generateCatalogMarkdown produces 2-level directory skeleton and file mapping with [CLOUD-READY], [LOCAL-NEW], and [LOCAL-ONLY]", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-catalog-test-"));
+      try {
+        // Create directories
+        fs.mkdirSync(path.join(tmpDir, "src", "nested"), { recursive: true });
+        fs.mkdirSync(path.join(tmpDir, "docs"), { recursive: true });
+        fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
+        fs.mkdirSync(path.join(tmpDir, "node_modules", "pkg"), { recursive: true });
+
+        // Create files
+        fs.writeFileSync(path.join(tmpDir, "src", "app.ts"), "const x = 1;");
+        fs.writeFileSync(path.join(tmpDir, "src", "nested", "deep.ts"), "const deep = 2;");
+        fs.writeFileSync(path.join(tmpDir, "docs", "readme.md"), "# Readme");
+        fs.writeFileSync(path.join(tmpDir, "local-untracked.txt"), "Local only file");
+        fs.writeFileSync(path.join(tmpDir, ".git", "config"), "git config");
+
+        const now = Date.now();
+        const manifest: SyncManifest = {
+          version: 2,
+          siteUrl: "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN",
+          targetFolder: "AFRASIA/01 Team/live test",
+          files: {
+            "src/app.ts": {
+              sha256: "hash-ready",
+              size: 100,
+              firstCreatedAt: now - 120_000, // 2 minutes ago
+              lastSyncedAt: new Date(now - 60_000).toISOString(),
+              uniqueId: "guid-app-ts",
+            },
+            "docs/readme.md": {
+              sha256: "hash-new",
+              size: 50,
+              firstCreatedAt: now - 5_000, // 5 seconds ago
+              lastSyncedAt: String(now - 5_000), // created == synced within 60s
+              uniqueId: "guid-readme-md",
+            },
+          },
+        };
+
+        const catalog = PnPWorkspaceSyncEngine.generateCatalogMarkdown(
+          tmpDir,
+          manifest,
+          manifest.siteUrl,
+          manifest.targetFolder
+        );
+
+        // Section headers
+        expect(catalog).toContain("## 1. 工作区目录结构 (Directory Skeleton)");
+        expect(catalog).toContain("## 2. 文件映射清单 (File Mapping Index)");
+
+        // Exclusions
+        expect(catalog).not.toContain(".git");
+        expect(catalog).not.toContain("node_modules");
+
+        // Skeleton entries
+        expect(catalog).toContain("- src/");
+        expect(catalog).toContain("  - app.ts");
+        expect(catalog).toContain("- docs/");
+
+        // Status tags
+        expect(catalog).toContain("[CLOUD-READY]");
+        expect(catalog).toContain("[LOCAL-NEW: use read_file]");
+        expect(catalog).toContain("[LOCAL-ONLY: local disk only]");
+
+        // Check specific files
+        expect(catalog).toContain("src/app.ts");
+        expect(catalog).toContain("docs/readme.md");
+        expect(catalog).toContain("local-untracked.txt");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("10. File Saved and Synced Receipt", () => {
+    it("buildFileSavedAndSyncedReceipt emits synced web url when present and landed only when undefined", () => {
+      const receipt = PromptBuilder.buildFileSavedAndSyncedReceipt({
+        toolName: "write_file",
+        landedFiles: [
+          {
+            relPath: "src/service.ts",
+            cloudWebUrl: "https://cmacgmgroup.sharepoint.com/sites/site/src/service.ts",
+          },
+          {
+            relPath: "dist/bundle.zip",
+          },
+        ],
+        taskInvariant: "Payment module refactoring",
+      });
+
+      expect(receipt).toContain("[TOOL_RESULT for write_file - SUCCESS]:");
+      expect(receipt).toContain("✔ 文件已落盘至本地: src/service.ts");
+      expect(receipt).toContain("✔ 已同步至云端工作区: https://cmacgmgroup.sharepoint.com/sites/site/src/service.ts");
+      expect(receipt).toContain("✔ 文件已落盘至本地: dist/bundle.zip");
+      expect(receipt).not.toContain("✔ 已同步至云端工作区: undefined");
+      expect(receipt).toContain("【当前推进战役北极星 (Task Invariant)】:");
+      expect(receipt).toContain("Payment module refactoring");
+      expect(receipt).toContain(PromptBuilder.PROTOCOL_REMINDER);
     });
   });
 });
