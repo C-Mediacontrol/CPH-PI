@@ -18,6 +18,9 @@ import {
 } from "../protocol/tool-bridge.ts";
 import { PromptBuilder } from "../protocol/prompt-builder.ts";
 import { ResilientParser } from "../protocol/resilient-parser.ts";
+import { DeliverablesParser } from "../protocol/deliverables-parser.ts";
+import { LandingService, type LandingResult } from "../delivery/landing-service.ts";
+import { FilePorter } from "../transport/file-porter.ts";
 import { CompactionService, type TurnRecord } from "./compaction.ts";
 import { BlackboxCompactor } from "./blackbox-compactor.ts";
 import { RefusalGuard } from "./refusal-guard.ts";
@@ -90,6 +93,9 @@ export interface OrchestratorOptions {
   lineageTracker?: SessionLineageTracker;
   maxGenerations?: number;
   enableWorkspaceSnapshot?: boolean;
+  enableAutoLanding?: boolean;
+  /** Injectable landing service for tests / custom deployments. */
+  autoLandingService?: LandingService;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -208,8 +214,11 @@ export class Orchestrator {
   public generation: number = 1;
   private maxGenerations: number;
   public enableWorkspaceSnapshot: boolean;
+  public enableAutoLanding: boolean;
+  private autoLandingService?: LandingService;
   public lastNextSnapshotMeta?: SnapshotResult;
   private lastModifiedFile?: string;
+  private activeAccountEmail: string = "";
 
   // Handshake State Machine
   public isHandshakePending: boolean = true;
@@ -250,6 +259,8 @@ export class Orchestrator {
         : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
+    this.enableAutoLanding = options.enableAutoLanding ?? true;
+    this.autoLandingService = options.autoLandingService;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
         ? options.isHandshakePending
@@ -339,6 +350,133 @@ export class Orchestrator {
 
   public getWorkspaceRoot(): string {
     return this.workspaceRoot;
+  }
+
+  /**
+   * Acquire an IC3 token for the account that owns a generated download link.
+   */
+  public async acquireIc3Token(email?: string): Promise<string | undefined> {
+    if (this.pool && typeof (this.pool as any).getIc3AccessToken === "function") {
+      try {
+        return await (this.pool as any).getIc3AccessToken(email);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve the cloud target recorded in the workspace sync manifest.
+   */
+  public resolveCloudTarget(): { siteUrl: string; targetFolder: string } {
+    const manifestPath = path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+    return {
+      siteUrl: manifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL,
+      targetFolder: manifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER,
+    };
+  }
+
+  /**
+   * Build the landing service bound to the current workspace, account and cloud target.
+   */
+  public buildLandingService(accountEmail?: string): LandingService {
+    if (this.autoLandingService) return this.autoLandingService;
+    const target = this.resolveCloudTarget();
+    return new LandingService({
+      workspaceRoot: this.workspaceRoot,
+      filePorter: new FilePorter({
+        cwd: this.workspaceRoot,
+        ic3TokenProvider: () => this.acquireIc3Token(accountEmail),
+      }),
+      syncFile: async (rel: string) => {
+        const result = await new PnPWorkspaceSyncEngine().syncFile(
+          this.workspaceRoot,
+          rel,
+          target.targetFolder,
+          { siteUrl: target.siteUrl }
+        );
+        return { status: result.status, serverRelativeUrl: result.serverRelativeUrl };
+      },
+    });
+  }
+
+  /**
+   * Persist a physical delivery report for auditability.
+   */
+  private writeDeliveryReport(result: LandingResult, source: string): void {
+    try {
+      const stateDir = path.join(this.workspaceRoot, ".cph", "state");
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, "delivery-report.json"),
+        JSON.stringify(
+          { generatedAt: new Date().toISOString(), source, ...result },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch {
+      // Delivery reporting must never block task completion.
+    }
+  }
+
+  /**
+   * Handle a write_file action that carries a download URL (native file generation landing).
+   */
+  private async deliverWriteFileFromUrl(action: CopilotAction): Promise<ToolBridgeResult> {
+    const targetPath =
+      (action as any).path ||
+      (action as any).filePath ||
+      (action as any).file ||
+      (action as any).targetPath;
+    const url = (action as any).url || (action as any).downloadUrl;
+
+    if (!targetPath || !url) {
+      return {
+        actionName: "write_file",
+        piToolName: "write",
+        target: String(targetPath || ""),
+        success: false,
+        output: "write_file 需要同时提供 path 与 url。",
+        formatted: "write_file 需要同时提供 path 与 url。",
+      };
+    }
+
+    try {
+      const accountEmail = this.activeAccountEmail;
+      const landing = this.buildLandingService(accountEmail);
+      const result = await landing.landDeliverables([
+        {
+          destinationPath: String(targetPath).replace(/\\/g, "/"),
+          fileName: path.basename(String(targetPath)),
+          url: String(url),
+          isZipTarget: String(targetPath).toLowerCase().endsWith(".zip"),
+        },
+      ]);
+      this.writeDeliveryReport(result, `write_file:${targetPath}`);
+      const receipt = LandingService.formatReceipt(result);
+      return {
+        actionName: "write_file",
+        piToolName: "write",
+        target: String(targetPath),
+        success: result.status !== "failed",
+        output: receipt,
+        formatted: receipt,
+      };
+    } catch (err: any) {
+      const message = `文件链接落盘失败: ${String(err?.message || err)}`;
+      return {
+        actionName: "write_file",
+        piToolName: "write",
+        target: String(targetPath),
+        success: false,
+        output: message,
+        formatted: message,
+      };
+    }
   }
 
   /**
@@ -489,6 +627,8 @@ export class Orchestrator {
         throw err;
       }
     }
+
+    this.activeAccountEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
 
     // 1. Gather objective facts for Turn 1 Grounding
     const gitFacts = this.collectGitFacts();
@@ -688,6 +828,7 @@ export class Orchestrator {
                   modelTone: this.modelTone,
                   customAgentId: this.customAgentId,
                 });
+                this.activeAccountEmail = (client as any)?.token?.email || nextToken.email || "";
               }
             },
           }
@@ -830,7 +971,27 @@ export class Orchestrator {
           continue;
         }
 
-        const finalAnswer = parsed.answer.summary || parsed.answer.raw;
+        const rawFinalAnswer = parsed.answer.raw || parsed.answer.summary || "";
+        let deliveryReceipt = "";
+        if (this.enableAutoLanding) {
+          try {
+            const items = DeliverablesParser.parse(rawFinalAnswer);
+            if (items.length > 0) {
+              const landing = this.buildLandingService(
+                (client as any)?.token?.email || this.activeAccountEmail
+              );
+              const result = await landing.landDeliverables(items);
+              deliveryReceipt = LandingService.formatReceipt(result);
+              this.writeDeliveryReport(result, "final_answer");
+            }
+          } catch (err: any) {
+            deliveryReceipt = `交付文件落盘异常: ${String(err?.message || err)}`;
+          }
+        }
+
+        const finalAnswer = deliveryReceipt
+          ? `${deliveryReceipt}\n\n${parsed.answer.summary || rawFinalAnswer}`
+          : parsed.answer.summary || rawFinalAnswer;
         history.push({
           turn,
           userInput: currentPrompt,
@@ -1011,6 +1172,11 @@ export class Orchestrator {
             refusalRetries = 0;
             turn = 0; // Reset turn counter for fresh 30 turns budget!
           }
+        } else if (
+          ["write", "write_file"].includes(parsed.action.tool) &&
+          Boolean((parsed.action as any).url || (parsed.action as any).downloadUrl)
+        ) {
+          toolResult = await this.deliverWriteFileFromUrl(parsed.action);
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
         }

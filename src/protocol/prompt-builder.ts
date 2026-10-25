@@ -384,6 +384,26 @@ ${this.PROTOCOL_REMINDER}`;
   }
 
   /**
+   * Builds standardized tool result receipt when files are landed to disk and synced to cloud.
+   */
+  public static buildFileSavedAndSyncedReceipt(params: {
+    toolName: string;
+    landedFiles: Array<{ relPath: string; cloudWebUrl?: string }>;
+    taskInvariant?: string;
+  }): string {
+    const lines = params.landedFiles.map((item) =>
+      item.cloudWebUrl
+        ? `✔ 文件已落盘至本地: ${item.relPath}\n✔ 已同步至云端工作区: ${item.cloudWebUrl}`
+        : `✔ 文件已落盘至本地: ${item.relPath}`
+    );
+    const invariantBlock =
+      params.taskInvariant && params.taskInvariant.trim() !== ""
+        ? `\n【当前推进战役北极星 (Task Invariant)】:\n${params.taskInvariant.trim()}\n`
+        : "";
+    return `[TOOL_RESULT for ${params.toolName} - SUCCESS]:\n${lines.join("\n")}\n${invariantBlock}\n${this.PROTOCOL_REMINDER}`;
+  }
+
+  /**
    * Constructs pre-handoff summons prompt on turn maxTurns - 1,
    * instructing the model to output the handoff document directly via ```handoff fenced block.
    */
