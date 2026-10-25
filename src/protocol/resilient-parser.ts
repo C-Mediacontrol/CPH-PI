@@ -1,4 +1,6 @@
 import type { CopilotAction, SubagentTaskSpec } from "./tool-bridge.ts";
+export { DeliverablesParser, type DeliverableItem } from "./deliverables-parser.ts";
+
 
 export interface FinalAnswer {
   summary: string;
