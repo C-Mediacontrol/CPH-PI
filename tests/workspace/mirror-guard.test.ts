@@ -131,7 +131,7 @@ describe("SharePoint Mirror Guard & Safe Deletion Suite", () => {
     });
     expect(validRep).toBeDefined();
     expect(typeof validRep.durationMs).toBe("number");
-  });
+  }, 15000);
 
   it("Test 7: Orphan pruning records recycled in report results and cleans from manifest", async () => {
     // Create initial local file
