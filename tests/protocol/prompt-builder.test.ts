@@ -199,14 +199,42 @@ describe("PromptBuilder Unit Tests", () => {
     });
   });
 
-  describe("6. Virtual Repo Map Turn 1 Injection", () => {
-    it("should automatically inject virtual-repo-map.md into buildTurn1Prompt when present on disk", () => {
+  describe("6. Bounded Remote Workspace Map Attendance in Turn 1", () => {
+    function seedWorkspace(tmpDir: string, files: string[]) {
+      const stateDir = path.join(tmpDir, ".cph", "state");
+      fs.mkdirSync(stateDir, { recursive: true });
+      const entries: Record<string, any> = {};
+      for (const rel of files) {
+        const abs = path.join(tmpDir, rel);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, "// content\n", "utf8");
+        entries[rel] = {
+          sha256: "abc",
+          size: 10,
+          serverRelativeUrl: `/sites/test/AFRASIA/WorkSpace/test_workspace/${rel}`,
+        };
+      }
+      fs.writeFileSync(
+        path.join(stateDir, "sync-manifest.json"),
+        JSON.stringify(
+          {
+            version: 2,
+            siteUrl: "https://tenant.sharepoint.com/sites/test",
+            targetFolder: "AFRASIA/WorkSpace/test_workspace",
+            files: entries,
+            folders: {},
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    }
+
+    it("should inline the bounded [SHAREPOINT REMOTE WORKSPACE] map into buildTurn1Prompt", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-turn1-"));
       try {
-        const stateDir = path.join(tmpDir, ".cph", "state");
-        fs.mkdirSync(stateDir, { recursive: true });
-        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- main.py (Size: 2KB)";
-        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+        seedWorkspace(tmpDir, ["main.py"]);
 
         const prompt = PromptBuilder.buildTurn1Prompt({
           workspaceRoot: tmpDir,
@@ -215,22 +243,18 @@ describe("PromptBuilder Unit Tests", () => {
 
         expect(prompt).toContain("【本地宿主机与工作区事实 (Grounding Facts)】");
         expect(prompt).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-        expect(prompt).toContain("Remote Root URL: https://site/target");
-        expect(prompt).toContain("main.py (Size: 2KB)");
+        expect(prompt).toContain("main.py");
+        expect(prompt).toContain("[CLOUD-READY]");
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
-    it("should automatically inject virtual-repo-map.md into buildDirectAgentPrompt", () => {
+    it("should inline the bounded map into buildDirectAgentPrompt and honor explicit map overrides", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-direct-"));
       try {
-        const stateDir = path.join(tmpDir, ".cph", "state");
-        fs.mkdirSync(stateDir, { recursive: true });
-        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- src/app.ts";
-        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+        seedWorkspace(tmpDir, ["src/app.ts"]);
 
-        // 1. Auto-loaded from disk
         const prompt1 = PromptBuilder.buildDirectAgentPrompt(
           tmpDir,
           "Direct task",
@@ -239,15 +263,13 @@ describe("PromptBuilder Unit Tests", () => {
         );
         expect(prompt1).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
         expect(prompt1).toContain("[SHAREPOINT REMOTE WORKSPACE]");
-        expect(prompt1).toContain("- src/app.ts");
-        // Verify virtual repo map appears after directory skeleton
+        expect(prompt1).toContain("src/app.ts");
         const skeletonIdx = prompt1.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
         const mapIdx = prompt1.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
         const taskIdx = prompt1.indexOf("【用户正式需求】");
         expect(skeletonIdx).toBeLessThan(mapIdx);
         expect(mapIdx).toBeLessThan(taskIdx);
 
-        // 2. Explicitly passed parameter overrides or supplies map
         const customMap = "[SHAREPOINT REMOTE WORKSPACE]\n- custom.ts";
         const prompt2 = PromptBuilder.buildDirectAgentPrompt(
           tmpDir,
@@ -263,13 +285,10 @@ describe("PromptBuilder Unit Tests", () => {
       }
     });
 
-    it("should automatically inject virtual-repo-map.md into buildReGroundingPrompt when present on disk", () => {
+    it("should inline the bounded map into buildReGroundingPrompt", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-pb-reground-"));
       try {
-        const stateDir = path.join(tmpDir, ".cph", "state");
-        fs.mkdirSync(stateDir, { recursive: true });
-        const mapContent = "[SHAREPOINT REMOTE WORKSPACE]\nRemote Root URL: https://site/target\n- index.ts";
-        fs.writeFileSync(path.join(stateDir, "virtual-repo-map.md"), mapContent, "utf8");
+        seedWorkspace(tmpDir, ["index.ts"]);
 
         const prompt = PromptBuilder.buildReGroundingPrompt({
           workspaceRoot: tmpDir,

@@ -702,6 +702,11 @@ export class Orchestrator {
 
     this.activeAccountEmail = (client as any)?.token?.email || this.activeAccountEmail || "";
 
+    const isWorkspaceCatalogEnabled =
+      options.enableWorkspaceCatalog !== undefined
+        ? options.enableWorkspaceCatalog
+        : this.enableWorkspaceCatalog;
+
     // 1. Gather objective facts for Turn 1 Grounding
     const gitFacts = this.collectGitFacts();
     const dirTree = this.collectDirTreePreview();
@@ -720,7 +725,9 @@ export class Orchestrator {
         task,
         skillsSection,
         dirTree,
-        workerCount
+        workerCount,
+        undefined,
+        isWorkspaceCatalogEnabled
       );
     } else if (this.isHandshakePending) {
       // Turn 1 Grounding Handshake (Pure: NO task, NO skillsSection)
@@ -739,6 +746,7 @@ export class Orchestrator {
         dirTree,
         task,
         skillsSection,
+        catalogAttached: isWorkspaceCatalogEnabled,
       });
     }
 
@@ -752,11 +760,6 @@ export class Orchestrator {
       : [];
 
     // Turn 1: Workspace Catalog Attachment (supplemental complete index)
-    const isWorkspaceCatalogEnabled =
-      options.enableWorkspaceCatalog !== undefined
-        ? options.enableWorkspaceCatalog
-        : this.enableWorkspaceCatalog;
-
     if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
       try {
         const catalogResult = await this.ensureWorkspaceCatalogAttachment(
@@ -783,6 +786,9 @@ export class Orchestrator {
             "utf-8"
           );
         } catch {}
+        currentPrompt =
+          "[WORKSPACE NOTICE: 完整目录附件本轮暂未就绪，以下精简索引可按需用 read_file 补读]\n" +
+          currentPrompt;
       }
     }
 

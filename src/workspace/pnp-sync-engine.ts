@@ -820,8 +820,181 @@ export class PnPWorkspaceSyncEngine {
     };
   }
 
-  /** Enumerates workspace files for catalog generation without relying on the sync manifest. */
-  private static listWorkspaceFilesForCatalog(workspaceRoot: string): string[] {
+  /**
+   * Builds a bounded inline [SHAREPOINT REMOTE WORKSPACE] map for the Turn-1 prompt.
+   *
+   * The inline map keeps the reading path deterministic (the model can see file
+   * paths and WebUrls immediately), while a hard character budget guarantees the
+   * first prompt stays under Copilot's input limit. Files outside the task scope
+   * are ordered after scoped files, and the overflow points at the catalog
+   * attachment instead of silently disappearing.
+   */
+  public static buildBoundedRepoMap(opts: {
+    workspaceRoot: string;
+    task?: string;
+    maxChars?: number;
+  }): string {
+    const maxChars =
+      opts.maxChars ??
+      (Number(process.env.CPH_TURN1_INDEX_MAX_CHARS) > 0
+        ? Number(process.env.CPH_TURN1_INDEX_MAX_CHARS)
+        : 24000);
+
+    const manifestPath = path.join(opts.workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+    const siteUrl = manifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const targetFolder = manifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+
+    let origin = "";
+    try {
+      origin = new URL(siteUrl).origin;
+    } catch {
+      origin = siteUrl.replace(/\/$/, "");
+    }
+    let sitePath = "";
+    try {
+      sitePath = new URL(siteUrl).pathname.replace(/\/$/, "");
+    } catch {
+      sitePath = "";
+    }
+    const folderClean = targetFolder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const prefix = folderClean.startsWith("sites/")
+      ? `/${folderClean}`
+      : `${sitePath}/${folderClean}`;
+    const normalizedPrefix = prefix.replace(/\/+/g, "/").replace(/\/$/, "");
+    const encodedPrefix = encodeUrlPathSegments(normalizedPrefix);
+    const remoteRootUrl = `${origin}${encodedPrefix ? `/${encodedPrefix}` : ""}`;
+
+    const files = PnPWorkspaceSyncEngine.listWorkspaceFilesForCatalog(opts.workspaceRoot);
+    const manifestFiles = manifest?.files || {};
+    const scopePrefix = PnPWorkspaceSyncEngine.deriveTaskScopePrefix(
+      opts.task || "",
+      targetFolder
+    );
+
+    const sourceExtensions = new Set([
+      ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".ps1", ".psm1", ".psd1",
+      ".cs", ".csproj", ".sln", ".go", ".rs", ".java", ".kt", ".sql", ".json", ".yaml",
+      ".yml", ".toml", ".sh", ".bat", ".md", ".html", ".css", ".vue", ".xml",
+    ]);
+
+    type Row = { rel: string; size: number; status: string; url: string; inScope: boolean; isSource: boolean; mtime: number };
+    const rows: Row[] = [];
+    for (const rel of files) {
+      let size = 0;
+      let mtime = 0;
+      try {
+        const stat = fs.statSync(path.join(opts.workspaceRoot, rel));
+        size = stat.size;
+        mtime = stat.mtimeMs;
+      } catch {}
+
+      if (isNonIndexableBinary(rel)) {
+        rows.push({ rel, size, status: "CLOUD-UNINDEXABLE", url: "", inScope: false, isSource: false, mtime });
+        continue;
+      }
+
+      const entry = manifestFiles[rel];
+      const underCurrent = Boolean(
+        entry?.serverRelativeUrl &&
+          entry.serverRelativeUrl.replace(/\\/g, "/").startsWith(`${normalizedPrefix}/`)
+      );
+      const status = entry ? (underCurrent ? "CLOUD-READY" : "CLOUD-STALE") : "LOCAL-ONLY";
+      const url =
+        status === "CLOUD-READY"
+          ? `${remoteRootUrl}/${encodeUrlPathSegments(rel)}`
+          : "";
+      const inScope = Boolean(scopePrefix && (rel === scopePrefix || rel.startsWith(`${scopePrefix}/`)));
+      const ext = path.extname(rel).toLowerCase();
+      rows.push({ rel, size, status, url, inScope, isSource: sourceExtensions.has(ext), mtime });
+    }
+
+    rows.sort((a, b) => {
+      if (a.inScope !== b.inScope) return a.inScope ? -1 : 1;
+      const aUp = a.status === "CLOUD-READY" || a.status === "LOCAL-ONLY";
+      const bUp = b.status === "CLOUD-READY" || b.status === "LOCAL-ONLY";
+      if (aUp !== bUp) return aUp ? -1 : 1;
+      if (a.isSource !== b.isSource) return a.isSource ? -1 : 1;
+      if (a.mtime !== b.mtime) return b.mtime - a.mtime;
+      return a.rel.localeCompare(b.rel);
+    });
+
+    const header = [
+      "[SHAREPOINT REMOTE WORKSPACE]",
+      `Remote Root URL: ${remoteRootUrl}`,
+      `Files: ${rows.length} | Inline budget: ${maxChars} chars${scopePrefix ? ` | Task scope: ${scopePrefix}` : ""}`,
+      "",
+      "Files Index:",
+    ].join("\n");
+
+    const lines: string[] = [];
+    let used = header.length + 1;
+    let inlineCount = 0;
+    for (const row of rows) {
+      const sizeKb = (row.size / 1024).toFixed(1);
+      const urlPart = row.url ? ` | Web: ${row.url}` : "";
+      const line = `- ${row.rel} (Size: ${sizeKb}KB | [${row.status}]${urlPart})`;
+      // +1 for the newline
+      if (used + line.length + 1 > maxChars) break;
+      lines.push(line);
+      used += line.length + 1;
+      inlineCount++;
+    }
+
+    if (inlineCount < rows.length) {
+      lines.push(
+        `- ... (其余 ${rows.length - inlineCount} 个文件见附件 remote-workspace-catalog.md，或按需 read_file 读取)`
+      );
+    }
+
+    return `${header}\n${lines.join("\n")}\n`;
+  }
+
+  /**
+   * Derives a workspace-relative scope prefix from a task containing a
+   * SharePoint URL (AllItems?id=...) or an existing workspace path.
+   */
+  public static deriveTaskScopePrefix(task: string, targetFolder: string): string | undefined {
+    if (!task) return undefined;
+    const folderName = targetFolder.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+
+    const urlMatch = task.match(/https?:\/\/[^\s)>"']+/i);
+    if (urlMatch) {
+      let decodedPath = "";
+      try {
+        const parsed = new URL(urlMatch[0]);
+        const idParam = parsed.searchParams.get("id");
+        decodedPath = decodeURIComponent(idParam || parsed.pathname);
+      } catch {
+        decodedPath = urlMatch[0];
+      }
+      const workSpaceIdx = decodedPath.toLowerCase().indexOf("/workspace/");
+      if (workSpaceIdx >= 0) {
+        const after = decodedPath
+          .slice(workSpaceIdx + "/workspace/".length)
+          .split("/")
+          .filter(Boolean);
+        const rest = folderName && after[0] === folderName ? after.slice(1) : after.slice(1);
+        if (rest.length > 0) return rest.join("/");
+      }
+      const decodedParts = decodedPath.split("/").filter(Boolean);
+      if (folderName) {
+        const idx = decodedParts.indexOf(folderName);
+        if (idx >= 0 && idx + 1 < decodedParts.length) {
+          return decodedParts.slice(idx + 1).join("/");
+        }
+      }
+    }
+
+    const pathMatch = task.match(/(?:^|[\s`"'（(])([A-Za-z0-9_.\- ]+\/[A-Za-z0-9_.\-/ ]+)/);
+    if (pathMatch) {
+      const candidate = pathMatch[1].trim().replace(/\\/g, "/");
+      return candidate.replace(/^\/+|\/+$/g, "");
+    }
+    return undefined;
+  }
+
+  /** Enumerates workspace files for catalog generation without relying on the sync manifest. */  private static listWorkspaceFilesForCatalog(workspaceRoot: string): string[] {
     const files = new Set<string>();
     let gitSucceeded = false;
 
