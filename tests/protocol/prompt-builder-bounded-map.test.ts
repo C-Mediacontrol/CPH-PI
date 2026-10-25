@@ -139,4 +139,20 @@ describe("PromptBuilder with bounded map + catalog", () => {
     expect(prompt).not.toContain("随本轮消息挂载的附件 remote-workspace-catalog.md");
     expect(prompt).toContain("按需 read_file 读取");
   });
+
+  it("falls back to the legacy virtual-repo-map when bounded mode is disabled", () => {
+    fs.writeFileSync(
+      path.join(root, ".cph", "state", "virtual-repo-map.md"),
+      "[SHAREPOINT REMOTE WORKSPACE]\n- legacy-index.ts",
+      "utf8"
+    );
+    const prompt = PromptBuilder.buildTurn1Prompt({
+      workspaceRoot: root,
+      gitFacts: "clean",
+      task: "review",
+      catalogAttached: false,
+      boundedRepoMap: false,
+    });
+    expect(prompt).toContain("legacy-index.ts");
+  });
 });

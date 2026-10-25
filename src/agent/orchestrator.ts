@@ -95,6 +95,7 @@ export interface OrchestratorOptions {
   enableWorkspaceSnapshot?: boolean;
   enableWorkspaceCatalog?: boolean;
   enableAutoLanding?: boolean;
+  enableBoundedRepoMap?: boolean;
   /** Injectable landing service for tests / custom deployments. */
   autoLandingService?: LandingService;
 }
@@ -217,6 +218,7 @@ export class Orchestrator {
   public enableWorkspaceSnapshot: boolean;
   public enableWorkspaceCatalog: boolean;
   public enableAutoLanding: boolean;
+  public enableBoundedRepoMap: boolean;
   private autoLandingService?: LandingService;
   public lastNextSnapshotMeta?: SnapshotResult;
   private lastModifiedFile?: string;
@@ -263,6 +265,7 @@ export class Orchestrator {
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
     this.enableWorkspaceCatalog = options.enableWorkspaceCatalog ?? true;
     this.enableAutoLanding = options.enableAutoLanding ?? true;
+    this.enableBoundedRepoMap = options.enableBoundedRepoMap ?? true;
     this.autoLandingService = options.autoLandingService;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
@@ -727,7 +730,8 @@ export class Orchestrator {
         dirTree,
         workerCount,
         undefined,
-        isWorkspaceCatalogEnabled
+        isWorkspaceCatalogEnabled,
+        this.enableBoundedRepoMap
       );
     } else if (this.isHandshakePending) {
       // Turn 1 Grounding Handshake (Pure: NO task, NO skillsSection)
@@ -747,6 +751,7 @@ export class Orchestrator {
         task,
         skillsSection,
         catalogAttached: isWorkspaceCatalogEnabled,
+        boundedRepoMap: this.enableBoundedRepoMap,
       });
     }
 

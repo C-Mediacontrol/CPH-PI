@@ -8,6 +8,7 @@ export interface Turn1PromptOptions {
   environmentFilePath?: string;
   skillsSection?: string;
   catalogAttached?: boolean;
+  boundedRepoMap?: boolean;
 }
 
 export interface ReGroundingOptions {
@@ -18,6 +19,7 @@ export interface ReGroundingOptions {
   environmentFilePath?: string;
   skillsSection?: string;
   catalogAttached?: boolean;
+  boundedRepoMap?: boolean;
 }
 
 export interface Turn2TaskPromptOptions {
@@ -48,10 +50,13 @@ export class PromptBuilder {
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
     const treePreview = options.dirTree ? `\n【核心目录结构预览】\n${options.dirTree}\n` : "";
-    const repoMap = PnPWorkspaceSyncEngine.buildBoundedRepoMap({
-      workspaceRoot: options.workspaceRoot,
-      task: options.task,
-    });
+    const repoMap =
+      options.boundedRepoMap === false
+        ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || ""
+        : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+            workspaceRoot: options.workspaceRoot,
+            task: options.task,
+          });
     const repoMapSection = repoMap ? `\n${repoMap}\n` : "";
     const catalogLine = options.catalogAttached
       ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引"
@@ -117,7 +122,8 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
     dirSkeleton = "",
     concurrencyWorkers?: number,
     virtualRepoMap?: string,
-    catalogAttached = false
+    catalogAttached = false,
+    boundedRepoMap = true
   ): string {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
     const catalogLine = catalogAttached
@@ -138,7 +144,9 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
 
     const effectiveRepoMap =
       virtualRepoMap ??
-      PnPWorkspaceSyncEngine.buildBoundedRepoMap({ workspaceRoot, task });
+      (boundedRepoMap
+        ? PnPWorkspaceSyncEngine.buildBoundedRepoMap({ workspaceRoot, task })
+        : PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot) || "");
     if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
       prompt += `\n\n${effectiveRepoMap.trim()}`;
     }
@@ -384,10 +392,13 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
-    const repoMap = PnPWorkspaceSyncEngine.buildBoundedRepoMap({
-      workspaceRoot: options.workspaceRoot,
-      task: options.currentTask,
-    });
+    const repoMap =
+      options.boundedRepoMap === false
+        ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || ""
+        : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+            workspaceRoot: options.workspaceRoot,
+            task: options.currentTask,
+          });
     const repoMapSection = repoMap ? `\n\n${repoMap.trim()}` : "";
     const catalogLine = options.catalogAttached
       ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引"
