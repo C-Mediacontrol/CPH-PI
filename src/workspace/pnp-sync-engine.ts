@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 
 export interface PrewarmOptions {
   workspaceRoot: string;
@@ -30,6 +30,13 @@ export interface SyncFileResult {
   uniqueId?: string;
   serverRelativeUrl?: string;
   error?: string;
+}
+
+export interface CatalogStats {
+  totalFiles: number;
+  syncedIndexable: number;
+  localOnly: number;
+  unindexable: number;
 }
 
 export interface FolderManifestEntry {
@@ -134,6 +141,24 @@ const NON_INDEXABLE_EXTENSIONS = new Set([
   ".bin",
   ".cache",
   ".up2date",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".bmp",
+  ".ico",
+  ".webp",
+  ".tif",
+  ".tiff",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".eot",
+  ".mp3",
+  ".mp4",
+  ".mov",
+  ".avi",
+  ".wav",
 ]);
 
 function isNonIndexableBinary(filePath: string): boolean {
@@ -645,5 +670,214 @@ export class PnPWorkspaceSyncEngine {
     lines.push("Guidance: All repository files are grounded at the SharePoint paths above. You may cite, inspect or trace them directly by relative path or URL.");
 
     return lines.join("\n");
+  }
+
+  /**
+   * Generates the workspace catalog attachment.
+   *
+   * File list comes from the filesystem (git tracked + untracked + Library/),
+   * while the sync manifest is used only for status and URL columns. This keeps
+   * the catalog truthful after workspace relocation or local-only files appear.
+   */
+  public static generateCatalogMarkdown(
+    workspaceRoot: string,
+    opts?: { manifestPath?: string }
+  ): { markdown: string; stats: CatalogStats } {
+    const manifestPath =
+      opts?.manifestPath || path.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+    const siteUrl = manifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const targetFolder = manifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+
+    let origin = "";
+    try {
+      origin = new URL(siteUrl).origin;
+    } catch {
+      origin = siteUrl.replace(/\/$/, "");
+    }
+    let sitePath = "";
+    try {
+      sitePath = new URL(siteUrl).pathname.replace(/\/$/, "");
+    } catch {
+      sitePath = "";
+    }
+
+    const folderClean = targetFolder.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const prefix = folderClean.startsWith("sites/")
+      ? `/${folderClean}`
+      : `${sitePath}/${folderClean}`;
+    const normalizedPrefix = prefix.replace(/\/+/g, "/").replace(/\/$/, "");
+    const encodedPrefix = encodeUrlPathSegments(normalizedPrefix);
+    const remoteRootUrl = `${origin}${encodedPrefix ? `/${encodedPrefix}` : ""}`;
+
+    const relativeFiles = PnPWorkspaceSyncEngine.listWorkspaceFilesForCatalog(workspaceRoot);
+    const manifestFiles = manifest?.files || {};
+
+    const rows: Array<{ rel: string; size: number; status: string; url: string }> = [];
+    let syncedIndexable = 0;
+    let localOnly = 0;
+    let unindexable = 0;
+
+    for (const rel of relativeFiles) {
+      let size = 0;
+      try {
+        size = fs.statSync(path.join(workspaceRoot, rel)).size;
+      } catch {}
+
+      if (isNonIndexableBinary(rel)) {
+        unindexable++;
+        rows.push({ rel, size, status: "CLOUD-UNINDEXABLE", url: "" });
+        continue;
+      }
+
+      const entry = manifestFiles[rel];
+      if (entry) {
+        // Always surface the URL for the CURRENT target folder; a stale manifest
+        // URL is a status signal, not something the model should fetch.
+        const underCurrent = Boolean(
+          entry.serverRelativeUrl &&
+            entry.serverRelativeUrl.replace(/\\/g, "/").startsWith(`${normalizedPrefix}/`)
+        );
+        const url = `${remoteRootUrl}/${encodeUrlPathSegments(rel)}`;
+        rows.push({ rel, size, status: underCurrent ? "CLOUD-READY" : "CLOUD-STALE", url });
+        if (underCurrent) syncedIndexable++;
+        else localOnly++;
+      } else {
+        rows.push({ rel, size, status: "LOCAL-ONLY", url: "" });
+        localOnly++;
+      }
+    }
+
+    // 2-level directory skeleton with per-directory file counts.
+    const dirCounts = new Map<string, number>();
+    for (const rel of relativeFiles) {
+      const parts = rel.split("/");
+      if (parts.length > 1) {
+        const top = parts[0];
+        dirCounts.set(top, (dirCounts.get(top) || 0) + 1);
+        if (parts.length > 2) {
+          const second = `${parts[0]}/${parts[1]}`;
+          dirCounts.set(second, (dirCounts.get(second) || 0) + 1);
+        }
+      }
+    }
+
+    const skeletonLines: string[] = [];
+    const topDirs = [...dirCounts.keys()]
+      .filter((dir) => !dir.includes("/"))
+      .sort();
+    for (const top of topDirs) {
+      skeletonLines.push(`- ${top}/ (${dirCounts.get(top)} files)`);
+      const children = [...dirCounts.keys()]
+        .filter((dir) => dir.startsWith(`${top}/`) && dir.split("/").length === 2)
+        .sort();
+      for (const child of children) {
+        skeletonLines.push(`  - ${child.slice(top.length + 1)}/ (${dirCounts.get(child)} files)`);
+      }
+    }
+    if (skeletonLines.length === 0) {
+      skeletonLines.push("- (workspace has no sub-directories; files sit at the root)");
+    }
+
+    const MAX_ROWS = 2000;
+    const displayRows = rows.slice(0, MAX_ROWS);
+    const rowLines = displayRows.map((row) => {
+      const sizeKb = (row.size / 1024).toFixed(1);
+      const urlPart = row.url ? ` | ${row.url}` : "";
+      return `- \`${row.rel}\` (${sizeKb}KB | [${row.status}]${urlPart})`;
+    });
+    if (rows.length > MAX_ROWS) {
+      rowLines.push(
+        `- ...（其余 ${rows.length - MAX_ROWS} 个文件未内联，可通过本地 read_file 或同步状态台账查询）`
+      );
+    }
+
+    const markdown = [
+      "# Remote Workspace Catalog ([SHAREPOINT REMOTE WORKSPACE] 完整清单)",
+      "",
+      `- 工作区绝对路径: ${workspaceRoot.replace(/\\/g, "/")}`,
+      `- 云端工作区根直链: ${remoteRootUrl}`,
+      `- 统计: 工作区文件 ${rows.length} | 已同步可索引 ${syncedIndexable} | 本地独有 ${localOnly} | 不可索引 ${unindexable}`,
+      `- 生成时间: ${new Date().toISOString()}`,
+      "",
+      "## 1. 工作区目录结构 (Directory Skeleton)",
+      skeletonLines.join("\n"),
+      "",
+      "## 2. 文件映射清单 (File Mapping Index)",
+      rowLines.join("\n"),
+      "",
+      "Guidance: CLOUD-READY 文件可通过其 WebUrl 直接云端检索；LOCAL-ONLY/CLOUD-UNINDEXABLE 文件按需用 read_file 读取。",
+    ].join("\n");
+
+    return {
+      markdown,
+      stats: {
+        totalFiles: rows.length,
+        syncedIndexable,
+        localOnly,
+        unindexable,
+      },
+    };
+  }
+
+  /** Enumerates workspace files for catalog generation without relying on the sync manifest. */
+  private static listWorkspaceFilesForCatalog(workspaceRoot: string): string[] {
+    const files = new Set<string>();
+    let gitSucceeded = false;
+
+    try {
+      const gitOut = execSync("git ls-files --cached --others --exclude-standard", {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      gitSucceeded = true;
+      for (const line of gitOut.split(/\r?\n/)) {
+        const rel = line.trim().replace(/\\/g, "/");
+        if (rel) files.add(rel);
+      }
+    } catch {
+      // Non-git workspaces fall back to the recursive walk below.
+    }
+
+    const ignoredDirs = new Set([".git", ".cph", "node_modules", "dist", "package"]);
+    const walk = (dir: string, relPrefix: string): void => {
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue;
+        const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (ignoredDirs.has(entry.name)) continue;
+          walk(path.join(dir, entry.name), rel);
+        } else if (entry.isFile()) {
+          files.add(rel.replace(/\\/g, "/"));
+        }
+      }
+    };
+
+    if (!gitSucceeded) {
+      walk(workspaceRoot, "");
+    }
+
+    const libraryDir = path.join(workspaceRoot, "Library");
+    if (fs.existsSync(libraryDir)) {
+      walk(libraryDir, "Library");
+    }
+
+    return [...files]
+      .filter((rel) => {
+        if (/(^|\/)(\.git|\.cph|node_modules|dist|package)(\/|$)/.test(rel)) return false;
+        try {
+          return fs.statSync(path.join(workspaceRoot, rel)).isFile();
+        } catch {
+          return false;
+        }
+      })
+      .sort();
   }
 }
