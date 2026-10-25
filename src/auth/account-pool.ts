@@ -890,7 +890,10 @@ export class AccountPool {
     if (email) {
       try {
         return await this.manager.getIc3AccessToken(email);
-      } catch {
+      } catch (err) {
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(email, String((err as any)?.message || err));
+        }
         // Fall through to pool scan if specified account fails
       }
     }
