@@ -99,6 +99,24 @@ describe("buildBoundedRepoMap", () => {
     expect(scopeIdx).toBeGreaterThan(-1);
     expect(scopeIdx).toBeLessThan(otherIdx);
   });
+
+  it("keeps the whole remainder when the URL omits the workspace folder name", () => {
+    const task =
+      "检查 https://tenant.sharepoint.com/sites/test/AFRASIA/WorkSpace/Library/proj 目录";
+    expect(
+      PnPWorkspaceSyncEngine.deriveTaskScopePrefix(task, "AFRASIA/WorkSpace/test_workspace")
+    ).toBe("Library/proj");
+  });
+
+  it("does not treat a prose date as a task scope when a workspace root is provided", () => {
+    expect(
+      PnPWorkspaceSyncEngine.deriveTaskScopePrefix(
+        "发布 2026/10/26 版本",
+        "AFRASIA/WorkSpace/test_workspace",
+        root
+      )
+    ).toBeUndefined();
+  });
 });
 
 describe("PromptBuilder with bounded map + catalog", () => {

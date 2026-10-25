@@ -733,12 +733,13 @@ export class PnPWorkspaceSyncEngine {
       const entry = manifestFiles[rel];
       if (entry) {
         // Always surface the URL for the CURRENT target folder; a stale manifest
-        // URL is a status signal, not something the model should fetch.
+        // URL is a status signal, not something the model should fetch. CLOUD-STALE
+        // therefore gets no URL at all (read it locally instead).
         const underCurrent = Boolean(
           entry.serverRelativeUrl &&
             entry.serverRelativeUrl.replace(/\\/g, "/").startsWith(`${normalizedPrefix}/`)
         );
-        const url = `${remoteRootUrl}/${encodeUrlPathSegments(rel)}`;
+        const url = underCurrent ? `${remoteRootUrl}/${encodeUrlPathSegments(rel)}` : "";
         rows.push({ rel, size, status: underCurrent ? "CLOUD-READY" : "CLOUD-STALE", url });
         if (underCurrent) syncedIndexable++;
         else localOnly++;
@@ -869,7 +870,8 @@ export class PnPWorkspaceSyncEngine {
     const manifestFiles = manifest?.files || {};
     const scopePrefix = PnPWorkspaceSyncEngine.deriveTaskScopePrefix(
       opts.task || "",
-      targetFolder
+      targetFolder,
+      opts.workspaceRoot
     );
 
     const sourceExtensions = new Set([
@@ -954,7 +956,11 @@ export class PnPWorkspaceSyncEngine {
    * Derives a workspace-relative scope prefix from a task containing a
    * SharePoint URL (AllItems?id=...) or an existing workspace path.
    */
-  public static deriveTaskScopePrefix(task: string, targetFolder: string): string | undefined {
+  public static deriveTaskScopePrefix(
+    task: string,
+    targetFolder: string,
+    workspaceRoot?: string
+  ): string | undefined {
     if (!task) return undefined;
     const folderName = targetFolder.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
 
@@ -974,7 +980,9 @@ export class PnPWorkspaceSyncEngine {
           .slice(workSpaceIdx + "/workspace/".length)
           .split("/")
           .filter(Boolean);
-        const rest = folderName && after[0] === folderName ? after.slice(1) : after.slice(1);
+        // The first segment is the cloud folder name when present; otherwise the
+        // whole remainder is already workspace-relative.
+        const rest = folderName && after[0] === folderName ? after.slice(1) : after;
         if (rest.length > 0) return rest.join("/");
       }
       const decodedParts = decodedPath.split("/").filter(Boolean);
@@ -988,8 +996,15 @@ export class PnPWorkspaceSyncEngine {
 
     const pathMatch = task.match(/(?:^|[\s`"'（(])([A-Za-z0-9_.\- ]+\/[A-Za-z0-9_.\-/ ]+)/);
     if (pathMatch) {
-      const candidate = pathMatch[1].trim().replace(/\\/g, "/");
-      return candidate.replace(/^\/+|\/+$/g, "");
+      const candidate = pathMatch[1].trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (workspaceRoot) {
+        try {
+          if (!fs.statSync(path.join(workspaceRoot, candidate)).isDirectory()) return undefined;
+        } catch {
+          return undefined;
+        }
+      }
+      return candidate;
     }
     return undefined;
   }

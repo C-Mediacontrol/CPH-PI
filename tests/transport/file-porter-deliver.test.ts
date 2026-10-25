@@ -172,4 +172,55 @@ describe("FilePorter.deliverToWorkspace", () => {
     expect(res.extractedFromZip).toBe(false);
     expect(fs.existsSync(path.join(root, "test", "p.zip"))).toBe(true);
   });
+
+  test("keeps a zip payload as a file when the destination is not a directory", async () => {
+    const root = tmpWorkspace();
+    const zip = new AdmZip();
+    zip.addFile("a.txt", Buffer.from("x"));
+    const bytes = zip.toBuffer();
+    const porter = new FilePorter({
+      cwd: root,
+      fetchFn: (async () => new Response(bytes, { status: 200 })) as any,
+    });
+    const res = await porter.deliverToWorkspace({
+      downloadUrl: "https://tenant.sharepoint.com/sites/x/bundle.zip",
+      destinationPath: "test/report.md",
+    });
+    expect(res.extractedFromZip).toBe(false);
+    expect(res.landedFiles).toEqual(["test/report.md"]);
+    expect(fs.statSync(path.join(root, "test", "report.md")).isFile()).toBe(true);
+  });
+
+  test("fails explicitly for asyncgw downloads without an IC3 token", async () => {
+    const root = tmpWorkspace();
+    const porter = new FilePorter({
+      cwd: root,
+      ic3TokenProvider: async () => undefined,
+      fetchFn: (async () => textResponse("x")) as any,
+    });
+    await expect(
+      porter.deliverToWorkspace({
+        downloadUrl: "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/original",
+        destinationPath: "test/a.txt",
+      })
+    ).rejects.toThrow(/IC3 token unavailable/i);
+  });
+
+  test("aborts a hanging download after the configured timeout", async () => {
+    const root = tmpWorkspace();
+    const porter = new FilePorter({
+      cwd: root,
+      timeoutMs: 80,
+      fetchFn: ((_url: string, init?: any) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        })) as any,
+    });
+    await expect(
+      porter.deliverToWorkspace({
+        downloadUrl: "https://tenant.sharepoint.com/sites/x/slow.md",
+        destinationPath: "test/slow.md",
+      })
+    ).rejects.toThrow(/Download aborted|timeout/i);
+  });
 });

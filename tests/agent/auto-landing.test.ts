@@ -76,4 +76,52 @@ describe("Orchestrator auto landing", () => {
     expect(report.status).toBe("ok");
     expect(report.landed[0].cloudUrl).toContain("https://sp/test/report.md");
   });
+
+  it("does not hijack a plain write_file when content is present alongside url", async () => {
+    let bridgeCalls = 0;
+    const mockBridge: any = {
+      executeAction: async () => {
+        bridgeCalls++;
+        return {
+          actionName: "write_file",
+          piToolName: "write",
+          target: "test/a.md",
+          success: true,
+          output: "written",
+          formatted: "written",
+        };
+      },
+    };
+    let calls = 0;
+    const mockClient: any = {
+      async sendMessage() {
+        calls++;
+        if (calls === 1) {
+          return {
+            text: [
+              "```action",
+              "tool: write_file",
+              "path: test/a.md",
+              "content: url: https://x.test/inside-content",
+              "url: https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/x/views/original",
+              "```",
+            ].join("\n"),
+          };
+        }
+        return { text: "FINAL_ANSWER: 完成" };
+      },
+    };
+
+    const orchestrator = new Orchestrator({
+      workspaceRoot: tmpDir,
+      chatClient: mockClient,
+      bridge: mockBridge,
+      customAgentId: "T_test_agent",
+    });
+
+    const result = await orchestrator.run({ task: "write a plain file" });
+    expect(result.completed).toBe(true);
+    expect(bridgeCalls).toBe(1);
+    expect(result.finalAnswer).toContain("完成");
+  });
 });

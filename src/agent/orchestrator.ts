@@ -363,11 +363,8 @@ export class Orchestrator {
    */
   public async acquireIc3Token(email?: string): Promise<string | undefined> {
     if (this.pool && typeof (this.pool as any).getIc3AccessToken === "function") {
-      try {
-        return await (this.pool as any).getIc3AccessToken(email);
-      } catch {
-        return undefined;
-      }
+      // Let failures surface: asyncgw downloads must use the generating account.
+      return await (this.pool as any).getIc3AccessToken(email);
     }
     return undefined;
   }
@@ -390,6 +387,14 @@ export class Orchestrator {
   public buildLandingService(accountEmail?: string): LandingService {
     if (this.autoLandingService) return this.autoLandingService;
     const target = this.resolveCloudTarget();
+    const toAbsoluteCloudUrl = (serverRelativeUrl?: string): string | undefined => {
+      if (!serverRelativeUrl) return undefined;
+      try {
+        return new URL(serverRelativeUrl, new URL(target.siteUrl)).toString();
+      } catch {
+        return serverRelativeUrl;
+      }
+    };
     return new LandingService({
       workspaceRoot: this.workspaceRoot,
       filePorter: new FilePorter({
@@ -403,7 +408,10 @@ export class Orchestrator {
           target.targetFolder,
           { siteUrl: target.siteUrl }
         );
-        return { status: result.status, serverRelativeUrl: result.serverRelativeUrl };
+        return {
+          status: result.status,
+          serverRelativeUrl: toAbsoluteCloudUrl(result.serverRelativeUrl),
+        };
       },
     });
   }
@@ -478,6 +486,22 @@ export class Orchestrator {
     return uploadResult;
   }
 
+  /** Race a promise against a hard deadline so a stuck download can never block a turn. */
+  private static async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+          (timer as any)?.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * Persist a physical delivery report for auditability.
    */
@@ -523,14 +547,18 @@ export class Orchestrator {
     try {
       const accountEmail = this.activeAccountEmail;
       const landing = this.buildLandingService(accountEmail);
-      const result = await landing.landDeliverables([
-        {
-          destinationPath: String(targetPath).replace(/\\/g, "/"),
-          fileName: path.basename(String(targetPath)),
-          url: String(url),
-          isZipTarget: String(targetPath).toLowerCase().endsWith(".zip"),
-        },
-      ]);
+      const result = await Orchestrator.withTimeout(
+        landing.landDeliverables([
+          {
+            destinationPath: String(targetPath).replace(/\\/g, "/"),
+            fileName: path.basename(String(targetPath)),
+            url: String(url),
+            isZipTarget: String(targetPath).toLowerCase().endsWith(".zip"),
+          },
+        ]),
+        120_000,
+        "delivery"
+      );
       this.writeDeliveryReport(result, `write_file:${targetPath}`);
       const receipt = LandingService.formatReceipt(result);
       return {
@@ -1131,7 +1159,11 @@ export class Orchestrator {
               const landing = this.buildLandingService(
                 (client as any)?.token?.email || this.activeAccountEmail
               );
-              const result = await landing.landDeliverables(items);
+              const result = await Orchestrator.withTimeout(
+                landing.landDeliverables(items),
+                120_000,
+                "delivery"
+              );
               deliveryReceipt = LandingService.formatReceipt(result);
               this.writeDeliveryReport(result, "final_answer");
             }
@@ -1217,6 +1249,12 @@ export class Orchestrator {
           command: (parsed.action as any).command,
           path: (parsed.action as any).path || (parsed.action as any).filePath,
           question: (parsed.action as any).question,
+          old_string: (parsed.action as any).old_string ?? (parsed.action as any).search,
+          new_string: (parsed.action as any).new_string ?? (parsed.action as any).replace,
+          content: (parsed.action as any).content,
+          start_line: (parsed.action as any).start_line,
+          end_line: (parsed.action as any).end_line,
+          limit: (parsed.action as any).limit,
         });
         const isKnownRepeat =
           parsed.action.tool !== "invoke_subagent" &&
@@ -1325,6 +1363,25 @@ export class Orchestrator {
               } catch {}
             }
 
+            this.activeAccountEmail =
+              (client as any)?.token?.email || this.activeAccountEmail || "";
+            if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+              try {
+                const successorCatalog = await this.ensureWorkspaceCatalogAttachment(
+                  this.activeAccountEmail
+                );
+                if (successorCatalog?.annotation) {
+                  currentAnnotations = currentAnnotations.filter(
+                    (annotation) =>
+                      (annotation as any).messageAnnotationMetadata?.fileName !==
+                      "remote-workspace-catalog.md"
+                  );
+                  currentAnnotations.push(successorCatalog.annotation);
+                  events?.onAttachmentUploaded?.(successorCatalog, "workspace_catalog");
+                }
+              } catch {}
+            }
+
             const workerCount = this.getConcurrencyWorkerCount();
             const dirTree = this.collectDirTreePreview();
             this.pendingTask = snapshot.originalTask || this.pendingTask || task;
@@ -1336,6 +1393,7 @@ export class Orchestrator {
         } else if (
           this.enableAutoLanding &&
           ["write", "write_file"].includes(parsed.action.tool) &&
+          !(parsed.action as any).content &&
           Boolean((parsed.action as any).url || (parsed.action as any).downloadUrl)
         ) {
           toolResult = await this.deliverWriteFileFromUrl(parsed.action);

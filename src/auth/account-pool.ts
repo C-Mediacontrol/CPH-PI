@@ -895,7 +895,9 @@ export class AccountPool {
         if (this.isFatalAuthGrantError(err)) {
           this.markAuthExpired(email, String((err as any)?.message || err));
         }
-        // Fall through to a healthy account scan when the preferred account fails.
+        // Spec 4.3: generated-file downloads must use the generating account.
+        // Surface the failure instead of silently borrowing another account's token.
+        throw err;
       }
     }
 

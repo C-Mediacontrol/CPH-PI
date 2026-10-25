@@ -24,7 +24,18 @@ const SECTION_RE =
   /【交付文件与落盘指引\s*\/\s*Deliverables】|^#{1,3}\s*Deliverables\b/im;
 
 const LINE_RE =
-  /^\s*[-*]\s*`([^`]+)`\s*(?:<-|->|←|→|<=|=>|=>|:)\s*\[([^\]]*)\]\(([^)\s]+)\)\s*$/;
+  /^\s*[-*]\s*`([^`]+)`\s*(?:<-|->|←|→|<=|=>|:)\s*\[([^\]]*)\]\(([^)\s]+)\)\s*.*$/;
+
+/** Returns the deliverables section body (up to the next markdown heading). */
+function extractSection(raw: string): string | null {
+  SECTION_RE.lastIndex = 0;
+  const match = SECTION_RE.exec(raw);
+  if (!match) return null;
+  const start = match.index + match[0].length;
+  const rest = raw.slice(start);
+  const headingMatch = rest.match(/\r?\n\s{0,3}#{1,6}\s/);
+  return headingMatch ? rest.slice(0, headingMatch.index) : rest;
+}
 
 /**
  * Parses the structured deliverables section that must appear at the very top
@@ -32,12 +43,13 @@ const LINE_RE =
  */
 export class DeliverablesParser {
   public static parse(raw: string): DeliverableItem[] {
-    if (!raw || !SECTION_RE.test(raw)) return [];
+    const section = raw ? extractSection(raw) : null;
+    if (!section) return [];
 
     const items: DeliverableItem[] = [];
     const seen = new Set<string>();
 
-    for (const line of raw.split(/\r?\n/)) {
+    for (const line of section.split(/\r?\n/)) {
       const match = line.match(LINE_RE);
       if (!match) continue;
 

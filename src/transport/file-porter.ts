@@ -30,6 +30,8 @@ export interface DeliverToWorkspaceParams {
   fileName?: string;
   /** Replace an existing target file. Defaults to false so user files stay intact. */
   overwrite?: boolean;
+  /** Optional outer cancellation signal (e.g. session abort). */
+  signal?: AbortSignal;
 }
 
 export interface DeliverToWorkspaceResult {
@@ -146,7 +148,8 @@ export class FilePorter {
    * Downloads binary content with SSRF check, IC3/Graph authentication, and 100MB limit.
    */
   private async downloadBinary(
-    rawUrl: string
+    rawUrl: string,
+    outerSignal?: AbortSignal
   ): Promise<{ buffer: Buffer; fileNameFromUrl?: string }> {
     FilePorter.assertAllowedDownloadUrl(rawUrl);
     const norm = FilePorter.normalizeAsyncGwUrl(rawUrl);
@@ -157,36 +160,59 @@ export class FilePorter {
       host === "asyncgw.teams.microsoft.com" ||
       host.endsWith(".asyncgw.teams.microsoft.com");
 
-    const headers: Record<string, string> = {};
-    if (isAsyncGw && this.ic3TokenProvider) {
-      const token = await this.ic3TokenProvider();
-      if (token) {
+    const controller = new AbortController();
+    const onOuterAbort = () => controller.abort(outerSignal?.reason);
+    if (outerSignal) {
+      if (outerSignal.aborted) controller.abort(outerSignal.reason);
+      else outerSignal.addEventListener("abort", onOuterAbort, { once: true });
+    }
+    const timeoutHandle = setTimeout(
+      () => controller.abort(new Error(`download timeout after ${this.timeoutMs}ms`)),
+      Math.max(1, this.timeoutMs)
+    );
+    (timeoutHandle as any)?.unref?.();
+
+    try {
+      const headers: Record<string, string> = {};
+      if (isAsyncGw) {
+        const token = this.ic3TokenProvider ? await this.ic3TokenProvider() : undefined;
+        if (!token) {
+          // Spec 4.3: an asyncgw download must use the generating account; fail explicitly.
+          throw new Error(
+            "IC3 token unavailable for asyncgw download; refusing to retry with another account"
+          );
+        }
         headers["Authorization"] = `Bearer ${token}`;
       }
-    }
 
-    const fetcher = this.fetchFn || fetch;
-    let res = await fetcher(norm.fetchUrl, { headers });
-
-    if (
-      (res.status === 401 || res.status === 403) &&
-      isAsyncGw &&
-      this.graphTokenProvider
-    ) {
-      const graphToken = await this.graphTokenProvider();
-      if (graphToken) {
-        const retryHeaders = { ...headers, Authorization: `Bearer ${graphToken}` };
-        res = await fetcher(norm.fetchUrl, { headers: retryHeaders });
+      const fetcher = this.fetchFn || fetch;
+      let res: Response;
+      try {
+        res = await fetcher(norm.fetchUrl, { headers, signal: controller.signal });
+      } catch (err: any) {
+        if (controller.signal.aborted) {
+          throw new Error(
+            `Download aborted: ${String(controller.signal.reason?.message || controller.signal.reason || "timeout")}`
+          );
+        }
+        throw err;
       }
-    }
 
-    if (!res.ok) {
-      throw new Error(
-        `Failed to download binary from ${norm.fetchUrl} (${res.status} ${res.statusText})`
-      );
-    }
+      if ((res.status === 401 || res.status === 403) && isAsyncGw && this.graphTokenProvider) {
+        const graphToken = await this.graphTokenProvider();
+        if (graphToken) {
+          const retryHeaders = { ...headers, Authorization: `Bearer ${graphToken}` };
+          res = await fetcher(norm.fetchUrl, { headers: retryHeaders, signal: controller.signal });
+        }
+      }
 
-    const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
+      if (!res.ok) {
+        throw new Error(
+          `Failed to download binary from ${norm.fetchUrl} (${res.status} ${res.statusText})`
+        );
+      }
+
+      const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
     const clHeader = res.headers.get("content-length");
     if (clHeader) {
       const cl = parseInt(clHeader, 10);
@@ -206,6 +232,10 @@ export class FilePorter {
       buffer: Buffer.from(arrayBuffer),
       fileNameFromUrl: norm.fileNameFromUrl,
     };
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (outerSignal) outerSignal.removeEventListener("abort", onOuterAbort);
+    }
   }
 
   /**
@@ -264,7 +294,7 @@ export class FilePorter {
     FilePorter.assertSafeLandingPath(this.cwd, resolvedDest);
     const overwrite = params.overwrite === true;
 
-    const { buffer, fileNameFromUrl } = await this.downloadBinary(params.downloadUrl);
+    const { buffer, fileNameFromUrl } = await this.downloadBinary(params.downloadUrl, params.signal);
 
     const isZipPayload = Boolean(
       params.isZip ||
@@ -272,7 +302,7 @@ export class FilePorter {
         isExplicitZipFile
     );
 
-    if (isZipPayload && !isExplicitZipFile) {
+    if (isZipPayload && isDirTarget && !isExplicitZipFile) {
       const targetDir = resolvedDest;
       const zip = new AdmZip(buffer);
       const entries = zip.getEntries();

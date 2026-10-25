@@ -65,4 +65,26 @@ describe("DeliverablesParser", () => {
       DeliverablesParser.parse(section("- `test/a.md` <- [a](file:///tmp/a.md)"))
     ).toHaveLength(0);
   });
+
+  test("only scans inside the deliverables section, not the report body", () => {
+    const raw = [
+      "FINAL_ANSWER: 完成",
+      "",
+      "【交付文件与落盘指引 / Deliverables】",
+      "- `test/a.md` <- [a](https://x.test/a.md)",
+      "",
+      "# 报告正文",
+      "- `test/body.md` <- [body](https://x.test/body.md)",
+    ].join("\n");
+    const items = DeliverablesParser.parse(raw);
+    expect(items).toHaveLength(1);
+    expect(items[0].destinationPath).toBe("test/a.md");
+  });
+
+  test("accepts a trailing annotation after the link", () => {
+    const items = DeliverablesParser.parse(
+      section("- `test/a.md` <- [a](https://x.test/a.md) （点击下载）")
+    );
+    expect(items).toHaveLength(1);
+  });
 });

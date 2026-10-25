@@ -61,4 +61,45 @@ describe("No-progress guard", () => {
     expect(prompts.length).toBe(4);
     expect(prompts[2]).toContain("该动作已连续失败");
   });
+
+  it("does not skip a corrected retry whose edit anchors changed", async () => {
+    const actions = [
+      '```action\ntool: edit\npath: src/a.ts\nold_string: broken-A\nnew_string: fixed-A\n```',
+      '```action\ntool: edit\npath: src/a.ts\nold_string: broken-B\nnew_string: fixed-B\n```',
+      '```action\ntool: edit\npath: src/a.ts\nold_string: broken-C\nnew_string: fixed-C\n```',
+    ];
+    let call = 0;
+    const mockClient: any = {
+      async sendMessage() {
+        call++;
+        return { text: call <= 3 ? actions[call - 1] : "FINAL_ANSWER: 完成" };
+      },
+    };
+    let bridgeCalls = 0;
+    const bridge: any = {
+      executeAction: async () => {
+        bridgeCalls++;
+        return {
+          actionName: "edit",
+          piToolName: "edit",
+          target: "src/a.ts",
+          success: false,
+          output: "anchor not found",
+          formatted: "anchor not found",
+        };
+      },
+    };
+
+    const orchestrator = new Orchestrator({
+      workspaceRoot: tmpDir,
+      chatClient: mockClient,
+      bridge,
+      customAgentId: "T_test_agent",
+    });
+
+    const result = await orchestrator.run({ task: "fix file" });
+    expect(result.completed).toBe(true);
+    // Different anchors mean different fingerprints: all three retries execute.
+    expect(bridgeCalls).toBe(3);
+  });
 });

@@ -81,5 +81,11 @@ describe("generateCatalogMarkdown", () => {
     const { markdown } = PnPWorkspaceSyncEngine.generateCatalogMarkdown(root);
     // README is stale in the manifest; its shown URL must still be the current target folder.
     expect(markdown).not.toContain("/WorkSpace/test/README.md");
+    // CLOUD-STALE rows carry no fetchable URL (read locally instead).
+    const staleLine = markdown
+      .split("\n")
+      .find((line) => line.includes("`README.md`") && line.includes("[CLOUD-STALE]"));
+    expect(staleLine).toBeDefined();
+    expect(staleLine).not.toContain("http");
   });
 });

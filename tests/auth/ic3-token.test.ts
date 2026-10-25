@@ -61,4 +61,25 @@ describe("IC3 token acquisition", () => {
     const pool = new AccountPool(manager, { maxAccounts: 1, defaultCooldownMs: 60_000 });
     expect(await pool.getIc3AccessToken("alpha@contoso.com")).toBe("pool_ic3");
   });
+
+  it("does not silently borrow another account's IC3 token", async () => {
+    const failingManager = new TokenManager(configPath, {
+      tokenEndpoint: "https://login.example.test/token",
+      fetchFn: (async () => new Response("nope", { status: 400 })) as any,
+    });
+    failingManager.saveAccounts([
+      { email: "alpha@contoso.com", refreshToken: "rt_alpha" },
+      { email: "beta@contoso.com", refreshToken: "rt_beta" },
+    ]);
+    failingManager.setCachedIc3Token("beta@contoso.com", "beta_token", Date.now() + 600_000);
+
+    const pool = new AccountPool(failingManager, {
+      maxAccounts: 2,
+      defaultCooldownMs: 60_000,
+    });
+
+    await expect(pool.getIc3AccessToken("alpha@contoso.com")).rejects.toThrow(
+      /IC3 token refresh failed|failed/i
+    );
+  });
 });
