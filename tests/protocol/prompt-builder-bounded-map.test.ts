@@ -173,4 +173,44 @@ describe("PromptBuilder with bounded map + catalog", () => {
     });
     expect(prompt).toContain("legacy-index.ts");
   });
+
+  it("injects grounding into handshake and Turn 2 prompts (the two real task-entry turns)", () => {
+    fs.writeFileSync(path.join(root, "Library", "proj", "b.ps1"), "Write-Output 2\n");
+    writeManifest(root, { "Library/proj/a.ps1": "x", "Library/proj/b.ps1": "x" });
+
+    const handshake = PromptBuilder.buildHandshakePrompt(
+      root,
+      "clean",
+      "",
+      "review Library/proj",
+      true
+    );
+    expect(handshake).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(handshake).toContain("Library/proj/a.ps1");
+    expect(handshake).toContain("remote-workspace-catalog.md");
+
+    const turn2 = PromptBuilder.buildTurn2TaskPrompt({
+      task: "review Library/proj",
+      toolResult: "git status ok",
+      workspaceRoot: root,
+      catalogAttached: true,
+    });
+    expect(turn2).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(turn2).toContain("Library/proj/a.ps1");
+    expect(turn2).toContain("remote-workspace-catalog.md");
+    expect(turn2).toContain("[TOOL_RESULT - SUCCESS]");
+
+    const turn2Attached = PromptBuilder.buildTurn2TaskPromptWithAttachment(
+      "review Library/proj",
+      "",
+      "run_command",
+      "probe.txt",
+      { lineCount: 1, charCount: 1 },
+      "probe",
+      1,
+      { workspaceRoot: root, task: "review Library/proj", catalogAttached: true }
+    );
+    expect(turn2Attached).toContain("[SHAREPOINT REMOTE WORKSPACE]");
+    expect(turn2Attached).toContain("Library/proj/a.ps1");
+  });
 });

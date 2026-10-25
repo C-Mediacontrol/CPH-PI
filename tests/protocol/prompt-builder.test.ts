@@ -264,11 +264,11 @@ describe("PromptBuilder Unit Tests", () => {
         expect(prompt1).toContain("【工作区受控目录骨架 (2-Level Skeleton)】");
         expect(prompt1).toContain("[SHAREPOINT REMOTE WORKSPACE]");
         expect(prompt1).toContain("src/app.ts");
-        const skeletonIdx = prompt1.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
         const mapIdx = prompt1.indexOf("[SHAREPOINT REMOTE WORKSPACE]");
+        const skeletonIdx = prompt1.indexOf("【工作区受控目录骨架 (2-Level Skeleton)】");
         const taskIdx = prompt1.indexOf("【用户正式需求】");
-        expect(skeletonIdx).toBeLessThan(mapIdx);
-        expect(mapIdx).toBeLessThan(taskIdx);
+        expect(mapIdx).toBeLessThan(skeletonIdx);
+        expect(skeletonIdx).toBeLessThan(taskIdx);
 
         const customMap = "[SHAREPOINT REMOTE WORKSPACE]\n- custom.ts";
         const prompt2 = PromptBuilder.buildDirectAgentPrompt(

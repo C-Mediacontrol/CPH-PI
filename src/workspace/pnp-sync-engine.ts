@@ -1028,7 +1028,7 @@ export class PnPWorkspaceSyncEngine {
       // Non-git workspaces fall back to the recursive walk below.
     }
 
-    const ignoredDirs = new Set([".git", ".cph", "node_modules", "dist", "package"]);
+    const ignoredDirs = new Set([".git", ".cph", ".skills", "node_modules", "dist", "package"]);
     const walk = (dir: string, relPrefix: string): void => {
       let entries: fs.Dirent[] = [];
       try {
@@ -1059,7 +1059,7 @@ export class PnPWorkspaceSyncEngine {
 
     return [...files]
       .filter((rel) => {
-        if (/(^|\/)(\.git|\.cph|node_modules|dist|package)(\/|$)/.test(rel)) return false;
+        if (/(^|\/)(\.git|\.cph|\.skills|node_modules|dist|package)(\/|$)/.test(rel)) return false;
         try {
           return fs.statSync(path.join(workspaceRoot, rel)).isFile();
         } catch {

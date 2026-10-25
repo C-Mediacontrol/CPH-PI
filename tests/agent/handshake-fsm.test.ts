@@ -99,7 +99,7 @@ command: git status
     // 3. Must contain Handshake Grounding headers and git status command instruction
     expect(turn1Prompt).toContain("【第一轮基准探测握手 (Turn 1 Grounding Handshake)】");
     expect(turn1Prompt).toContain("command: git status");
-    expect(turn1Prompt).toContain("【本地宿主机工作区事实】");
+    expect(turn1Prompt).toContain("【本地宿主机与工作区事实");
   });
 
   // =========================================================================
@@ -303,4 +303,5 @@ command: git status
     expect(client.sentPrompts[2]).toContain("验证状态机拦截防护");
   });
 });
+
 

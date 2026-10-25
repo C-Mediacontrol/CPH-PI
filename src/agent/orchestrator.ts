@@ -96,6 +96,7 @@ export interface OrchestratorOptions {
   enableWorkspaceCatalog?: boolean;
   enableAutoLanding?: boolean;
   enableBoundedRepoMap?: boolean;
+  debug?: boolean;
   /** Injectable landing service for tests / custom deployments. */
   autoLandingService?: LandingService;
 }
@@ -129,6 +130,8 @@ export interface OrchestratorEvents {
 export interface OrchestratorRunOptions {
   task: string;
   signal?: AbortSignal;
+  /** Cloud-first sessions skip the tool-grounding handshake and send the real task + workspace map on Turn 1. */
+  skipHandshake?: boolean;
   events?: OrchestratorEvents;
   activeSkills?: Skill[] | string;
   sessionId?: string;
@@ -219,6 +222,7 @@ export class Orchestrator {
   public enableWorkspaceCatalog: boolean;
   public enableAutoLanding: boolean;
   public enableBoundedRepoMap: boolean;
+  public debug: boolean;
   private autoLandingService?: LandingService;
   public lastNextSnapshotMeta?: SnapshotResult;
   private lastModifiedFile?: string;
@@ -266,6 +270,7 @@ export class Orchestrator {
     this.enableWorkspaceCatalog = options.enableWorkspaceCatalog ?? true;
     this.enableAutoLanding = options.enableAutoLanding ?? true;
     this.enableBoundedRepoMap = options.enableBoundedRepoMap ?? true;
+    this.debug = options.debug ?? false;
     this.autoLandingService = options.autoLandingService;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
@@ -502,6 +507,11 @@ export class Orchestrator {
     }
   }
 
+  /** Identifies the workspace catalog annotation so it can persist across turns. */
+  private isCatalogAnnotation(annotation: any): boolean {
+    return annotation?.messageAnnotationMetadata?.fileName === "remote-workspace-catalog.md";
+  }
+
   /**
    * Persist a physical delivery report for auditability.
    */
@@ -677,6 +687,12 @@ export class Orchestrator {
       const { task, signal, events } = options;
     const rootUserPrompt = options.rootUserPrompt || options.task;
 
+    if (options.skipHandshake) {
+      // Cloud-verified sessions go straight to the real task with the workspace map;
+      // the handshake probe adds a round trip without adding cloud grounding.
+      this.isHandshakePending = false;
+    }
+
     if (signal?.aborted) {
       const abortError = new Error("The operation was aborted");
       abortError.name = "AbortError";
@@ -768,7 +784,10 @@ export class Orchestrator {
       currentPrompt = PromptBuilder.buildHandshakePrompt(
         this.workspaceRoot,
         gitFacts,
-        dirTree
+        dirTree,
+        this.pendingTask,
+        isWorkspaceCatalogEnabled,
+        this.enableBoundedRepoMap
       );
     } else {
       // Follow-up task in active session: advance directly without repeating handshake
@@ -942,15 +961,22 @@ export class Orchestrator {
         );
       }
 
+      if (isWorkspaceCatalogEnabled && this.workspaceRoot && !currentAnnotations.some((a) => this.isCatalogAnnotation(a))) {
+        try {
+          const refreshed = await this.ensureWorkspaceCatalogAttachment(this.activeAccountEmail);
+          if (refreshed?.annotation) currentAnnotations.push(refreshed.annotation);
+        } catch {}
+      }
+
       events?.onTurnStart?.(turn);
-      if (process.env.CPH_DEBUG === "1" || (this as any).debug) {
+      if (this.debug || process.env.CPH_DEBUG === "1") {
         const promptHash = crypto.createHash("sha256").update(currentPrompt).digest("hex").slice(0, 12);
         const attachmentNames = currentAnnotations
           .map((annotation: any) => annotation?.messageAnnotationMetadata?.fileName || annotation?.text || "")
           .filter(Boolean)
           .join(",");
-        console.debug(
-          `[CPH-FINGERPRINT] turn=${turn} agentId=${this.customAgentId || "web"} promptHash=${promptHash} attachments=[${attachmentNames}]`
+        console.log(
+          `[CPH-FINGERPRINT] turn=${turn} agentId=${this.customAgentId || "web"} promptChars=${currentPrompt.length} promptHash=${promptHash} attachments=[${attachmentNames}]`
         );
       }
       const turnIndex = turn;
@@ -1014,7 +1040,11 @@ export class Orchestrator {
         );
 
         turnResponseText = res.text;
-        currentAnnotations = [];
+        // Keep the workspace catalog attachment alive across turns; tool-result /
+        // snapshot annotations are single-use and cleared as before.
+        currentAnnotations = currentAnnotations.filter(
+          (annotation) => this.isCatalogAnnotation(annotation)
+        );
       } catch (err: any) {
         if (signal?.aborted || err?.name === "AbortError" || err?.message?.includes("aborted")) {
           const abortError = new Error("The operation was aborted");
@@ -1617,7 +1647,13 @@ export class Orchestrator {
               uploadedAttachment.fileName,
               { lineCount, charCount },
               excerpt,
-              workerCount
+              workerCount,
+              {
+                workspaceRoot: this.workspaceRoot,
+                task: this.pendingTask,
+                catalogAttached: isWorkspaceCatalogEnabled,
+                boundedRepoMap: this.enableBoundedRepoMap,
+              }
             );
           } else {
             const workerCount = this.getConcurrencyWorkerCount();
@@ -1627,6 +1663,9 @@ export class Orchestrator {
               skillsSection: this.pendingSkills,
               toolName: parsed.action.tool || toolResult.actionName,
               concurrencyWorkers: workerCount,
+              workspaceRoot: this.workspaceRoot,
+              catalogAttached: isWorkspaceCatalogEnabled,
+              boundedRepoMap: this.enableBoundedRepoMap,
             });
           }
         } else {

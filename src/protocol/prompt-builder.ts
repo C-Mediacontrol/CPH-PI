@@ -28,9 +28,46 @@ export interface Turn2TaskPromptOptions {
   skillsSection?: string;
   toolName?: string;
   concurrencyWorkers?: number;
+  workspaceRoot?: string;
+  catalogAttached?: boolean;
+  boundedRepoMap?: boolean;
+}
+
+export interface GroundingBlockOptions {
+  workspaceRoot: string;
+  task?: string;
+  catalogAttached?: boolean;
+  boundedRepoMap?: boolean;
 }
 
 export class PromptBuilder {
+  /**
+   * Shared workspace grounding block: filesystem + cloud index, used by every
+   * turn that introduces a task (Turn 1, handshake, and Turn 2 after handshake).
+   */
+  public static buildWorkspaceGroundingBlock(options: GroundingBlockOptions): string {
+    const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
+    const catalogLine = options.catalogAttached
+      ? "完整清单见随本轮消息挂载的云端附件 remote-workspace-catalog.md（会话附件，直接基于其内容推理，无需 read_file）；下方为任务范围内精简索引"
+      : "见下方精简索引（未列出的文件按需 read_file 读取）";
+    const repoMap =
+      options.boundedRepoMap === false
+        ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || ""
+        : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+            workspaceRoot: options.workspaceRoot,
+            task: options.task,
+          });
+
+    return [
+      "【本地宿主机与工作区事实 (Grounding Facts)】",
+      `- 工作区绝对路径: ${wsNorm}`,
+      `- 工作区目录与云端文件索引: ${catalogLine}`,
+      repoMap ? `\n${repoMap.trim()}\n` : "",
+    ]
+      .join("\n")
+      .trimEnd();
+  }
+
   public static readonly PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
    - 读取文件: tool: read_file \\n path: <path>
@@ -48,29 +85,21 @@ export class PromptBuilder {
    * Git repository state, directory tree preview, and available Pi native tools.
    */
   public static buildTurn1Prompt(options: Turn1PromptOptions): string {
-    const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
     const treePreview = options.dirTree ? `\n【核心目录结构预览】\n${options.dirTree}\n` : "";
-    const repoMap =
-      options.boundedRepoMap === false
-        ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || ""
-        : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
-            workspaceRoot: options.workspaceRoot,
-            task: options.task,
-          });
-    const repoMapSection = repoMap ? `\n${repoMap}\n` : "";
-    const catalogLine = options.catalogAttached
-      ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引"
-      : "见下方精简索引（未列出的文件按需 read_file 读取）";
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot: options.workspaceRoot,
+      task: options.task,
+      catalogAttached: options.catalogAttached,
+      boundedRepoMap: options.boundedRepoMap,
+    });
 
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
-【本地宿主机与工作区事实 (Grounding Facts)】
-- 工作区绝对路径: ${wsNorm}
-- 工作区目录与云端文件索引: ${catalogLine}
+${grounding}
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}${repoMapSection}
+${treePreview}
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -126,14 +155,19 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
     catalogAttached = false,
     boundedRepoMap = true
   ): string {
-    const wsNorm = workspaceRoot.replace(/\\/g, "/");
-    const catalogLine = catalogAttached
-      ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引"
-      : "见下方精简索引（未列出的文件按需 read_file 读取）";
+    const explicitRepoMap =
+      virtualRepoMap && virtualRepoMap.trim() !== "" ? virtualRepoMap.trim() : undefined;
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot,
+      task,
+      catalogAttached,
+      boundedRepoMap,
+    });
 
-    let prompt = `【本地宿主机工作区事实】
-- 工作区绝对路径: ${wsNorm}
-- 工作区目录与云端文件索引: ${catalogLine}`;
+    let prompt = grounding;
+    if (explicitRepoMap) {
+      prompt += `\n\n${explicitRepoMap}`;
+    }
 
     if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
       prompt += `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
@@ -141,15 +175,6 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
 
     if (dirSkeleton && dirSkeleton.trim() !== "") {
       prompt += `\n\n【工作区受控目录骨架 (2-Level Skeleton)】\n${dirSkeleton.trim()}`;
-    }
-
-    const effectiveRepoMap =
-      virtualRepoMap ??
-      (boundedRepoMap
-        ? PnPWorkspaceSyncEngine.buildBoundedRepoMap({ workspaceRoot, task })
-        : PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot) || "");
-    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
-      prompt += `\n\n${effectiveRepoMap.trim()}`;
     }
 
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
@@ -168,15 +193,22 @@ ${options.skillsSection ? `【当前已激活的专业技能 (Skill)】\n${optio
   public static buildHandshakePrompt(
     workspaceRoot: string,
     gitFacts: string,
-    dirTree?: string
+    dirTree?: string,
+    task?: string,
+    catalogAttached?: boolean,
+    boundedRepoMap?: boolean
   ): string {
-    const wsNorm = workspaceRoot.replace(/\\/g, "/");
     const treePreview = dirTree ? `\n【当前工作区精简目录树】\n${dirTree}\n` : "";
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot,
+      task,
+      catalogAttached,
+      boundedRepoMap,
+    });
 
     return `你是一个运行在本地宿主机的 CPH-PI 自主编程智能体。你的工具链路已直接接入物理操作系统。
 
-【本地宿主机工作区事实】
-- 工作区绝对路径: ${wsNorm}
+${grounding}
 - Git 仓库客观状态:
 ${gitFacts}
 ${treePreview}
@@ -207,6 +239,9 @@ command: git status
     let finalSkillsSection = "";
     let finalToolName: string | undefined;
     let finalConcurrencyWorkers: number | undefined;
+    let finalWorkspaceRoot: string | undefined;
+    let finalCatalogAttached: boolean | undefined;
+    let finalBoundedRepoMap: boolean | undefined;
 
     if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
       finalTask = optionsOrTask.task;
@@ -214,6 +249,9 @@ command: git status
       finalSkillsSection = optionsOrTask.skillsSection || "";
       finalToolName = optionsOrTask.toolName;
       finalConcurrencyWorkers = optionsOrTask.concurrencyWorkers;
+      finalWorkspaceRoot = optionsOrTask.workspaceRoot;
+      finalCatalogAttached = optionsOrTask.catalogAttached;
+      finalBoundedRepoMap = optionsOrTask.boundedRepoMap;
     } else {
       finalTask = optionsOrTask;
       finalToolResult = toolResult ?? "";
@@ -231,7 +269,16 @@ command: git status
         ? `\n- 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
         : "";
 
-    return `${toolHeader}
+    const groundingBlock = finalWorkspaceRoot
+      ? `${PromptBuilder.buildWorkspaceGroundingBlock({
+          workspaceRoot: finalWorkspaceRoot,
+          task: finalTask,
+          catalogAttached: finalCatalogAttached,
+          boundedRepoMap: finalBoundedRepoMap,
+        })}\n\n`
+      : "";
+
+    return `${groundingBlock}${toolHeader}
 ${finalToolResult}
 
 【环境握手完成：本地工具与工作区已就绪】${clusterFact}
@@ -342,8 +389,12 @@ ${this.PROTOCOL_REMINDER}`;
     fileName: string,
     summary: { lineCount: number; charCount: number },
     excerpt?: string,
-    concurrencyWorkers?: number
+    concurrencyWorkers?: number,
+    grounding?: GroundingBlockOptions
   ): string {
+    const groundingBlock = grounding
+      ? `${PromptBuilder.buildWorkspaceGroundingBlock(grounding)}\n\n`
+      : "";
     const fingerprintBlock = excerpt
       ? `\n\n【物理执行指纹摘要 (Head-Tail Fingerprint)】:\n${excerpt}`
       : "";
@@ -353,7 +404,7 @@ ${this.PROTOCOL_REMINDER}`;
         ? `\n- 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`
         : "";
 
-    return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
+    return `${groundingBlock}[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
 【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 

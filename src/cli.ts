@@ -261,6 +261,7 @@ export class CphPiCli {
 
     this.debug = options.debug ?? config.debug ?? false;
     this.debugLogPath = options.debugLogPath ?? config.debugLogPath;
+    if (this.debug) process.env.CPH_DEBUG = "1";
     if (this.debug) {
       TerminalLogger.getInstance().start({
         logFilePath: this.debugLogPath,

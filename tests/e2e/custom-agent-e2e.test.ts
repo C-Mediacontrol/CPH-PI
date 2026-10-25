@@ -153,7 +153,7 @@ describe("E2E Custom Agent Full Lifecycle & Direct Execution", () => {
       // 必须包含用户真实业务需求
       expect(turn1Prompt).toContain(businessTask);
       expect(turn1Prompt).toContain("【用户正式需求】");
-      expect(turn1Prompt).toContain("【本地宿主机工作区事实】");
+      expect(turn1Prompt).toContain("【本地宿主机与工作区事实");
 
       // 绝不包含通用模式的握手探测与冗余契约
       expect(turn1Prompt).not.toContain("【第一轮基准探测握手");
@@ -293,3 +293,4 @@ describe("E2E Custom Agent Full Lifecycle & Direct Execution", () => {
     });
   });
 });
+

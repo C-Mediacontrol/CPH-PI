@@ -1268,6 +1268,7 @@ export class RpcHandler {
             activeSkills: skillsToUse,
             initialAnnotations: currentInitialAnnotations,
             rootUserPrompt: rootTaskPrompt,
+            skipHandshake: Boolean(this.cloudWorkspace?.verified),
             events: {
               onDelta: (chunk: string) => {
                 if (this.isInterrupted) return;
