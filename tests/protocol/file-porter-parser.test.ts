@@ -22,7 +22,7 @@ describe("ResilientParser - File Porter & Native File Generation", () => {
       expect(parsed.action.downloadUrl).toBe(
         "blob:https://m365.cloud.microsoft/58146e9c-4414-461b-85fb-fa56ebb140a2"
       );
-      expect(parsed.action.autoExecute).toBe(true);
+      expect(parsed.action.autoExecute).toBe(false);
     }
   });
 
@@ -41,7 +41,7 @@ describe("ResilientParser - File Porter & Native File Generation", () => {
       expect(parsed.action.tool).toBe("file_porter");
       expect(parsed.action.fileName).toBe("inspect_env.py");
       expect(parsed.action.downloadUrl).toBe("blob:https://m365.cloud.microsoft/abc-123-xyz");
-      expect(parsed.action.autoExecute).toBe(true);
+      expect(parsed.action.autoExecute).toBe(false);
     }
   });
 

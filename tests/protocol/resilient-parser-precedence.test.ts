@@ -46,4 +46,28 @@ path: src/index.ts
     const parsed = ResilientParser.parse(response);
     expect(parsed.type).toBe("invalid_chatter");
   });
+
+  test("HTML anchor with download attribute parses with autoExecute false even for .py files", () => {
+    const response = `<a href="blob:https://m365.cloud.microsoft/123" download="script.py">下载 script.py</a>`;
+    const parsed = ResilientParser.parse(response);
+    expect(parsed.type).toBe("action");
+    if (parsed.type === "action") {
+      expect(parsed.action.tool).toBe("file_porter");
+      expect(parsed.action.fileName).toBe("script.py");
+      expect(parsed.action.autoExecute).toBe(false);
+    }
+  });
+
+  test("unfenced FINAL_ANSWER preserves code block backticks at the end of summary", () => {
+    const response = `FINAL_ANSWER:
+这里是最终交付的代码：
+\`\`\`ts
+export const pi = 3.14;
+\`\`\``;
+    const parsed = ResilientParser.parse(response);
+    expect(parsed.type).toBe("final_answer");
+    if (parsed.type === "final_answer") {
+      expect(parsed.answer.summary.endsWith("```")).toBe(true);
+    }
+  });
 });

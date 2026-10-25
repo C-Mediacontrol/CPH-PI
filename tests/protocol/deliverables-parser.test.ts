@@ -49,9 +49,11 @@ describe("DeliverablesParser", () => {
 - \`../outside/evil.sh\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/1/views/original/evil.sh
 - \`C:/Windows/System32/cmd.exe\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/2/views/original/cmd.exe
 - \`valid/report.md\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/3/views/original/report.md
+- \`./stripped/relative.md\` <- https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/4/views/original/relative.md
 `;
     const items = DeliverablesParser.extractDeliverables(text, "E:/test");
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
     expect(items[0].targetPath).toBe("valid/report.md");
+    expect(items[1].targetPath).toBe("stripped/relative.md");
   });
 });

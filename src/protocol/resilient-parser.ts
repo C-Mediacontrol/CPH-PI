@@ -70,7 +70,8 @@ export class ResilientParser {
     );
     if (finalAnswerMatch) {
       const rawSummary = finalAnswerMatch[1].trim();
-      const summary = rawSummary.replace(/```$/, "").trim();
+      const isFencedFinal = finalAnswerMatch[0].trimStart().startsWith("```");
+      const summary = (isFencedFinal ? rawSummary.replace(/```\s*$/, "") : rawSummary).trim();
       const markerIndex = finalAnswerMatch.index ?? -1;
       const parsedThought =
         markerIndex > 0
@@ -175,7 +176,6 @@ export class ResilientParser {
     }
 
     if (detectedFileName && detectedUrl) {
-      const isExecutable = /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(detectedFileName);
       const thought = trimmed
         .split(/<a|\[(?:下载\s*)?[a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+\]/i)[0]
         .replace(/^THOUGHT:\s*/i, "")
@@ -188,7 +188,7 @@ export class ResilientParser {
           tool: "file_porter",
           fileName: detectedFileName,
           downloadUrl: detectedUrl,
-          autoExecute: isExecutable || false,
+          autoExecute: false,
           raw: trimmed,
         },
       };

@@ -47,7 +47,7 @@ export class DeliverablesParser {
       if (!rawTarget || !rawUrl) continue;
 
       // Validate target path safety (reject absolute paths and `..` traversal)
-      const normTarget = rawTarget.replace(/\\/g, "/");
+      const normTarget = rawTarget.replace(/\\/g, "/").replace(/^\.\//, "");
       if (
         normTarget.startsWith("/") ||
         /^[a-zA-Z]:/.test(normTarget) ||
