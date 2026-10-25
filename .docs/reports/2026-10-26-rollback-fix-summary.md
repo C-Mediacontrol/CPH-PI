@@ -61,7 +61,7 @@
 
 | 项 | 结果 |
 |---|---|
-| `bun test tests/` | 965 pass / 1 fail（仅历史 ACL 环境失败），123 files / 966 tests |
+| `bun test tests/` | 968 pass / 1 fail（仅历史 ACL 环境失败），124 files / 969 tests |
 | `bun run build:package` | 成功 |
 | `bun run package` | 成功；提示词/技能/bundle 一致性测试通过 |
 | Web 冒烟（3999） | HTTP 200 |
@@ -85,3 +85,4 @@
 - ACL 测试在未保护 ACL 的临时目录上失败，属历史环境问题；
 - 超大工作区内联索引会截断（设计如此），依赖 catalog 附件与 `read_file` 补读；
 - 审计 P2-10（每轮 `git ls-files` + 逐文件 `statSync` 的全盘扫描优化）未在本次实施，当前真实工作区 203 文件无感知，留待后续单独评估。
+

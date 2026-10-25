@@ -20,8 +20,8 @@
 | 阶段 | pass | fail | 说明 |
 |---|---|---|---|
 | 重建基线（commit `728b891`） | 910 | 1 | 唯一失败为 `sp-sync-engine.test.ts` 的 Windows ACL 断言（环境相关，历史既有） |
-| 独立审计后最终（HEAD） | 965 | 1 | 新增 55 个测试；仍是同一个 ACL 环境失败，无新增失败 |
-| 测试规模 | 966 tests / 123 files | — | 约 110s（Windows，本地，`--timeout 30000`） |
+| 独立审计后最终（HEAD） | 968 | 1 | 新增 58 个测试；仍是同一个 ACL 环境失败，无新增失败 |
+| 测试规模 | 969 tests / 124 files | — | 约 116s（Windows，本地，`--timeout 30000`） |
 
 ## 2. 构建与打包
 
@@ -106,3 +106,35 @@
 1. `tests/scripts/sp-sync-engine.test.ts` 的 ACL 断言在未启用 ACL 保护的临时目录上失败，属环境既有失败，已在基线报告中隔离。
 2. 真实 Copilot 任务验收需要用户重新上传 `dist/copilot-agent-bundle.zip` 后执行（见 `2026-10-26-live-acceptance-checklist.md`）。
 3. 内联索引默认 24000 字符；超大工作区会截断并指向 catalog 附件（已由 `prompt-builder-bounded-map` 测试覆盖）。
+
+## 10. 真实运行复现（`cph-terminal-2026-10-25T22-40-21.log`）根因与二次修复
+
+### 现象
+
+- catalog 附件上传成功，但 Turn 1 模型立刻 `read_file E:/test_workspace/remote-workspace-catalog.md` → ENOENT；
+- Turn 2 继续 `read_file AGENTS.md`，全程没有使用任何云端 URL；
+- 用户中断，判定“云端工作区形同虚设”。
+
+### 根因（日志 + session 复盘）
+
+1. 当前 Web 会话没有绑定专属 Main Agent → 走**两段式握手**：
+   - Turn 1 是 `buildHandshakePrompt`（按设计只做工具探测、不含任务）；
+   - Turn 2 是 `buildTurn2TaskPrompt`，此前**只注入 tool result + task + skills，不含内联工作区映射表**。
+2. 附件文件名 `remote-workspace-catalog.md` 出现在消息 annotation 里，提示词只写“见附件”，模型把附件误当**本地文件**去 `read_file`。
+3. 之前只测了 `buildTurn1Prompt` / `buildDirectAgentPrompt`，没有覆盖“握手完成后的 Turn 2”这条真实主路径，所以测试全绿但真机失败。
+
+### 修复
+
+- 新增 `PromptBuilder.buildWorkspaceGroundingBlock`，统一下发“工作区路径 + 云端目录索引 + 内联映射表”；
+- 把它注入 **handshake prompt、Turn 2 任务提示词、Turn 2 附件提示词**（三条真实任务入口）；
+- catalog 文案改为“随本轮消息挂载的**云端附件**，直接基于其内容推理，**无需 read_file**”；
+- catalog annotation 在轮次间**保留**（不再每轮清空），换号/接力时重挂；
+- **cloud-verified 会话跳过握手**：RPC 传入 `skipHandshake`，Turn 1 直接发送“真实任务 + 映射表”，不再浪费一轮探测；
+- debug 模式每轮输出 `[CPH-FINGERPRINT] turn=… agentId=… promptChars=… attachments=[…]`，便于下次用日志直接判定“map 是否真的进了 prompt”；
+- 新增 `tests/agent/handshake-grounding.test.ts`：覆盖“handshake → Turn 2 含 map”和“skipHandshake 首轮含任务+map”两条路径。
+
+### 验证
+
+- 全量：968 pass / 1 fail（已知 ACL），969 tests / 124 files；
+- Turn 2 提示词单测：包含 `[SHAREPOINT REMOTE WORKSPACE]`、目标文件 `Library/proj/a.ps1` 与 catalog 说明；
+- 下一次真实运行的日志应出现 `promptChars≈25000` 且 `attachments=[remote-workspace-catalog.md]`；若仍无 map，看 `[CPH-FINGERPRINT]` 即可定位。
