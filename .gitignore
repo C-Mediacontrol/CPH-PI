@@ -10,3 +10,8 @@ profiles/
 web/dist/
 web/node_modules/
 .cph-mirror.json
+
+# transient test/debug artifacts (not part of any baseline)
+.docs/reports/*-raw*.txt
+scripts/*.png
+

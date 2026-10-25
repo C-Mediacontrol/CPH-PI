@@ -364,35 +364,5 @@ Global guidelines`
       expect(turn1Prompt).toContain("【硬门槛】在用户批准设计前，严禁输出任何修改代码的动作。");
       expect(turn1Prompt).toContain("【当前用户任务】\n设计消息总线架构");
     });
-
-    it("should emit internalized activation notice for agent mounted skills without dumping body", () => {
-      registry.registerSkill({
-        name: "handoff",
-        description: "跨会话高保真接力交接规范",
-        content: "【非常庞大的交接规范正文...多达数千字】",
-        filePath: "/skills/handoff/SKILL.md",
-        source: "workspace",
-      });
-
-      // handoff is agent-mounted by default
-      expect(registry.isAgentMounted("handoff")).toBe(true);
-
-      const section = registry.buildPromptSection([registry.findSkill("handoff")!]);
-      expect(section).toContain("【已在 Agent 挂载的内置专业技能 (Agent Pre-mounted Skills)】");
-      expect(section).toContain("- **[handoff]**: 跨会话高保真接力交接规范");
-      // Must NOT contain full content body
-      expect(section).not.toContain("【非常庞大的交接规范正文...多达数千字】");
-    });
-
-    it("should support toggling and setting custom agent mounted skills list", () => {
-      expect(registry.isAgentMounted("brainstorming")).toBe(false);
-      registry.toggleAgentMounted("brainstorming");
-      expect(registry.isAgentMounted("brainstorming")).toBe(true);
-
-      registry.setAgentMountedSkills(["tdd", "custom-skill"]);
-      expect(registry.getAgentMountedSkills()).toEqual(["tdd", "custom-skill"]);
-      expect(registry.isAgentMounted("handoff")).toBe(false);
-      expect(registry.isAgentMounted("tdd")).toBe(true);
-    });
   });
 });

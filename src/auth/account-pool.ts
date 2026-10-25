@@ -884,54 +884,6 @@ export class AccountPool {
   }
 
   /**
-   * Acquire an IC3 Teams access token from the specified account or first healthy account in pool.
-   */
-  public async getIc3AccessToken(email?: string): Promise<string> {
-    if (email) {
-      try {
-        return await this.manager.getIc3AccessToken(email);
-      } catch (err) {
-        if (this.isFatalAuthGrantError(err)) {
-          this.markAuthExpired(email, String((err as any)?.message || err));
-        }
-        // Fall through to pool scan if specified account fails
-      }
-    }
-    const accounts = this.refreshAccountList();
-    if (accounts.length === 0) {
-      throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
-    }
-
-    const now = Date.now();
-    const total = accounts.length;
-    const startIndex = this.currentIndex;
-
-    for (let i = 0; i < total; i++) {
-      const idx = (startIndex + i) % total;
-      const acc = accounts[idx];
-      const key = acc.email.toLowerCase();
-      const status = this.statuses.get(key);
-      if (!status) continue;
-      if (status.authExpired || status.isAvailable === false) continue;
-      if (status.isThrottled && now >= status.cooldownUntil) {
-        status.isThrottled = false;
-        status.cooldownUntil = 0;
-      }
-      if (status.isThrottled) continue;
-
-      try {
-        return await this.manager.getIc3AccessToken(acc.email);
-      } catch (err) {
-        if (this.isFatalAuthGrantError(err)) {
-          this.markAuthExpired(acc.email, String((err as any)?.message || err));
-        }
-      }
-    }
-
-    throw new Error("No healthy accounts available in pool for IC3 access token");
-  }
-
-  /**
    * Start a new PKCE authentication session for interactive sign-in
    */
   public startPkceAuth(targetEmail?: string): {

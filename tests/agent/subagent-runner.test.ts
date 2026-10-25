@@ -45,20 +45,19 @@ describe("SubagentRunner", () => {
     const reports = await runner.executeBatch(tasks);
 
     expect(reports.length).toBe(2);
-    // Dual-Agent architecture normalizes all subagents to coder
-    expect(reports[0].role).toBe("coder");
+    expect(reports[0].role).toBe("researcher");
     expect(reports[0].success).toBe(true);
     expect(reports[0].finalAnswer).toContain("调研接口");
     expect(reports[1].role).toBe("coder");
     expect(reports[1].success).toBe(true);
 
     expect(executedTasks.length).toBe(2);
-    expect(executedTasks[0].customAgentId).toBe("coder-id-123");
+    expect(executedTasks[0].customAgentId).toBe("researcher-id-456");
     expect(executedTasks[1].customAgentId).toBe("coder-id-123");
 
     const summary = runner.formatReportSummary(reports);
     expect(summary).toContain("子代理多会话并发执行报告");
-    expect(summary).toContain("coder");
+    expect(summary).toContain("researcher");
     expect(summary).toContain("coder");
   });
 
@@ -424,61 +423,6 @@ describe("SubagentRunner", () => {
       expect(capturedRunOptions.initialAnnotations.length).toBe(1);
       expect(capturedRunOptions.initialAnnotations[0]).toEqual(mockAnnotation);
 
-      uploadSpy.mockRestore();
-    });
-
-    it("should pass subagentAccount to pool.getGraphAccessToken", async () => {
-      let passedAccountToGraph: string | undefined = undefined;
-      const mockPool: any = {
-        getPoolStatus: () => [
-          { email: "sub1@contoso.com", isAllowed: true, isThrottled: false, isLeased: false },
-        ],
-        acquireSessionLease: async () => ({
-          token: "tok",
-          email: "sub1@contoso.com",
-        }),
-        getNextAvailableToken: async () => ({
-          email: "sub1@contoso.com",
-          token: "token-sub1",
-        }),
-        getGraphAccessToken: async (email?: string) => {
-          passedAccountToGraph = email;
-          return "mock-graph-token";
-        },
-        releaseSessionLease: () => {},
-      };
-
-      const uploadSpy = spyOn(SubstrateUploader, "uploadDocumentToOneDrive").mockResolvedValue({
-        driveItemId: "item-1",
-        webUrl: "https://sp.com/sub.ts",
-        fileName: "subagent-runner.ts",
-        annotation: {
-          type: "File",
-          fileName: "subagent-runner.ts",
-          fileUrl: "https://sp.com/sub.ts",
-          title: "subagent-runner.ts",
-          fileSize: 100,
-        },
-      });
-
-      const runner = new SubagentRunner({
-        workspaceRoot: process.cwd(),
-        mainSessionId: "main-session-acc-test",
-        pool: mockPool,
-        createOrchestratorFn: () => ({
-          run: async () => ({ finalAnswer: "done", turnsCount: 1, completed: true, history: [] }),
-        }),
-      });
-
-      await runner.executeBatch([
-        {
-          role: "coder",
-          description: "单文件优化",
-          prompt: "目标文件: src/agent/subagent-runner.ts 请优化",
-        },
-      ]);
-
-      expect(passedAccountToGraph).toBe("sub1@contoso.com");
       uploadSpy.mockRestore();
     });
 

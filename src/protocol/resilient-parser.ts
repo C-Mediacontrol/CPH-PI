@@ -43,16 +43,36 @@ export class ResilientParser {
       };
     }
 
-    // 1. Check for explicit action fenced blocks: ```action, ```json:action, ```yaml:action
-    const explicitActionMatch = trimmed.match(
-      /```(?:action|json:action|yaml:action)\s*([\s\S]*?)```/i
-    );
-    if (explicitActionMatch) {
-      const actionContent = explicitActionMatch[1].trim();
+    // 1. Check for Action blocks
+    // 1a. Code fenced: ```action ... ```, ```json ... ```, or ``` ... ``` containing tool/action
+    const fencedMatch = trimmed.match(/```(?:action|json)?\s*([\s\S]*?)```/i);
+    let actionContent: string | null = null;
+    let thought = "";
+
+    if (fencedMatch) {
+      actionContent = fencedMatch[1].trim();
       const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```/i);
-      const thought = thoughtMatch
+      thought = thoughtMatch
         ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim()
         : "";
+    } else {
+      // 1b. Un-fenced action: handles streaming without backticks, e.g. "tool: read_file..."
+      const unfencedMatch =
+        trimmed.match(
+          /(?:^|[^\w])(?:action\s*\n\s*)?(tool\s*:\s*[a-zA-Z_]+[\s\S]*?)(?:```|$|\n\n(?=[A-Z_]+:))/i
+        ) ||
+        trimmed.match(
+          /(?:^|[^\w])(?:ACTION|tool_call>)\s*:?\s*([\s\S]*?)(?:```|$|\n\n(?=[A-Z_]+:))/i
+        );
+
+      if (unfencedMatch) {
+        actionContent = unfencedMatch[1].trim();
+        const beforeAction = trimmed.slice(0, unfencedMatch.index).trim();
+        thought = beforeAction.replace(/^THOUGHT:\s*/i, "").trim();
+      }
+    }
+
+    if (actionContent) {
       const parsedAction = this.extractActionFields(actionContent);
       if (parsedAction) {
         return {
@@ -64,14 +84,11 @@ export class ResilientParser {
     }
 
     // 2. Check for Final Answer (strictly matching FINAL_ANSWER variants or completion tags)
-    // Checked BEFORE generic code blocks and unfenced action patterns
     const finalAnswerMatch = trimmed.match(
-      /(?:^|\n)\s*(?:```(?:markdown:)?FINAL_?ANSWER\b:?|FINAL_?ANSWER\b:?|_ANSWER\b:?|ALL_TASKS_COMPLETED|【已完成交付】)([\s\S]*)$/i
+      /(?:FINAL_?ANSWER\b:?|_ANSWER\b:?|ALL_TASKS_COMPLETED|【已完成交付】)([\s\S]*)$/i
     );
     if (finalAnswerMatch) {
-      const rawSummary = finalAnswerMatch[1].trim();
-      const isFencedFinal = finalAnswerMatch[0].trimStart().startsWith("```");
-      const summary = (isFencedFinal ? rawSummary.replace(/```\s*$/, "") : rawSummary).trim();
+      const summary = finalAnswerMatch[1].trim();
       const markerIndex = finalAnswerMatch.index ?? -1;
       const parsedThought =
         markerIndex > 0
@@ -103,47 +120,7 @@ export class ResilientParser {
       };
     }
 
-    // 3. Fallback Action blocks (generic ```json or ``` code fences, or unfenced actions)
-    // 3a. Code fenced: ```json ... ``` or ``` ... ``` containing tool/action
-    const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    let actionContent: string | null = null;
-    let thought = "";
-
-    if (fencedMatch) {
-      actionContent = fencedMatch[1].trim();
-      const thoughtMatch = trimmed.match(/(?:THOUGHT:|^)([\s\S]*?)```/i);
-      thought = thoughtMatch
-        ? thoughtMatch[1].replace(/^THOUGHT:\s*/i, "").trim()
-        : "";
-    } else {
-      // 3b. Un-fenced action: handles streaming without backticks, e.g. "tool: read_file..."
-      const unfencedMatch =
-        trimmed.match(
-          /(?:^|[^\w])(?:action\s*\n\s*)?(tool\s*:\s*[a-zA-Z_]+[\s\S]*?)(?:```|$|\n\n(?=[A-Z_]+:))/i
-        ) ||
-        trimmed.match(
-          /(?:^|[^\w])(?:ACTION|tool_call>)\s*:?\s*([\s\S]*?)(?:```|$|\n\n(?=[A-Z_]+:))/i
-        );
-
-      if (unfencedMatch) {
-        actionContent = unfencedMatch[1].trim();
-        const beforeAction = trimmed.slice(0, unfencedMatch.index).trim();
-        thought = beforeAction.replace(/^THOUGHT:\s*/i, "").trim();
-      }
-    }
-
-    if (actionContent) {
-      const parsedAction = this.extractActionFields(actionContent);
-      if (parsedAction) {
-        return {
-          type: "action",
-          thought,
-          action: parsedAction,
-        };
-      }
-    }
-
-    // 4. Check for Native File Generation / Download cards (File Porter pattern)
+    // 2c. Check for Native File Generation / Download cards (File Porter pattern)
     // HTML anchor: <a ... href="url" download="filename" ...> or <a ... download="filename" href="url" ...>
     // or Markdown: [下载 filename](blob:url) or [filename](blob:url)
     const anchorMatch =
@@ -165,9 +142,8 @@ export class ResilientParser {
       }
     } else {
       // Check Markdown link: [下载 filename.ext](blob:url) or [filename.ext](blob:url)
-      // Only match blob: links (generic https?:// links in text are ignored to avoid hijacking normal conversational links)
       const mdLinkMatch = trimmed.match(
-        /\[(?:下载\s*)?([a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+)\]\((blob:[^\)\s]+)\)/i
+        /\[(?:下载\s*)?([a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+)\]\((blob:[^\)\s]+|https?:\/\/[^\)\s]+)\)/i
       );
       if (mdLinkMatch) {
         detectedFileName = mdLinkMatch[1];
@@ -176,6 +152,7 @@ export class ResilientParser {
     }
 
     if (detectedFileName && detectedUrl) {
+      const isExecutable = /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(detectedFileName);
       const thought = trimmed
         .split(/<a|\[(?:下载\s*)?[a-zA-Z0-9_\-.]+\.[a-zA-Z0-9_]+\]/i)[0]
         .replace(/^THOUGHT:\s*/i, "")
@@ -188,7 +165,7 @@ export class ResilientParser {
           tool: "file_porter",
           fileName: detectedFileName,
           downloadUrl: detectedUrl,
-          autoExecute: false,
+          autoExecute: isExecutable,
           raw: trimmed,
         },
       };
@@ -232,13 +209,13 @@ export class ResilientParser {
             }
             const fileName = obj.fileName || obj.filename || obj.file || (tool === "file_porter" ? (obj.name || obj.path) : undefined);
             const downloadUrl = obj.downloadUrl || obj.download_url || obj.url || obj.href;
-            const autoExecute = Boolean(obj.autoExecute ?? obj.auto_execute ?? false);
+            const autoExecute = obj.autoExecute ?? obj.auto_execute ?? (fileName && typeof fileName === "string" ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(fileName) : undefined);
             return {
               ...obj,
               tool,
               ...(fileName ? { fileName } : {}),
               ...(downloadUrl ? { downloadUrl } : {}),
-              autoExecute,
+              ...(autoExecute !== undefined ? { autoExecute } : {}),
               ...(subagents ? { subagents } : {}),
             };
           }
@@ -327,7 +304,7 @@ export class ResilientParser {
         : undefined;
       const extractedAutoExec = autoExecMatch
         ? autoExecMatch[1].toLowerCase() === "true"
-        : false;
+        : (extractedFileName ? /\.(py|ts|js|mjs|ps1|sh|bat)$/i.test(extractedFileName) : undefined);
 
       // If we found any relevant fields, or this is a parameterless tool, return it
       const hasFields =

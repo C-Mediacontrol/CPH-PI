@@ -1,16 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import AdmZip from "adm-zip";
 
 export interface FilePorterOptions {
   cwd: string;
   scratchDir?: string;
   cdpClient?: any;
   timeoutMs?: number;
-  ic3TokenProvider?: () => Promise<string | undefined>;
-  graphTokenProvider?: () => Promise<string | undefined>;
-  fetchFn?: typeof fetch;
 }
 
 export interface SaveAndExecuteParams {
@@ -19,18 +15,6 @@ export interface SaveAndExecuteParams {
   content?: string;
   autoExecute?: boolean;
   destinationPath?: string;
-}
-
-export interface DeliverToWorkspaceParams {
-  downloadUrl: string;
-  destinationPath: string;
-  isDirectory?: boolean;
-  isZip?: boolean;
-}
-
-export interface DeliverToWorkspaceResult {
-  landedFiles: string[];
-  extractedFromZip: boolean;
 }
 
 export interface FilePorterResult {
@@ -51,9 +35,6 @@ export class FilePorter {
   private scratchDir: string;
   private cdpClient?: any;
   private timeoutMs: number;
-  private ic3TokenProvider?: () => Promise<string | undefined>;
-  private graphTokenProvider?: () => Promise<string | undefined>;
-  private fetchFn?: typeof fetch;
 
   constructor(options: FilePorterOptions) {
     this.cwd = options.cwd;
@@ -61,297 +42,6 @@ export class FilePorter {
       options.scratchDir || path.join(this.cwd, ".cph", "scratch");
     this.cdpClient = options.cdpClient;
     this.timeoutMs = options.timeoutMs ?? 60_000;
-    this.ic3TokenProvider = options.ic3TokenProvider;
-    this.graphTokenProvider = options.graphTokenProvider;
-    this.fetchFn = options.fetchFn;
-  }
-
-  /**
-   * Normalizes asyncgw URL by stripping trailing filename from /views/original/
-   * while extracting the original filename and preserving query parameters.
-   */
-  public static normalizeAsyncGwUrl(rawUrl: string): {
-    fetchUrl: string;
-    fileNameFromUrl?: string;
-  } {
-    try {
-      const u = new URL(rawUrl);
-      const host = u.hostname.toLowerCase();
-      if (
-        host === "asyncgw.teams.microsoft.com" ||
-        host.endsWith(".asyncgw.teams.microsoft.com")
-      ) {
-        const match = u.pathname.match(
-          /^(\/v1\/objects\/[^/]+\/views\/[^/]+)(?:\/([^/]+))?$/i
-        );
-        if (match) {
-          const fileNameFromUrl = match[2]
-            ? decodeURIComponent(match[2])
-            : undefined;
-          u.pathname = match[1];
-          return { fetchUrl: u.toString(), fileNameFromUrl };
-        }
-      }
-      const base = path.posix.basename(u.pathname);
-      return {
-        fetchUrl: rawUrl,
-        fileNameFromUrl: base && base !== "/" ? decodeURIComponent(base) : undefined,
-      };
-    } catch {
-      return { fetchUrl: rawUrl };
-    }
-  }
-
-  /**
-   * Enforces SSRF host allowlist for downloaded URLs.
-   */
-  public static assertAllowedDownloadUrl(rawUrl: string): URL {
-    let u: URL;
-    try {
-      u = new URL(rawUrl);
-    } catch {
-      throw new Error(`Disallowed download host: invalid URL "${rawUrl}"`);
-    }
-
-    if (u.protocol !== "http:" && u.protocol !== "https:") {
-      throw new Error(`Disallowed download host: unsupported protocol "${u.protocol}"`);
-    }
-
-    const host = u.hostname.toLowerCase();
-    const allowed =
-      host === "graph.microsoft.com" ||
-      host === "asyncgw.teams.microsoft.com" ||
-      host.endsWith(".asyncgw.teams.microsoft.com") ||
-      host === "sharepoint.com" ||
-      host.endsWith(".sharepoint.com") ||
-      host === "1drv.com" ||
-      host.endsWith(".1drv.com") ||
-      host === "office.com" ||
-      host.endsWith(".office.com") ||
-      host === "cloud.microsoft" ||
-      host.endsWith(".cloud.microsoft");
-
-    if (!allowed) {
-      throw new Error(`Disallowed download host "${u.hostname}" for URL: ${rawUrl}`);
-    }
-
-    return u;
-  }
-
-  /**
-   * Downloads binary content with SSRF check, IC3/Graph authentication, and 100MB limit.
-   */
-  private async downloadBinary(
-    rawUrl: string
-  ): Promise<{ buffer: Buffer; fileNameFromUrl?: string }> {
-    FilePorter.assertAllowedDownloadUrl(rawUrl);
-    const norm = FilePorter.normalizeAsyncGwUrl(rawUrl);
-
-    const parsed = new URL(norm.fetchUrl);
-    const host = parsed.hostname.toLowerCase();
-    const isAsyncGw =
-      host === "asyncgw.teams.microsoft.com" ||
-      host.endsWith(".asyncgw.teams.microsoft.com");
-
-    const headers: Record<string, string> = {};
-    if (isAsyncGw && this.ic3TokenProvider) {
-      const token = await this.ic3TokenProvider();
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-    }
-
-    const fetcher = this.fetchFn || fetch;
-    let res = await fetcher(norm.fetchUrl, { headers });
-
-    if (
-      (res.status === 401 || res.status === 403) &&
-      isAsyncGw &&
-      this.graphTokenProvider
-    ) {
-      const graphToken = await this.graphTokenProvider();
-      if (graphToken) {
-        const retryHeaders = { ...headers, Authorization: `Bearer ${graphToken}` };
-        res = await fetcher(norm.fetchUrl, { headers: retryHeaders });
-      }
-    }
-
-    if (!res.ok) {
-      throw new Error(
-        `Failed to download binary from ${norm.fetchUrl} (${res.status} ${res.statusText})`
-      );
-    }
-
-    const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
-    const clHeader = res.headers.get("content-length");
-    if (clHeader) {
-      const cl = parseInt(clHeader, 10);
-      if (!isNaN(cl) && cl > MAX_DOWNLOAD_SIZE) {
-        throw new Error(`Download payload exceeds 100MB limit: ${cl} bytes`);
-      }
-    }
-
-    const arrayBuffer = await res.arrayBuffer();
-    if (arrayBuffer.byteLength > MAX_DOWNLOAD_SIZE) {
-      throw new Error(
-        `Download payload exceeds 100MB limit: ${arrayBuffer.byteLength} bytes`
-      );
-    }
-
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      fileNameFromUrl: norm.fileNameFromUrl,
-    };
-  }
-
-  /**
-   * Delivers remote download directly to workspace with path-safe extraction.
-   */
-  public async deliverToWorkspace(
-    params: DeliverToWorkspaceParams
-  ): Promise<DeliverToWorkspaceResult> {
-    const resolvedDest = path.resolve(this.cwd, params.destinationPath);
-    const relToCwd = path.relative(this.cwd, resolvedDest);
-    if (relToCwd.startsWith("..") || path.isAbsolute(relToCwd)) {
-      throw new Error(
-        `Destination path "${params.destinationPath}" resolves outside workspace cwd: ${this.cwd}`
-      );
-    }
-
-    const isDirTarget = Boolean(
-      params.isDirectory ||
-        /[\\/]$/.test(params.destinationPath) ||
-        (fs.existsSync(resolvedDest) && fs.statSync(resolvedDest).isDirectory())
-    );
-    const isExplicitZipFile = params.destinationPath.toLowerCase().endsWith(".zip");
-
-    const { buffer, fileNameFromUrl } = await this.downloadBinary(params.downloadUrl);
-
-    const isZipPayload = Boolean(
-      params.isZip ||
-        fileNameFromUrl?.toLowerCase().endsWith(".zip") ||
-        isExplicitZipFile
-    );
-
-    if (isZipPayload && !isExplicitZipFile) {
-      const targetDir = resolvedDest;
-      const zip = new AdmZip(buffer);
-      const entries = zip.getEntries();
-
-      if (entries.length > 200) {
-        throw new Error(
-          `Zip archive exceeds maximum allowed entry count (found ${entries.length}, max 200)`
-        );
-      }
-
-      let totalUncompressedBytes = 0;
-      for (const entry of entries) {
-        totalUncompressedBytes += entry.header.size;
-      }
-      if (totalUncompressedBytes > 100 * 1024 * 1024) {
-        throw new Error(
-          `Zip archive uncompressed size exceeds 100MB limit: ${totalUncompressedBytes} bytes`
-        );
-      }
-
-      const targetBase = path.basename(targetDir);
-      const landedFiles: string[] = [];
-
-      for (const entry of entries) {
-        const rawName = entry.entryName;
-        // Zip-Slip protection
-        if (
-          rawName.includes("..") ||
-          path.isAbsolute(rawName) ||
-          /^[a-zA-Z]:/.test(rawName)
-        ) {
-          throw new Error(
-            `Disallowed zip entry path (Zip-Slip detected): "${rawName}"`
-          );
-        }
-
-        const normalizedEntry = path.posix.normalize(rawName.replace(/\\/g, "/"));
-        if (normalizedEntry.startsWith("..") || path.isAbsolute(normalizedEntry)) {
-          throw new Error(
-            `Disallowed zip entry path (Zip-Slip detected): "${rawName}"`
-          );
-        }
-
-        const rawParts = normalizedEntry.split("/").filter(Boolean);
-        if (rawParts.length === 0) continue;
-
-        let effectiveParts = rawParts;
-        if (
-          targetBase &&
-          (effectiveParts[0] === targetBase ||
-            effectiveParts[0].toLowerCase() === targetBase.toLowerCase())
-        ) {
-          if (effectiveParts.length === 1 && entry.isDirectory) {
-            fs.mkdirSync(targetDir, { recursive: true });
-            continue;
-          }
-          if (effectiveParts.length > 1) {
-            effectiveParts = effectiveParts.slice(1);
-          }
-        }
-
-        const relativeEntryPath = effectiveParts.join("/");
-        const outPath = path.resolve(targetDir, relativeEntryPath);
-
-        const relToTarget = path.relative(targetDir, outPath);
-        if (relToTarget.startsWith("..") || path.isAbsolute(relToTarget)) {
-          throw new Error(
-            `Zip entry "${rawName}" would extract outside target directory`
-          );
-        }
-
-        if (entry.isDirectory) {
-          fs.mkdirSync(outPath, { recursive: true });
-        } else {
-          fs.mkdirSync(path.dirname(outPath), { recursive: true });
-          fs.writeFileSync(outPath, entry.getData());
-          const relToWorkspace = path
-            .relative(this.cwd, outPath)
-            .replace(/\\/g, "/");
-          landedFiles.push(relToWorkspace);
-        }
-      }
-
-      return {
-        landedFiles,
-        extractedFromZip: true,
-      };
-    }
-
-    let targetFilePath: string;
-    if (isDirTarget) {
-      let finalName =
-        path.posix.basename(
-          (fileNameFromUrl || "downloaded_file").replace(/\\/g, "/")
-        ) || "downloaded_file";
-      if (finalName === "." || finalName === "..") {
-        finalName = "downloaded_file";
-      }
-      targetFilePath = path.resolve(resolvedDest, finalName);
-    } else {
-      targetFilePath = resolvedDest;
-    }
-
-    const relCheck = path.relative(this.cwd, targetFilePath);
-    if (relCheck.startsWith("..") || path.isAbsolute(relCheck)) {
-      throw new Error(
-        `Target file path "${targetFilePath}" resolves outside workspace cwd: ${this.cwd}`
-      );
-    }
-
-    fs.mkdirSync(path.dirname(targetFilePath), { recursive: true });
-    fs.writeFileSync(targetFilePath, buffer);
-
-    const relPath = path.relative(this.cwd, targetFilePath).replace(/\\/g, "/");
-    return {
-      landedFiles: [relPath],
-      extractedFromZip: false,
-    };
   }
 
   /**
@@ -414,9 +104,12 @@ export class FilePorter {
         );
         content = typeof evalRes === "string" ? evalRes : String(evalRes?.result?.value ?? evalRes?.value ?? "");
       } else {
-        // Standard HTTP/HTTPS fetch via downloadBinary (SSRF + Auth + Limit protected)
-        const { buffer } = await this.downloadBinary(params.downloadUrl);
-        content = buffer.toString("utf-8");
+        // Standard HTTP/HTTPS fetch
+        const res = await fetch(params.downloadUrl);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch file from ${params.downloadUrl} (${res.status})`);
+        }
+        content = await res.text();
       }
     }
 
@@ -428,7 +121,8 @@ export class FilePorter {
     fs.writeFileSync(filePath, content, "utf-8");
 
     const runtime = this.detectRuntime(fileName);
-    const shouldExecute = params.autoExecute === true;
+    const shouldExecute =
+      params.autoExecute ?? (runtime !== undefined);
 
     if (!shouldExecute || !runtime) {
       return {
@@ -559,3 +253,4 @@ export class FilePorter {
     });
   }
 }
+

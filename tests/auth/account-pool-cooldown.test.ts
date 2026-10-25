@@ -95,7 +95,7 @@ describe("AccountPool Tiered Monotonic Cooldown & Classification Tests (CR-2)", 
       expect(status).toBeDefined();
       expect(status!.isThrottled).toBe(true);
       expect(status!.throttleReason).toBe("daily");
-      expect(Math.abs(status!.cooldownUntil - midnight)).toBeLessThanOrEqual(100);
+      expect(status!.cooldownUntil).toBe(midnight);
       expect(status!.throttledCount).toBe(1);
       expect(status!.consecutiveFailures).toBe(1);
     });
@@ -108,8 +108,7 @@ describe("AccountPool Tiered Monotonic Cooldown & Classification Tests (CR-2)", 
       pool.markThrottled(email, midnight - Date.now(), "daily");
 
       let status = pool.getPoolStatus().find((s) => s.email.toLowerCase() === email.toLowerCase())!;
-      const originalCooldown = status.cooldownUntil;
-      expect(Math.abs(originalCooldown - midnight)).toBeLessThanOrEqual(100);
+      expect(status.cooldownUntil).toBe(midnight);
       expect(status.throttleReason).toBe("daily");
 
       // Step 2: Attempt a 120s burst throttle on the same account
@@ -117,7 +116,7 @@ describe("AccountPool Tiered Monotonic Cooldown & Classification Tests (CR-2)", 
 
       status = pool.getPoolStatus().find((s) => s.email.toLowerCase() === email.toLowerCase())!;
       // Cooldown timestamp must remain tomorrow midnight (NOT shortened to now + 120s)
-      expect(status.cooldownUntil).toBe(originalCooldown);
+      expect(status.cooldownUntil).toBe(midnight);
       // Throttle reason must remain 'daily' (NOT downgraded to 'burst')
       expect(status.throttleReason).toBe("daily");
       expect(status.throttledCount).toBe(2);

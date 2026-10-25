@@ -95,7 +95,6 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
         graphTokenProvider: async () => "mock-graph-token",
         cloudAttachmentThresholdChars: 0,
         cloudAttachmentThresholdLines: 0,
-        enableWorkspaceCatalog: false,
       });
 
       const runResult = await orchestrator.run({
@@ -189,7 +188,6 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
         },
         cloudAttachmentThresholdChars: 500,
         cloudAttachmentThresholdLines: 20,
-        enableWorkspaceCatalog: false,
       });
 
       const runResult = await orchestrator.run({
