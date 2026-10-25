@@ -59,7 +59,7 @@
 
 | 项 | 结果 |
 |---|---|
-| `bun test tests/` | 952 pass / 1 fail（仅历史 ACL 环境失败），123 files / 953 tests |
+| `bun test tests/` | 954 pass / 1 fail（仅历史 ACL 环境失败），123 files / 955 tests |
 | `bun run build:package` | 成功 |
 | `bun run package` | 成功；提示词/技能/bundle 一致性测试通过 |
 | Web 冒烟（3999） | HTTP 200 |
