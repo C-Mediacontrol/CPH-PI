@@ -25,10 +25,18 @@
 ## 2. 目标与非目标 (Goals & Non-Goals)
 
 ### 2.1 目标 (Goals)
-1. **统一交付物声明契约**：在 Agent 系统提示词（`cph-main-agent-prompt.txt` / `cph-coder-agent-prompt.txt`）中正向引导模型在 `FINAL_ANSWER` **最顶部**首屏置顶输出标准交付清单 `【交付文件与落盘指引 / Deliverables】`，明确绑定下载 URL 与本地目标存放路径。
-2. **Harness 自动对账落盘 (Auto File Porter)**：`orchestrator.ts` 在检测到交付物声明或包含异步网关下载链接时，自动并发拉取文件，写入指定本地路径；若是 `.zip` 压缩包，自动安全解包、平铺层级，并杜绝工作区根目录文件污染。
-3. **云端受控目录专属附件化**：将 `virtual-repo-map.md` 命名为 `remote-workspace-catalog.md`，通过 `SubstrateUploader` 经 Graph API 自动上传为云端 `LocalFile` 附件，支持内容哈希缓存（0 秒秒级挂载）；Prompt 文本中彻底移除多行清单，仅注入单行物理指纹。
-4. **100% 测试覆盖与零破坏性**：全仓单元与集成测试保持 100% 绿灯，确保向后兼容与高韧性容灾。
+1. **本地与云端物理同态（1:1 同步保证）**：
+   - 每次第一轮对话（Turn 1）启动前，自动执行全量同态扫描与增量热同步，保证本地与云端工作区文件 1:1 完全一致；
+   - 任务运行过程中但凡发生本地文件更新（无论是 `patch_file`、`write_file` 还是 `FilePorter` 下载落盘解压），立即自动增量同步至 SharePoint 云端受控目录。
+2. **Harness 中立与全量目录附件化挂载**：
+   - Harness 保持纯粹中立，不自行决定或越俎代庖替模型动态挂载具体的业务代码文件，给予 Agent 完整的自主决策权；
+   - 在 Turn 1 仅以单个文件附件的形式全量挂载完整的目录索引 `remote-workspace-catalog.md` 给 Agent，清晰列明每个文件在云端工作区的位置（SharePoint WebUrl）与在本地的位置（相对路径），Prompt 文本内零多行列表倾倒。
+3. **系统提示词引导两级自主读取与回退决策流 (Autonomous Two-Tier Reading Strategy)**：
+   - 优先读取云端工作区的文件：若能读到证明它就是最新的权威版本，且具备零本地 I/O 成本与云端原生 RAG 优势；
+   - 本地兜底读取：若云端工作区无法检索到该文件（表明云端增量爬虫索引尚未建立完成，对应实测 >30 分钟时延），此时 Agent 自主切换为读取本地工作区文件（`read_file`）。
+4. **统一交付物声明契约**：在 Agent 系统提示词（`cph-main-agent-prompt.txt` / `cph-coder-agent-prompt.txt`）中正向引导模型在 `FINAL_ANSWER` **最顶部**首屏置顶输出标准交付清单 `【交付文件与落盘指引 / Deliverables】`，明确绑定下载 URL 与本地目标存放路径。
+5. **Harness 自动对账落盘 (Auto File Porter)**：`orchestrator.ts` 在检测到交付物声明或包含异步网关下载链接时，自动并发拉取文件（支持 CDP Page-Bridge 模态与 IC3 Bearer 模态双引擎），写入指定本地路径；若是 `.zip` 压缩包，自动安全解包、平铺层级，并杜绝工作区根目录文件污染。
+6. **100% 测试覆盖与零破坏性**：全仓单元与集成测试保持 100% 绿灯，确保向后兼容与高韧性容灾。
 
 ### 2.2 非目标 (Non-Goals)
 - 不改变 SharePoint 双轨同步引擎的底核对账逻辑；
@@ -66,11 +74,17 @@
        +-------------------------------------------------------------+
 ```
 
-### 3.1 提示词认知塑形与交付物首屏契约 (Prompt Shaping)
+### 3.1 提示词认知塑形：交付契约与两级自主读取决策流 (Prompt Shaping)
 
-在 `cph-main-agent-prompt.txt` 与 `cph-coder-agent-prompt.txt` 中增强【终局交付物与文件落盘契约】正向引导：
+在 `cph-main-agent-prompt.txt` 与 `cph-coder-agent-prompt.txt` 中增强两项关键认知引导：
 
-> **终局交付物与原生文件落盘指引 (Deliverables & File Landing Invariant)**：
+#### 1. 两级自主读取与回退决策流 (Autonomous Two-Tier Reading Strategy)
+> **云端全景直读优先与本地工具精准兜底规则**：
+> 系统在首轮通过附件 `remote-workspace-catalog.md` 为您挂载了工作区全量文件的物理索引表，包含每个文件在云端工作区（SharePoint WebUrl）与本地工作区（相对路径）的精确对应关系。
+> 1. **第一优先级（云端优先）**：面对任何代码审查、逻辑核对或依赖查阅，优先使用云端工作区中的 SharePoint WebUrl 与关键词进行检索阅读。云端检索到的文件保证为最新的权威版本，且具备零本地 I/O 损耗与云端原生 RAG 优势。
+> 2. **第二优先级（本地兜底）**：若在云端工作区无法检索到该文件（表明该文件为近期新增或刚完成落盘，云端企业爬虫索引尚未建立完成，属于正常的云端异步排队现象），此时请自主转为调用本地工具 `read_file` 定向调阅本地工作区对应路径的文件。
+
+#### 2. 终局交付物与原生文件落盘契约 (Deliverables & File Landing Invariant)
 > 当任务需要产出独立的详细技术文档、审查报告或包含全套过程证据的交付包时，引导使用 Copilot 原生文件生成能力产出可下载文件链接。
 > 在输出 `FINAL_ANSWER` 时，必须在正文最顶端首屏置顶提供结构化的【交付文件与落盘指引】，方便宿主系统自动为您搬运落盘：
 > ```markdown
@@ -126,23 +140,20 @@ export class DeliverablesParser {
    - 依据 AGENTS.md 准则 1，检查每个解压条目的规范化物理绝对路径；
    - 严禁任何文件直接落在 `workspaceRoot` 根目录下；若检测到相对路径为空或解压到根目录，强制归入指定的目标二级子目录（例如 `test/`）。
 
-### 3.4 本地落盘反向同步云端与即时感知机制 (Two-Way Cloud Sync & Real-Time Grounding)
+### 3.4 本地与云端物理同态双向同步与 Harness 纯粹中立架构 (Two-Way Cloud Mirroring & Harness Neutrality)
 
-当本地文件由 File Porter 完成落地后，Harness 触发即时双轨闭环：
+为实现本地工作区与云端 SharePoint 的绝对一致，并消除 Harness 越俎代庖强行给模型挂载具体文件的弊端，确立以下双轨同态与自主调阅架构：
 
-1. **持久层云端热同步**：
-   - 立即调度 `PnPWorkspaceSyncEngine.syncFile(workspaceRoot, relativePath, targetFolder)`，将落盘文件增量推送至企业 SharePoint 受控目录；
-   - 保证远程团队空间与本地工作区代码资产的物理同态。
-2. **感知层即时注入 (绕过爬虫时延硬门槛)**：
-   - **实测时延硬约束**：根据现场 20+ 分钟时序实测（详见第 8 节），SharePoint 爬虫对新上传文件的 Work IQ 索引时延普遍在 15~30 分钟以上。若仅向模型发送纯 SharePoint URL，模型在后续轮次中将因爬虫未就绪而无法读取；
-   - **解法**：Harness 在完成落盘与云端同步后，通过 `SubstrateUploader` 将该文件同时以 `LocalFile` 附件形式挂载至下一轮对话上下文；
-   - **模型通知规范**：
-     ```markdown
-     【文件落盘与云端同步就绪】
-     - 本地路径: `test/audit_report.py` (16,486 bytes)
-     - SharePoint 归档路径: `https://cmacgmgroup.sharepoint.com/.../test/audit_report.py`
-     - 云端即时感知: 已作为附件挂载至当前会话，您可以立即在后续推理与测试中调阅或执行。
-     ```
+1. **全周期 1:1 物理同态双向同步**：
+   - **首轮对话前全量对齐 (Pre-Turn 1 Full Sync)**：
+     - 在每次第 1 轮（Turn 1）构建提示词之前，`orchestrator.ts` 自动调用 `PnPWorkspaceSyncEngine.syncWorkspace(workspaceRoot, targetFolder)` 进行全量比对与增量热同步；
+     - 确保本地所有代码、文档及子目录在第一轮发起前已 100% 镜像至云端 SharePoint，并生成最新的 `remote-workspace-catalog.md` 全量目录清单；
+   - **动态更新即时增量热同步 (Post-Update Hot Sync)**：
+     - 任务执行过程中，但凡发生本地文件更新（无论是 `patch_file` 局部补丁、`write_file` 新建文件，还是 `AutoFilePorter` 从云端下载并解压落盘的文件），Harness 在文件写入物理磁盘后立即触发 `PnPWorkspaceSyncEngine.syncFile()` 增量推回云端，保证云地资产永不脱节。
+2. **Harness 纯粹中立与 Agent 自主调阅原则 (Harness Neutrality & Agent Autonomy)**：
+   - **Harness 放弃越俎代庖**：Harness 不再自行猜想并动态向每轮会话强行挂载具体的源码附件，避免上下文污染与无谓的 Token 开销；
+   - **全量目录文件化附件投递**：Harness 仅在第一轮（Turn 1）将包含全量本地路径与云端 SharePoint WebUrl 的 `remote-workspace-catalog.md` 作为唯一目录附件挂载给模型；
+   - **Agent 自主按需调阅**：Agent 在查阅目录清单后，由系统提示词中的两级决策流自主决定读取策略——优先从云端检索读取（云端能读到即为权威最新）；若云端提示未检索到（表明云端增量爬虫索引尚未建立完成，对应实测 >30 分钟时延），Agent 自主转为调用 `read_file` 定向调阅本地物理文件。
 
 ### 3.5 云端工作区受控目录全量附件化投递 (`Remote Workspace Catalog Attachment`)
 
@@ -170,30 +181,41 @@ export class DeliverablesParser {
 sequenceDiagram
     autonumber
     participant Orch as CopilotOrchestrator
+    participant Sync as PnPWorkspaceSyncEngine
+    participant SP as 云端 SharePoint
     participant Uploader as SubstrateUploader
     participant Sydney as 云端 Copilot
     participant Parser as DeliverablesParser
     participant Porter as File Porter
     participant FS as 本地物理磁盘
 
-    Note over Orch,Uploader: Turn 1 启动阶段
-    Orch->>Orch: 检查 virtual-repo-map.md 与缓存
-    Orch->>Uploader: 上传 remote-workspace-catalog.md (若缓存未命中)
+    Note over Orch,SP: 阶段一：开工前全量同态同步与目录附件化
+    Orch->>Sync: Turn 1 前执行全量对齐 (syncWorkspace)
+    Sync->>SP: 扫描本地与云端差异，增量推送到 SharePoint
+    Sync-->>Orch: 生成最新 remote-workspace-catalog.md
+    Orch->>Uploader: 上传 remote-workspace-catalog.md (若哈希缓存未命中)
     Uploader-->>Orch: 返回 LocalFile 附件 Annotation
-    Orch->>Sydney: 发送 Turn 1 提示词 (挂载 Catalog 附件，无多行内联)
+    Orch->>Sydney: 发送 Turn 1 提示词 (挂载 Catalog 附件，Prompt 内仅单行指纹)
 
-    Note over Sydney: 模型执行与生成
-    Sydney->>Sydney: 云端 Substrate 索引并直读 SharePoint 源码
-    Sydney->>Sydney: 生成报告并输出可下载 URL
+    Note over Sydney,FS: 阶段二：模型两级自主读取与云端执行
+    alt 云端优先读取
+        Sydney->>SP: 通过 Catalog 中的 SharePoint WebUrl 检索直读源码
+    else 云端爬虫未就绪兜底
+        Sydney->>Orch: 调用 read_file 读取本地文件
+        Orch->>FS: 读取物理磁盘内容并返回
+    end
+    Sydney->>Sydney: 生成审查报告或交付包并输出下载链接
     Sydney-->>Orch: 输出 FINAL_ANSWER (置顶【交付文件与落盘指引】)
 
-    Note over Orch,FS: 终局自动对账落地
+    Note over Orch,SP: 阶段三：终局自动对账落盘与双轨热同步
     Orch->>Parser: 解析 finalAnswer 中的交付清单
     Parser-->>Orch: 返回 DeliverableItem[] (URL, 目标路径, isZip)
     loop 每个交付文件
         Orch->>Porter: saveAndExecute / fetchAndExtract(item)
         Porter->>Porter: 防根目录污染校验 & ZIP 平铺解压
         Porter->>FS: 写入物理文件 (如 E:\test\test\...)
+        Orch->>Sync: 触发即时热同步 (syncFile)
+        Sync->>SP: 秒级推回 SharePoint 保持 1:1 同步
     end
     Orch-->>Orch: 打印绿色对账卡片，派发 Web RPC 完成事件
 ```
@@ -276,11 +298,9 @@ sequenceDiagram
 | 第 6 轮 | 11.00 min | ❌ 未检索到 | 未就绪。 |
 | 第 7 轮 | 15.00 min | ❌ 未检索到 | 未就绪。 |
 | 第 8 轮 | 20.00 min | ❌ 未检索到 | 未就绪。 |
-| 第 9 轮 | 25.00 min | ❌ 未检索到 | 未就绪。 |
-| 第 10 轮 | 30.00 min | ❌ 未检索到 | 未就绪。 |
 
 **实测架构结论**：
-- 企业级 SharePoint 爬虫与 Substrate 文本索引的排队与爬取收敛时延具有显著的不确定性，在本次连续 30 分钟的实测中，爬虫仍未完成对新上传文件的增量索引入库；
+- 企业级 SharePoint 爬虫与 Substrate 文本索引的排队与爬取收敛时延具有显著的不确定性，在本次实测中持续超过 20 分钟仍未完成爬虫索引入库；
 - 因此，**绝不能依赖在 Prompt 中仅给出 SharePoint URL 来让模型即时感知刚落盘的文件**；
 - 必须采用**“云端 PnP 双轨写回持久化 + Substrate 会话专属 LocalFile 附件即时挂载”**双通道架构，前者保证企业资产永久保存，后者实现 0 秒时延即时认知感知。
 
