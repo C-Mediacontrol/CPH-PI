@@ -57,9 +57,11 @@
 
 ## 3. 验证结果
 
+独立只读审计结论为“有条件交付”，其 P0/P1 问题已全部修复（2 个 P0、7 个 P1、5 个 P2），修复明细见测试报告第 7 节。修复后：
+
 | 项 | 结果 |
 |---|---|
-| `bun test tests/` | 954 pass / 1 fail（仅历史 ACL 环境失败），123 files / 955 tests |
+| `bun test tests/` | 965 pass / 1 fail（仅历史 ACL 环境失败），123 files / 966 tests |
 | `bun run build:package` | 成功 |
 | `bun run package` | 成功；提示词/技能/bundle 一致性测试通过 |
 | Web 冒烟（3999） | HTTP 200 |

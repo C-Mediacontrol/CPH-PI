@@ -20,8 +20,8 @@
 | 阶段 | pass | fail | 说明 |
 |---|---|---|---|
 | 重建基线（commit `728b891`） | 910 | 1 | 唯一失败为 `sp-sync-engine.test.ts` 的 Windows ACL 断言（环境相关，历史既有） |
-| 最终（本任务全部改动） | 954 | 1 | 新增 44 个测试；仍是同一个 ACL 环境失败，无新增失败 |
-| 测试规模 | 955 tests / 123 files | — | 约 105s（Windows，本地，`--timeout 30000`） |
+| 独立审计后最终（HEAD） | 965 | 1 | 新增 55 个测试；仍是同一个 ACL 环境失败，无新增失败 |
+| 测试规模 | 966 tests / 123 files | — | 约 110s（Windows，本地，`--timeout 30000`） |
 
 ## 2. 构建与打包
 
@@ -49,6 +49,27 @@
 3. 用新 catalog 生成器校验 `E:\test_workspace`：
    - `工作区文件 203 | 已同步可索引 145 | 本地独有 14 | 不可索引 44`
    - 抽样 `Library/CNNJI QUERY/shared/modules/JsygtBatch.psm1` → `[CLOUD-READY]`，URL 属于 `WorkSpace/test_workspace`。
+
+## 7. 独立审计发现与修复（commit `83a6154`、`11bc363`）
+
+独立只读审计结论为“有条件交付”，以下问题已修复并补测试：
+
+| 等级 | 问题 | 修复 |
+|---|---|---|
+| P0 | FilePorter 下载裸 `fetch` 无超时；落盘在 `onTurnEnd/onCompleted` 前 await，挂起会冻结会话 | 下载加入 `AbortSignal` + `timeoutMs`（默认 60s）；Orchestrator 落盘再包 120s 硬超时，失败只写回执不阻断完成 |
+| P0 | `ReconcileUrls` 的 `-TargetFolder` 有默认值，只传 SiteUrl 会写坏 manifest | 未显式传 `-TargetFolder` 直接 throw；写入前输出 `[RECONCILE-DIFF]` 预览；补“不改 manifest”测试 |
+| P1 | 指定账号 IC3 token 失败会静默借用其他账号 | AccountPool 对指定邮箱失败即抛错；FilePorter 对 asyncgw 无 token 显式失败，不再无鉴权请求 |
+| P1 | `write_file` 的 `content` 里出现 `url:` 被误判为下载动作 | 下载分支要求 `!content`；补“普通 write_file 不被劫持”测试 |
+| P1 | catalog 的 `CLOUD-STALE` 仍输出未验证 URL，与内联索引矛盾 | `CLOUD-STALE` 不输出 URL（改本地读取），测试断言 |
+| P1 | 任务范围解析两个三元分支相同，且会用散文日期当 scope | 修正剩余段处理；兜底路径要求工作区内真实存在目录 |
+| P1 | 无进展指纹不含 `old_string/new_string/content`，会误跳合法修正重试 | 指纹纳入编辑锚点/内容/窗口字段；补“不同锚点三次重试均执行”测试 |
+| P1 | handoff 换号后未更新 `activeAccountEmail`、未重挂 catalog | 后继会话更新邮箱并按新账号重挂 catalog annotation |
+| P1 | zip 载荷在非 `.zip` 文件目标上被当目录解压 | 仅 `isDirTarget` 时解压；补“zip 落成文件目标”测试 |
+| P2 | 回执把 server-relative URL 当云端 URL | 落盘回执拼成绝对 URL |
+| P2 | DeliverablesParser 全篇扫描、行尾过严 | 限定在 deliverables 段（到下一个标题）；允许行尾注释；补测试 |
+| P2 | `buildFileSavedAndSyncedReceipt` 死代码却登记为实现点 | 删除该方法，能力台账改为 `LandingService.formatReceipt` |
+
+**未修复（记录为已知限制）**：P2-10 每轮 `git ls-files` + 逐文件 `statSync` 的性能优化，留待后续单独评估（当前工作区 203 文件实测无感知）。
 
 ## 5. 真实工作区首轮提示词仿真（只读）
 
@@ -80,7 +101,7 @@
 | `tests/cli/ask-question-fallback.test.ts` | 非交互诚实回退，不再伪造用户确认 |
 | `tests/skills/prompt-bundle-consistency.test.ts` | 提示词/技能/bundle 镜像字节一致、能力登记 |
 
-## 6. 已知限制
+## 7. 已知限制
 
 1. `tests/scripts/sp-sync-engine.test.ts` 的 ACL 断言在未启用 ACL 保护的临时目录上失败，属环境既有失败，已在基线报告中隔离。
 2. 真实 Copilot 任务验收需要用户重新上传 `dist/copilot-agent-bundle.zip` 后执行（见 `2026-10-26-live-acceptance-checklist.md`）。
