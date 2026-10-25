@@ -6083,13 +6083,45 @@ class TokenManager {
     fs4.writeFileSync(this.configPath, JSON.stringify({ accounts: sanitized }, null, 2), "utf8");
   }
   setCachedToken(email, token) {
-    this.activeTokens.set(email.toLowerCase(), token);
+    const key = email.toLowerCase();
+    this.activeTokens.set(key, token);
+    this.graphTokens.delete(key);
+  }
+  upsertAccountFromPkce(email, refreshToken, oid, tid) {
+    const accounts = this.loadAccounts();
+    const key = email.toLowerCase();
+    const existing = accounts.find((a) => a.email.toLowerCase() === key);
+    let updatedAccount;
+    if (existing) {
+      existing.refreshToken = refreshToken;
+      if (oid)
+        existing.userId = oid;
+      if (tid)
+        existing.tenantId = tid;
+      existing.lastRefresh = new Date().toISOString();
+      updatedAccount = existing;
+    } else {
+      updatedAccount = {
+        email,
+        refreshToken,
+        userId: oid,
+        tenantId: tid,
+        lastRefresh: new Date().toISOString()
+      };
+      accounts.push(updatedAccount);
+    }
+    this.saveAccounts(accounts);
+    this.clearCache(email);
+    return updatedAccount;
   }
   clearCache(email) {
     if (email) {
-      this.activeTokens.delete(email.toLowerCase());
+      const key = email.toLowerCase();
+      this.activeTokens.delete(key);
+      this.graphTokens.delete(key);
     } else {
       this.activeTokens.clear();
+      this.graphTokens.clear();
     }
   }
   parseJwt(token) {
@@ -6285,6 +6317,90 @@ class ChatHubClient {
     }
     return `wss://substrate.office.com/m365Copilot/Chathub/${this.token.oid}@${this.token.tid}?${params.toString()}`;
   }
+  buildInvocationPayload(options) {
+    return ChatHubClient.buildInvocationPayload(options, this.options);
+  }
+  static buildInvocationPayload(options, clientOptions) {
+    const sessionId = options.sessionId || crypto2.randomUUID();
+    const requestId = options.requestId || crypto2.randomUUID();
+    const chatArguments = {
+      source: "officeweb",
+      clientCorrelationId: crypto2.randomUUID(),
+      sessionId,
+      optionsSets: options.optionsSets || [
+        "search_result_progress_messages_with_search_queries",
+        "update_textdoc_response_after_streaming",
+        "cwc_flux_v3",
+        "deepleo_networking_timeout_10minutes_canmore",
+        "enable_search_result_progress_messages",
+        "cwc_fileupload_odb",
+        "enable_batch_token_processing",
+        "flux_v3_references",
+        "flux_v3_references_entities",
+        "flux_v3_references_ci",
+        "add_filestore_filetype",
+        "rich_responses"
+      ],
+      allowedMessageTypes: [
+        "Chat",
+        "Suggestion",
+        "Disengaged",
+        "Progress",
+        "EndOfRequest",
+        "InternalLoaderMessage"
+      ],
+      conversationId: options.conversationId,
+      traceId: crypto2.randomUUID(),
+      isStartOfSession: options.isStartOfSession ?? false,
+      productThreadType: "Office",
+      clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
+      tone: options.tone || clientOptions?.modelTone || "Gpt_61_Sol_Reasoning",
+      streamingMode: "ConciseWithPadding",
+      message: {
+        author: "user",
+        inputMethod: "Keyboard",
+        text: options.text,
+        requestId,
+        locationInfo: {
+          timeZoneOffset: 8,
+          timeZone: clientOptions?.timeZone || "Asia/Shanghai"
+        },
+        locale: clientOptions?.locale || "zh-CN",
+        messageType: "Chat",
+        experienceType: "Default"
+      },
+      plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }]
+    };
+    if (clientOptions?.customAgentId) {
+      chatArguments.threadLevelGptId = {
+        id: clientOptions.customAgentId,
+        source: "MOS3"
+      };
+      chatArguments.gpts = [
+        {
+          id: clientOptions.customAgentId,
+          source: "MOS3",
+          version: "1.0.0"
+        }
+      ];
+    }
+    if (options.annotations && options.annotations.length > 0) {
+      chatArguments.message.entityAnnotationTypes = [
+        "People",
+        "File",
+        "Event",
+        "Email",
+        "TeamsMessage"
+      ];
+      chatArguments.message.messageAnnotations = options.annotations;
+    }
+    return {
+      arguments: [chatArguments],
+      invocationId: "0",
+      target: "chat",
+      type: 4
+    };
+  }
   async sendMessage(payload, events) {
     const signal = payload.signal;
     if (signal?.aborted) {
@@ -6292,7 +6408,14 @@ class ChatHubClient {
       abortErr.name = "AbortError";
       throw abortErr;
     }
-    const wsUrl = this.buildWsUrl(payload.conversationId, payload.sessionId, payload.requestId);
+    const sessionId = payload.sessionId || crypto2.randomUUID();
+    const requestId = payload.requestId || crypto2.randomUUID();
+    const invocationPayload = {
+      ...payload,
+      sessionId,
+      requestId
+    };
+    const wsUrl = this.buildWsUrl(invocationPayload.conversationId, invocationPayload.sessionId, invocationPayload.requestId);
     return new Promise((resolve, reject) => {
       let isSettled = false;
       let hasSentChat = false;
@@ -6395,79 +6518,7 @@ class ChatHubClient {
             events?.onRawFrame?.(msg);
             if (!hasSentChat && Object.keys(msg).length === 0) {
               hasSentChat = true;
-              const chatArguments = {
-                source: "officeweb",
-                clientCorrelationId: crypto2.randomUUID(),
-                sessionId: payload.sessionId,
-                optionsSets: payload.optionsSets || [
-                  "search_result_progress_messages_with_search_queries",
-                  "update_textdoc_response_after_streaming",
-                  "deepleo_networking_timeout_10minutes_canmore",
-                  "enable_search_result_progress_messages",
-                  "cwc_fileupload_odb",
-                  "enable_batch_token_processing",
-                  "flux_v3_references",
-                  "flux_v3_references_entities",
-                  "flux_v3_references_ci",
-                  "add_filestore_filetype",
-                  "rich_responses"
-                ],
-                allowedMessageTypes: [
-                  "Chat",
-                  "Suggestion",
-                  "Disengaged",
-                  "Progress",
-                  "EndOfRequest",
-                  "InternalLoaderMessage"
-                ],
-                conversationId: payload.conversationId,
-                traceId: crypto2.randomUUID(),
-                isStartOfSession: payload.isStartOfSession ?? false,
-                productThreadType: "Office",
-                clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office" },
-                tone: payload.tone || this.options.modelTone || "Gpt_61_Sol_Reasoning",
-                streamingMode: "ConciseWithPadding",
-                message: {
-                  author: "user",
-                  inputMethod: "Keyboard",
-                  text: payload.text,
-                  requestId: payload.requestId,
-                  locationInfo: { timeZoneOffset: 8, timeZone: this.options.timeZone || "Asia/Shanghai" },
-                  locale: this.options.locale || "zh-CN",
-                  messageType: "Chat",
-                  experienceType: "Default"
-                },
-                plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }]
-              };
-              if (this.options.customAgentId) {
-                chatArguments.threadLevelGptId = {
-                  id: this.options.customAgentId,
-                  source: "MOS3"
-                };
-                chatArguments.gpts = [
-                  {
-                    id: this.options.customAgentId,
-                    source: "MOS3",
-                    version: "1.0.0"
-                  }
-                ];
-              }
-              if (payload.annotations && payload.annotations.length > 0) {
-                chatArguments.message.entityAnnotationTypes = [
-                  "People",
-                  "File",
-                  "Event",
-                  "Email",
-                  "TeamsMessage"
-                ];
-                chatArguments.message.messageAnnotations = payload.annotations;
-              }
-              const chatFrame = {
-                arguments: [chatArguments],
-                invocationId: "0",
-                target: "chat",
-                type: 4
-              };
+              const chatFrame = this.buildInvocationPayload(invocationPayload);
               const metricsFrame = {
                 arguments: [
                   {
@@ -6547,9 +6598,9 @@ class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId,
+                requestId: invocationPayload.requestId,
                 rawMessages,
                 rawFrames
               });
@@ -6559,9 +6610,9 @@ class ChatHubClient {
               settleResolve({
                 text: fullText,
                 reasoning: reasoningText,
-                conversationId: payload.conversationId,
-                sessionId: payload.sessionId,
-                requestId: payload.requestId,
+                conversationId: invocationPayload.conversationId,
+                sessionId: invocationPayload.sessionId,
+                requestId: invocationPayload.requestId,
                 rawMessages,
                 rawFrames
               });
@@ -6583,15 +6634,234 @@ class ChatHubClient {
           settleResolve({
             text: fullText,
             reasoning: reasoningText,
-            conversationId: payload.conversationId,
-            sessionId: payload.sessionId,
-            requestId: payload.requestId,
+            conversationId: invocationPayload.conversationId,
+            sessionId: invocationPayload.sessionId,
+            requestId: invocationPayload.requestId,
             rawMessages,
             rawFrames
           });
         }
       };
     });
+  }
+}
+
+// src/auth/oauth-pkce-service.ts
+import crypto3 from "node:crypto";
+var PKCE_CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
+var PKCE_AUTHORITY = "https://login.microsoftonline.com/common";
+var PKCE_REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient";
+var PKCE_SCOPE = "openid profile offline_access https://substrate.office.com/sydney/.default";
+var PKCE_AUTHORIZE_URL = `${PKCE_AUTHORITY}/oauth2/v2.0/authorize`;
+var PKCE_TOKEN_URL = `${PKCE_AUTHORITY}/oauth2/v2.0/token`;
+var PKCE_SESSION_TTL_MS = 10 * 60 * 1000;
+function decodeJwtClaims(token) {
+  if (!token || typeof token !== "string") {
+    return {};
+  }
+  const parts = token.split(".");
+  if (parts.length < 2) {
+    return {};
+  }
+  try {
+    let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (base64.length % 4 !== 0) {
+      base64 += "=";
+    }
+    return JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+function extractClaims(accessToken, idToken) {
+  const accessClaims = decodeJwtClaims(accessToken);
+  const idClaims = idToken ? decodeJwtClaims(idToken) : {};
+  const email = accessClaims.unique_name || accessClaims.upn || accessClaims.preferred_username || accessClaims.email || idClaims.preferred_username || idClaims.email || idClaims.upn || "";
+  const oid = accessClaims.oid || accessClaims.sub || idClaims.oid || idClaims.sub || "";
+  const tid = accessClaims.tid || idClaims.tid || "";
+  return { email, oid, tid };
+}
+
+class OAuthPkceService {
+  tokenManager;
+  sessions = new Map;
+  fetchFn;
+  tokenEndpoint;
+  authorizeEndpoint;
+  sessionTtlMs;
+  constructor(tokenManager, options) {
+    this.tokenManager = tokenManager;
+    this.fetchFn = options?.fetchFn || globalThis.fetch;
+    this.tokenEndpoint = options?.tokenEndpoint || PKCE_TOKEN_URL;
+    this.authorizeEndpoint = options?.authorizeEndpoint || PKCE_AUTHORIZE_URL;
+    this.sessionTtlMs = options?.sessionTtlMs || PKCE_SESSION_TTL_MS;
+  }
+  startAuthSession(targetEmail) {
+    this.cleanExpiredSessions();
+    const codeVerifier = crypto3.randomBytes(32).toString("base64url");
+    const codeChallenge = crypto3.createHash("sha256").update(codeVerifier).digest("base64url");
+    const state = crypto3.randomBytes(16).toString("base64url");
+    const authSessionId = crypto3.randomUUID();
+    const params = new URLSearchParams({
+      client_id: PKCE_CLIENT_ID,
+      response_type: "code",
+      redirect_uri: PKCE_REDIRECT_URI,
+      response_mode: "query",
+      scope: PKCE_SCOPE,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      prompt: "select_account"
+    });
+    if (targetEmail && targetEmail.trim().length > 0) {
+      params.set("login_hint", targetEmail.trim());
+    }
+    const authUrl = `${this.authorizeEndpoint}?${params.toString()}`;
+    this.sessions.set(authSessionId, {
+      authSessionId,
+      authUrl,
+      state,
+      codeVerifier,
+      createdAt: Date.now(),
+      targetEmail: targetEmail?.trim()
+    });
+    return { authSessionId, authUrl, state };
+  }
+  extractCodeAndState(redirectUrlOrCode, expectedState) {
+    const trimmed = redirectUrlOrCode.trim();
+    let searchString = "";
+    if (trimmed.includes("?")) {
+      searchString = trimmed.substring(trimmed.indexOf("?") + 1);
+    } else if (trimmed.includes("#")) {
+      searchString = trimmed.substring(trimmed.indexOf("#") + 1);
+    } else if (trimmed.includes("=") && trimmed.includes("&")) {
+      searchString = trimmed;
+    } else if (trimmed.startsWith("code=") || trimmed.startsWith("error=")) {
+      searchString = trimmed;
+    }
+    if (searchString) {
+      const hashIndex = searchString.indexOf("#");
+      if (hashIndex !== -1) {
+        searchString = searchString.substring(0, hashIndex);
+      }
+      const searchParams = new URLSearchParams(searchString);
+      const error = searchParams.get("error");
+      if (error) {
+        const errorDescription = searchParams.get("error_description");
+        const detail = errorDescription ? `: ${errorDescription}` : "";
+        throw new Error(`Azure AD authorization failed (${error})${detail}`);
+      }
+      const code = searchParams.get("code");
+      const state = searchParams.get("state") || undefined;
+      if (code) {
+        if (expectedState && state && state !== expectedState) {
+          throw new Error("State mismatch");
+        }
+        return { code, state };
+      }
+    }
+    return { code: trimmed, state: undefined };
+  }
+  async exchangeCode(authSessionId, redirectUrlOrCode, expectedEmail) {
+    let session = this.sessions.get(authSessionId);
+    if (!session) {
+      session = Array.from(this.sessions.values()).find((s) => s.state === authSessionId);
+    }
+    if (!session) {
+      throw new Error(`Authentication session not found or expired: ${authSessionId}`);
+    }
+    if (Date.now() - session.createdAt > this.sessionTtlMs) {
+      this.sessions.delete(authSessionId);
+      throw new Error(`Authentication session expired: ${authSessionId}`);
+    }
+    const { code } = this.extractCodeAndState(redirectUrlOrCode, session.state);
+    const form = new URLSearchParams({
+      client_id: PKCE_CLIENT_ID,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: PKCE_REDIRECT_URI,
+      code_verifier: session.codeVerifier
+    });
+    const res = await this.fetchFn(this.tokenEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString()
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      let errDetail = errText.slice(0, 300);
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed.error_description || parsed.error) {
+          errDetail = `${parsed.error}: ${parsed.error_description || ""}`;
+        }
+      } catch {}
+      throw new Error(`Azure AD token exchange failed (${res.status}): ${errDetail}`);
+    }
+    const data = await res.json();
+    if (data.error) {
+      throw new Error(`${data.error}: ${data.error_description || ""}`);
+    }
+    const claims = extractClaims(data.access_token, data.id_token);
+    const actualEmail = claims.email || expectedEmail || session.targetEmail || "";
+    const target = expectedEmail || session.targetEmail;
+    const emailMismatch = Boolean(target && actualEmail && actualEmail.toLowerCase() !== target.toLowerCase());
+    if (data.refresh_token && actualEmail) {
+      this.tokenManager.upsertAccountFromPkce(actualEmail, data.refresh_token, claims.oid, claims.tid);
+    }
+    if (data.access_token && actualEmail) {
+      const accessClaims = decodeJwtClaims(data.access_token);
+      const expiresAt = accessClaims.exp ? accessClaims.exp * 1000 : Date.now() + (data.expires_in || 3600) * 1000;
+      const activeToken = {
+        email: actualEmail,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || "",
+        expiresAt,
+        oid: claims.oid,
+        tid: claims.tid
+      };
+      this.tokenManager.setCachedToken(actualEmail, activeToken);
+    }
+    this.sessions.delete(authSessionId);
+    return {
+      success: true,
+      email: actualEmail,
+      expectedEmail: target,
+      emailMismatch,
+      userId: claims.oid,
+      tenantId: claims.tid,
+      accessToken: data.access_token
+    };
+  }
+  getSession(authSessionIdOrState) {
+    this.cleanExpiredSessions();
+    let session = this.sessions.get(authSessionIdOrState);
+    if (!session) {
+      session = Array.from(this.sessions.values()).find((s) => s.state === authSessionIdOrState);
+    }
+    if (!session)
+      return;
+    if (Date.now() - session.createdAt > this.sessionTtlMs) {
+      this.sessions.delete(session.authSessionId);
+      return;
+    }
+    return session;
+  }
+  findSession(predicate) {
+    this.cleanExpiredSessions();
+    for (const session of this.sessions.values()) {
+      if (predicate(session))
+        return session;
+    }
+    return;
+  }
+  cleanExpiredSessions() {
+    const now = Date.now();
+    for (const [id, session] of this.sessions.entries()) {
+      if (now - session.createdAt > this.sessionTtlMs) {
+        this.sessions.delete(id);
+      }
+    }
   }
 }
 
@@ -6609,6 +6879,8 @@ function getNextUtcMidnight(floorMs = 15 * 60 * 1000) {
 
 class AccountPool {
   manager;
+  pkceService;
+  pkceSessions = new Map;
   statuses = new Map;
   ineligibleAgents = new Map;
   allowedAccounts;
@@ -6620,12 +6892,16 @@ class AccountPool {
   defaultCooldownMs;
   constructor(manager, options) {
     this.manager = manager || new TokenManager;
+    this.pkceService = options?.pkceService || new OAuthPkceService(this.manager);
     this.maxAccounts = options?.maxAccounts ?? 7;
     this.defaultCooldownMs = options?.defaultCooldownMs ?? 180000;
     if (options?.allowedAccounts) {
       this.setAllowedAccounts(options.allowedAccounts);
     }
     this.refreshAccountList();
+  }
+  getPkceService() {
+    return this.pkceService;
   }
   getManager() {
     return this.manager;
@@ -6708,6 +6984,8 @@ class AccountPool {
           isAvailable: true,
           isThrottled: false,
           isAllowed,
+          authExpired: false,
+          authErrorReason: undefined,
           cooldownUntil: 0,
           lastUsedAt: 0,
           totalRequests: 0,
@@ -6771,9 +7049,17 @@ class AccountPool {
       const status = this.statuses.get(key);
       if (!status)
         continue;
+      if (status.authExpired || status.isAvailable === false)
+        continue;
       if (normAgentId && !this.isAgentEligible(acc.email, normAgentId))
         continue;
-      if (status.isThrottled && now < status.cooldownUntil)
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+        status.throttleReason = undefined;
+        status.consecutiveFailures = 0;
+      }
+      if (status.isThrottled)
         continue;
       if (this.isAccountLeased(key))
         continue;
@@ -6789,12 +7075,25 @@ class AccountPool {
     const existingEmail = this.sessionLeases.get(normSessionId);
     if (existingEmail) {
       const status = this.statuses.get(existingEmail.toLowerCase());
-      if (status && !status.isThrottled) {
-        status.lastUsedAt = Date.now();
-        status.totalRequests++;
-        return await this.manager.getAccessToken(existingEmail);
+      if (status && !status.authExpired && status.isAvailable !== false && !status.isThrottled) {
+        try {
+          const session = await this.manager.getAccessToken(existingEmail);
+          status.lastUsedAt = Date.now();
+          status.totalRequests++;
+          return session;
+        } catch (err) {
+          this.sessionLeases.delete(normSessionId);
+          if (this.isFatalAuthGrantError(err)) {
+            this.markAuthExpired(existingEmail, String(err?.message || err));
+          } else {
+            status.isThrottled = true;
+            status.cooldownUntil = Date.now() + 60 * 1000;
+            status.throttledCount = (status.throttledCount || 0) + 1;
+          }
+        }
+      } else {
+        this.sessionLeases.delete(normSessionId);
       }
-      this.sessionLeases.delete(normSessionId);
     }
     const accounts = this.refreshAccountList();
     const total = accounts.length;
@@ -6811,6 +7110,9 @@ class AccountPool {
       const key = acc.email.toLowerCase();
       const status = this.statuses.get(key);
       if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
+        continue;
+      }
+      if (status.authExpired || status.isAvailable === false) {
         continue;
       }
       if (status.isThrottled && now >= status.cooldownUntil) {
@@ -6832,9 +7134,13 @@ class AccountPool {
         return session;
       } catch (err) {
         this.sessionLeases.delete(normSessionId);
-        status.isThrottled = true;
-        status.cooldownUntil = Date.now() + 60 * 1000;
-        status.throttledCount = (status.throttledCount || 0) + 1;
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(acc.email, String(err?.message || err));
+        } else {
+          status.isThrottled = true;
+          status.cooldownUntil = Date.now() + 60 * 1000;
+          status.throttledCount = (status.throttledCount || 0) + 1;
+        }
       }
     }
     const eligibleAccounts = accounts.filter((acc) => !normAgentId || this.isAgentEligible(acc.email, normAgentId));
@@ -6890,6 +7196,72 @@ class AccountPool {
       status.throttleReason = undefined;
       status.consecutiveFailures = 0;
     }
+  }
+  resetCooldown(email) {
+    const key = email.toLowerCase();
+    const status = this.statuses.get(key);
+    if (!status) {
+      return false;
+    }
+    if (status.authExpired) {
+      return false;
+    }
+    this.unthrottle(email);
+    return true;
+  }
+  reportThrottle(email, durationMs, reason = "burst") {
+    this.markThrottled(email, durationMs, reason);
+  }
+  static isFatalAuthGrantError(err) {
+    if (!err)
+      return false;
+    let text = "";
+    if (typeof err === "string") {
+      text = err;
+    } else if (err instanceof Error) {
+      text = `${err.message} ${err.description || ""} ${err.code || ""}`;
+    } else if (typeof err === "object") {
+      text = `${err.message || ""} ${err.error || ""} ${err.error_description || ""} ${err.code || ""}`;
+    }
+    const lower = text.toLowerCase();
+    if (lower.includes("invalid_grant") || lower.includes("interaction_required")) {
+      return true;
+    }
+    const fatalCodes = [
+      "aadsts700082",
+      "aadsts70008",
+      "aadsts50173",
+      "aadsts50076",
+      "aadsts50079",
+      "aadsts50058",
+      "aadsts70000"
+    ];
+    return fatalCodes.some((code) => lower.includes(code));
+  }
+  isFatalAuthGrantError(err) {
+    return AccountPool.isFatalAuthGrantError(err);
+  }
+  markAuthExpired(email, reason) {
+    const key = email.toLowerCase();
+    let status = this.statuses.get(key);
+    if (!status) {
+      this.refreshAccountList();
+      status = this.statuses.get(key);
+    }
+    if (status) {
+      status.authExpired = true;
+      status.authErrorReason = reason;
+      status.isAvailable = false;
+      status.isThrottled = false;
+      status.cooldownUntil = 0;
+      status.throttleReason = "auth_error";
+    }
+    for (const [sessionId, leasedEmail] of this.sessionLeases.entries()) {
+      if (leasedEmail === key) {
+        this.sessionLeases.delete(sessionId);
+      }
+    }
+    this.inFlightLeases.delete(key);
   }
   markAgentIneligible(email, agentId, reason) {
     const key = email.toLowerCase();
@@ -6966,6 +7338,9 @@ class AccountPool {
         if (normAgentId && !this.isAgentEligible(acc.email, normAgentId)) {
           continue;
         }
+        if (status.authExpired || status.isAvailable === false) {
+          continue;
+        }
         if (status.isThrottled && now >= status.cooldownUntil) {
           status.isThrottled = false;
           status.cooldownUntil = 0;
@@ -6985,9 +7360,13 @@ class AccountPool {
           status.totalRequests++;
           return session;
         } catch (err) {
-          status.isThrottled = true;
-          status.cooldownUntil = Date.now() + 60 * 1000;
-          status.throttledCount = (status.throttledCount || 0) + 1;
+          if (this.isFatalAuthGrantError(err)) {
+            this.markAuthExpired(acc.email, String(err?.message || err));
+          } else {
+            status.isThrottled = true;
+            status.cooldownUntil = Date.now() + 60 * 1000;
+            status.throttledCount = (status.throttledCount || 0) + 1;
+          }
         } finally {
           this.inFlightLeases.delete(key);
         }
@@ -6997,7 +7376,7 @@ class AccountPool {
     let earliest = null;
     for (const acc of eligibleAccounts) {
       const st = this.statuses.get(acc.email.toLowerCase());
-      if (st && (!earliest || st.cooldownUntil < earliest.cooldownUntil)) {
+      if (st && st.isThrottled && st.cooldownUntil > 0 && (!earliest || st.cooldownUntil < earliest.cooldownUntil)) {
         earliest = st;
       }
     }
@@ -7029,6 +7408,10 @@ class AccountPool {
       } catch (err) {
         lastError = err;
         const msg = String(err?.message || err).toLowerCase();
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(token.email, String(err?.message || err));
+          continue;
+        }
         const isRateLimited = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("429") || msg.includes("throttled") || msg.includes("quota");
         if (isRateLimited) {
           this.markThrottled(token.email);
@@ -7057,9 +7440,87 @@ class AccountPool {
     if (accounts.length === 0) {
       throw new Error(`No accounts configured in ${this.manager.getConfigPath()}`);
     }
-    const idx = Math.max(0, (this.currentIndex - 1 + accounts.length) % accounts.length);
-    const target = accounts[idx];
-    return this.manager.getGraphAccessToken(target.email);
+    const now = Date.now();
+    const total = accounts.length;
+    const startIndex = this.currentIndex;
+    for (let i = 0;i < total; i++) {
+      const idx = (startIndex + i) % total;
+      const acc = accounts[idx];
+      const key = acc.email.toLowerCase();
+      const status = this.statuses.get(key);
+      if (!status)
+        continue;
+      if (status.authExpired || status.isAvailable === false) {
+        continue;
+      }
+      if (status.isThrottled && now >= status.cooldownUntil) {
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+      }
+      if (status.isThrottled) {
+        continue;
+      }
+      try {
+        const token = await this.manager.getGraphAccessToken(acc.email);
+        return token;
+      } catch (err) {
+        if (this.isFatalAuthGrantError(err)) {
+          this.markAuthExpired(acc.email, String(err?.message || err));
+        } else {
+          this.markThrottled(acc.email, 60 * 1000, "burst");
+        }
+      }
+    }
+    throw new Error("No healthy accounts available in pool for Graph access token");
+  }
+  startPkceAuth(targetEmail) {
+    const session = this.pkceService.startAuthSession(targetEmail);
+    this.pkceSessions.set(session.state, session.authSessionId);
+    this.pkceSessions.set(session.authSessionId, session.authSessionId);
+    if (targetEmail) {
+      this.pkceSessions.set(targetEmail.trim().toLowerCase(), session.authSessionId);
+    }
+    return session;
+  }
+  async completePkceAuth(redirectUrlOrCode, state, expectedEmail) {
+    let resolvedState = state;
+    if (!resolvedState) {
+      try {
+        const extracted = this.pkceService.extractCodeAndState(redirectUrlOrCode);
+        resolvedState = extracted.state;
+      } catch {}
+    }
+    let targetSessionId = "";
+    if (resolvedState && this.pkceSessions.has(resolvedState)) {
+      targetSessionId = this.pkceSessions.get(resolvedState);
+    } else if (resolvedState) {
+      targetSessionId = resolvedState;
+    } else if (expectedEmail && this.pkceSessions.has(expectedEmail.trim().toLowerCase())) {
+      targetSessionId = this.pkceSessions.get(expectedEmail.trim().toLowerCase());
+    } else if (this.pkceService.findSession) {
+      const match = this.pkceService.findSession((s) => !expectedEmail || s.targetEmail?.toLowerCase() === expectedEmail.toLowerCase());
+      if (match)
+        targetSessionId = match.authSessionId;
+    }
+    const result = await this.pkceService.exchangeCode(targetSessionId, redirectUrlOrCode, expectedEmail);
+    if (result.success && result.email) {
+      const key = result.email.toLowerCase();
+      let status = this.statuses.get(key);
+      if (!status) {
+        this.refreshAccountList();
+        status = this.statuses.get(key);
+      }
+      if (status) {
+        status.authExpired = false;
+        status.authErrorReason = undefined;
+        status.isAvailable = true;
+        status.isThrottled = false;
+        status.cooldownUntil = 0;
+        status.throttleReason = undefined;
+        status.consecutiveFailures = 0;
+      }
+    }
+    return result;
   }
 }
 
@@ -7237,40 +7698,8 @@ class SkillRegistry {
   loader;
   availableSkills = new Map;
   activeSkills = new Map;
-  agentMountedSkills = new Set(["handoff", "subagent"]);
-  constructor(loader, agentMountedSkills) {
+  constructor(loader) {
     this.loader = loader || new SkillLoader2;
-    if (agentMountedSkills && Array.isArray(agentMountedSkills)) {
-      this.agentMountedSkills = new Set(agentMountedSkills.map((s) => s.toLowerCase().replace(/^\//, "").trim()));
-    }
-  }
-  getAgentMountedSkills() {
-    return Array.from(this.agentMountedSkills.values());
-  }
-  isAgentMounted(name) {
-    const key = name.toLowerCase().replace(/^\//, "").trim();
-    return this.agentMountedSkills.has(key);
-  }
-  setAgentMountedSkills(names) {
-    this.agentMountedSkills = new Set(names.map((s) => s.toLowerCase().replace(/^\//, "").trim()));
-  }
-  toggleAgentMounted(name) {
-    const key = name.toLowerCase().replace(/^\//, "").trim();
-    if (this.agentMountedSkills.has(key)) {
-      this.agentMountedSkills.delete(key);
-      return false;
-    } else {
-      this.agentMountedSkills.add(key);
-      return true;
-    }
-  }
-  setAgentMounted(name, mounted) {
-    const key = name.toLowerCase().replace(/^\//, "").trim();
-    if (mounted) {
-      this.agentMountedSkills.add(key);
-    } else {
-      this.agentMountedSkills.delete(key);
-    }
   }
   getLoader() {
     return this.loader;
@@ -7378,61 +7807,34 @@ class SkillRegistry {
     const targetSkills = skills ?? this.getActiveSkills();
     if (targetSkills.length === 0)
       return "";
-    const mounted = [];
-    const dynamic = [];
-    for (const s of targetSkills) {
-      if (this.isAgentMounted(s.name)) {
-        mounted.push(s);
-      } else {
-        dynamic.push(s);
-      }
-    }
-    const blocks = [];
-    if (mounted.length > 0) {
-      const mountedItems = mounted.map((s) => {
-        const desc = s.description ? `: ${s.description}` : "";
-        return `- **[${s.name}]**${desc}`;
-      });
-      blocks.push([
-        "【已在 Agent 挂载的内置专业技能 (Agent Pre-mounted Skills)】",
-        "当前任务已激活以下预置于你的专属知识库与系统指令中的工程技能。该技能规范已由你完全掌握，无需重复上传附件或倾倒正文，请直接唤醒并遵循你所持有的对应技能流程与阶段门禁执行：",
-        ...mountedItems
-      ].join(`
-`));
-    }
-    if (dynamic.length > 0) {
-      const dynamicSections = dynamic.map((s, idx) => {
-        const header = `#### [技能 ${idx + 1}: ${s.name}]`;
-        const desc = s.description ? `**说明**: ${s.description}` : "";
-        const body = s.content ? `**指引与约束规范**:
+    const sections = targetSkills.map((s, idx) => {
+      const header = `#### [技能 ${idx + 1}: ${s.name}]`;
+      const desc = s.description ? `**说明**: ${s.description}` : "";
+      const body = s.content ? `**指引与约束规范**:
 ${s.content}` : "";
-        return [header, desc, body].filter(Boolean).join(`
+      return [header, desc, body].filter(Boolean).join(`
 `);
-      });
-      blocks.push([
-        "【已激活专业工程技能手册 (Active Specialized Skills)】",
-        "以下是你当前已激活的专属领域工程技能（动态全量挂载）。请在后续分析、计划与工具调用中严格遵守各技能的规范与铁律约束：",
-        "",
-        ...dynamicSections
-      ].join(`
-`));
-    }
-    return blocks.join(`
-
+    });
+    return [
+      "【已激活专业工程技能手册 (Active Specialized Skills)】",
+      "以下是你当前已激活的专属领域工程技能。请在后续分析、计划与工具调用中严格遵守各技能的规范与铁律约束：",
+      "",
+      ...sections
+    ].join(`
 `);
   }
 }
 
 // src/agent/subagent-runner.ts
-import fs13 from "node:fs";
-import path17 from "node:path";
-import crypto6 from "node:crypto";
+import fs14 from "node:fs";
+import path18 from "node:path";
+import crypto8 from "node:crypto";
 
 // src/agent/orchestrator.ts
-import crypto5 from "crypto";
-import fs12 from "fs";
-import path16 from "path";
-import { execSync as execSync2, spawn as spawn3 } from "child_process";
+import crypto7 from "crypto";
+import fs13 from "fs";
+import path17 from "path";
+import { execSync as execSync2 } from "child_process";
 
 // src/transport/substrate-uploader.ts
 class SubstrateUploader {
@@ -7801,7 +8203,7 @@ class SubstrateUploader {
 import { execSync } from "node:child_process";
 import fs6 from "node:fs";
 import path6 from "node:path";
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 
 class SnapshotGenerator {
   static MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
@@ -7832,7 +8234,6 @@ class SnapshotGenerator {
     "scripts/lib/PnPSession.psm1",
     "cph-main-agent-prompt.txt",
     "cph-coder-agent-prompt.txt",
-    "cph-researcher-agent-prompt.txt",
     "cph-dev-agent-prompt.txt"
   ];
   static ALLOWED_EXTENSIONS = new Set([
@@ -7907,7 +8308,7 @@ class SnapshotGenerator {
       if (this.SENSITIVE_CONTENT_PATTERNS.some((pattern) => pattern.test(rawStr))) {
         throw new Error(`CRITICAL SECURITY ALERT: Secret token or private key detected in file ${relPath}. Snapshot generation aborted!`);
       }
-      const fileHash = crypto3.createHash("sha256").update(rawBuffer).digest("hex").slice(0, 12);
+      const fileHash = crypto4.createHash("sha256").update(rawBuffer).digest("hex").slice(0, 12);
       const lineCount = rawStr.split(`
 `).length;
       manifestLines.push(`- ${relPath} (Lines: ${lineCount}, SHA: ${fileHash}, Bytes: ${stat.size})`);
@@ -7945,7 +8346,7 @@ class SnapshotGenerator {
 ` + contentBlocks.join(`
 `);
     const fullBuffer = Buffer.from(fullText, "utf-8");
-    const snapshotHash = crypto3.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
+    const snapshotHash = crypto4.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
     const snapshotPath = path6.join(targetOutputDir, `workspace-snapshot-${snapshotHash}.txt`);
     fs6.writeFileSync(snapshotPath, fullBuffer);
     return {
@@ -8026,7 +8427,7 @@ class SnapshotGenerator {
 ` + sections.join(`
 `);
     const fullBuffer = Buffer.from(fullText, "utf-8");
-    const sliceHash = crypto3.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
+    const sliceHash = crypto4.createHash("sha256").update(fullBuffer).digest("hex").slice(0, 16);
     const slicePath = path6.join(targetOutputDir, `slice-${sliceHash}.txt`);
     fs6.writeFileSync(slicePath, fullBuffer);
     return {
@@ -8104,14 +8505,443 @@ class SnapshotGenerator {
   }
 }
 
+// src/workspace/pnp-sync-engine.ts
+import fs7 from "node:fs";
+import path7 from "node:path";
+import crypto5 from "node:crypto";
+import { spawn } from "node:child_process";
+var __dirname = "E:\\copilot-web proxy\\CPH-PI\\src\\workspace";
+function encodeUrlPathSegments(relPath) {
+  return relPath.replace(/\\/g, "/").split("/").filter((seg) => seg.length > 0).map((seg) => {
+    try {
+      return encodeURIComponent(decodeURIComponent(seg));
+    } catch {
+      return encodeURIComponent(seg);
+    }
+  }).join("/");
+}
+var NON_INDEXABLE_EXTENSIONS = new Set([
+  ".dll",
+  ".dylib",
+  ".so",
+  ".exe",
+  ".pdb",
+  ".lib",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".7z",
+  ".rar",
+  ".aar",
+  ".jar",
+  ".onnx",
+  ".bin",
+  ".cache",
+  ".up2date"
+]);
+function isNonIndexableBinary(filePath) {
+  const lower = filePath.toLowerCase();
+  for (const ext of NON_INDEXABLE_EXTENSIONS) {
+    if (lower.endsWith(ext)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+class PnPWorkspaceSyncEngine {
+  static DEFAULT_SITE_URL = "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN";
+  static DEFAULT_TARGET_FOLDER = "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/03 AFR/AFR SCHK/06_Training/New Hire Training/2025/Vincent Fu/WorkSpace/live test";
+  scriptPath;
+  constructor(customScriptPath) {
+    if (customScriptPath) {
+      this.scriptPath = customScriptPath;
+    } else {
+      this.scriptPath = path7.resolve(__dirname, "../../scripts/sp-sync-engine.ps1");
+    }
+  }
+  static getFileSha256(filePath) {
+    const hash = crypto5.createHash("sha256");
+    const buffer = fs7.readFileSync(filePath);
+    hash.update(buffer);
+    return hash.digest("hex");
+  }
+  static loadManifest(manifestPath) {
+    if (fs7.existsSync(manifestPath)) {
+      try {
+        let raw = fs7.readFileSync(manifestPath, "utf8");
+        if (raw.charCodeAt(0) === 65279) {
+          raw = raw.slice(1);
+        }
+        const parsed = JSON.parse(raw);
+        if (parsed) {
+          if (!parsed.version || parsed.version < 2) {
+            parsed.version = 2;
+          }
+          if (!parsed.folders) {
+            parsed.folders = {};
+          }
+          return parsed;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  static saveManifest(manifestPath, manifest) {
+    const dir = path7.dirname(manifestPath);
+    if (!fs7.existsSync(dir)) {
+      fs7.mkdirSync(dir, { recursive: true });
+    }
+    if (!manifest.version || manifest.version < 2) {
+      manifest.version = 2;
+    }
+    manifest.folders = manifest.folders || {};
+    fs7.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  }
+  async executePowerShell(args, signal) {
+    return new Promise((resolve, reject) => {
+      const psArgs = [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        this.scriptPath,
+        ...args
+      ];
+      const child = spawn("powershell.exe", psArgs, {
+        windowsHide: true
+      });
+      let stdout = "";
+      let stderr = "";
+      if (signal) {
+        if (signal.aborted) {
+          child.kill();
+          return reject(new Error("Operation aborted"));
+        }
+        signal.addEventListener("abort", () => {
+          child.kill();
+          reject(new Error("Operation aborted"));
+        });
+      }
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (err) => {
+        reject(new Error(`Failed to spawn powershell.exe: ${err.message}`));
+      });
+      child.on("close", (code) => {
+        const startMarker = "###REPORT_JSON_START###";
+        const endMarker = "###REPORT_JSON_END###";
+        const startIndex = stdout.indexOf(startMarker);
+        const endIndex = stdout.indexOf(endMarker);
+        let report = null;
+        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+          const jsonStr = stdout.substring(startIndex + startMarker.length, endIndex).trim();
+          try {
+            report = JSON.parse(jsonStr);
+          } catch (e) {}
+        }
+        if (code !== 0) {
+          return reject(new Error(`sp-sync-engine.ps1 exited with code ${code}.
+STDERR: ${stderr.trim()}
+STDOUT: ${stdout.trim()}`));
+        }
+        if (!report) {
+          return reject(new Error(`Failed to parse report JSON from sp-sync-engine.ps1 output.
+STDOUT: ${stdout.trim()}`));
+        }
+        resolve({ stdout, stderr, report });
+      });
+    });
+  }
+  async prewarm(options) {
+    const siteUrl = options.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const targetFolder = options.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const manifestPath = options.manifestPath || path7.join(options.workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const dirtyLogPath = options.dirtyLogPath || path7.join(options.workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
+    const args = [
+      "-Action",
+      "Prewarm",
+      "-WorkspaceRoot",
+      options.workspaceRoot,
+      "-TargetFolder",
+      targetFolder,
+      "-SiteUrl",
+      siteUrl,
+      "-ManifestPath",
+      manifestPath,
+      "-DirtyLogPath",
+      dirtyLogPath
+    ];
+    if (options.hardReset) {
+      args.push("-HardReset");
+    }
+    if (options.mockTransport) {
+      args.push("-MockTransport");
+    }
+    const { report } = await this.executePowerShell(args, options.signal);
+    try {
+      const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+      if (manifest) {
+        const mapContent = PnPWorkspaceSyncEngine.generateVirtualRepoMap(manifest, siteUrl, targetFolder);
+        const mapPath = path7.join(options.workspaceRoot, ".cph", "state", "virtual-repo-map.md");
+        fs7.mkdirSync(path7.dirname(mapPath), { recursive: true });
+        fs7.writeFileSync(mapPath, mapContent, "utf8");
+      }
+    } catch {}
+    const folderResults = Array.isArray(report.folderResults) ? report.folderResults.map((f) => ({
+      relativePath: f.relativePath || f.relativeFolder,
+      status: f.status === "recycled" ? "pruned" : f.status,
+      uniqueId: f.uniqueId,
+      error: f.error
+    })) : undefined;
+    return {
+      workspaceRoot: report.workspaceRoot,
+      targetFolder: report.targetFolder,
+      totalLocal: report.totalLocal,
+      totalLocalFolders: report.totalLocalFolders,
+      syncedCount: report.syncedCount,
+      skippedCount: report.skippedCount,
+      prunedCount: report.prunedCount,
+      failedCount: report.failedCount,
+      syncedFoldersCount: report.syncedFoldersCount,
+      prunedFoldersCount: report.prunedFoldersCount,
+      durationMs: report.durationMs,
+      results: report.results || [],
+      folderResults
+    };
+  }
+  async syncFile(workspaceRoot, relativePath, targetFolder, options) {
+    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const manifestPath = options?.manifestPath || path7.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const dirtyLogPath = options?.dirtyLogPath || path7.join(workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
+    const args = [
+      "-Action",
+      "SyncSingleFile",
+      "-WorkspaceRoot",
+      workspaceRoot,
+      "-FilePath",
+      relativePath,
+      "-TargetFolder",
+      folder,
+      "-SiteUrl",
+      siteUrl,
+      "-ManifestPath",
+      manifestPath,
+      "-DirtyLogPath",
+      dirtyLogPath
+    ];
+    if (options?.mockTransport) {
+      args.push("-MockTransport");
+    }
+    const { report } = await this.executePowerShell(args, options?.signal);
+    const result = report.results?.[0] || {
+      relativePath,
+      status: "failed",
+      error: "No result returned"
+    };
+    return result;
+  }
+  async syncFolder(workspaceRoot, relativeFolderPath, targetFolder, options) {
+    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const manifestPath = options?.manifestPath || path7.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
+    const dirtyLogPath = options?.dirtyLogPath || path7.join(workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
+    const args = [
+      "-Action",
+      "EnsureFolder",
+      "-WorkspaceRoot",
+      workspaceRoot,
+      "-SourceFolder",
+      relativeFolderPath,
+      "-TargetFolder",
+      folder,
+      "-SiteUrl",
+      siteUrl,
+      "-ManifestPath",
+      manifestPath,
+      "-DirtyLogPath",
+      dirtyLogPath
+    ];
+    if (options?.mockTransport) {
+      args.push("-MockTransport");
+    }
+    const { report } = await this.executePowerShell(args, options?.signal);
+    const rawResult = report?.results?.[0];
+    const result = rawResult ? {
+      relativePath: rawResult.relativePath || rawResult.relativeFolder || relativeFolderPath,
+      status: (rawResult.status === "recycled" ? "pruned" : rawResult.status) || "synced",
+      uniqueId: rawResult.uniqueId,
+      error: rawResult.error
+    } : {
+      relativePath: relativeFolderPath,
+      status: "failed",
+      error: "No result returned"
+    };
+    return result;
+  }
+  async pullFile(workspaceRoot, relativePath, targetFolder, options) {
+    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const args = [
+      "-Action",
+      "PullFile",
+      "-WorkspaceRoot",
+      workspaceRoot,
+      "-FilePath",
+      relativePath,
+      "-TargetFolder",
+      folder,
+      "-SiteUrl",
+      siteUrl
+    ];
+    if (options?.mockTransport) {
+      args.push("-MockTransport");
+    }
+    const { report } = await this.executePowerShell(args, options?.signal);
+    const result = report.results?.[0] || {
+      relativePath,
+      status: "failed",
+      error: "No result returned"
+    };
+    return result;
+  }
+  async verifyCloudMirror(options) {
+    const siteUrl = options.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+    const targetFolder = options.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+    const args = [
+      "-Action",
+      "VerifyMirror",
+      "-WorkspaceRoot",
+      options.workspaceRoot,
+      "-TargetFolder",
+      targetFolder,
+      "-SiteUrl",
+      siteUrl
+    ];
+    if (options.mockTransport) {
+      args.push("-MockTransport");
+    }
+    const { report } = await this.executePowerShell(args, options.signal);
+    return report;
+  }
+  async verifyMirror(options) {
+    return this.verifyCloudMirror(options);
+  }
+  async syncCloudWorkspace(options) {
+    if (!options.skipVerify) {
+      const verifyResult = await this.verifyCloudMirror({
+        workspaceRoot: options.workspaceRoot,
+        targetFolder: options.targetFolder,
+        siteUrl: options.siteUrl,
+        mockTransport: options.mockTransport,
+        signal: options.signal
+      });
+      if (!verifyResult.valid) {
+        throw new Error(verifyResult.reason);
+      }
+    }
+    return this.prewarm(options);
+  }
+  static readVirtualRepoMap(workspaceRoot) {
+    if (!workspaceRoot) {
+      return;
+    }
+    const mapPath = path7.join(workspaceRoot, ".cph", "state", "virtual-repo-map.md");
+    if (!fs7.existsSync(mapPath)) {
+      return;
+    }
+    try {
+      const content = fs7.readFileSync(mapPath, "utf8").trim();
+      return content.length > 0 ? content : undefined;
+    } catch {
+      return;
+    }
+  }
+  static generateVirtualRepoMap(manifest, siteUrl, targetFolder) {
+    let origin = "";
+    try {
+      origin = new URL(siteUrl).origin;
+    } catch {
+      origin = siteUrl.replace(/\/$/, "");
+    }
+    const folderClean = targetFolder.startsWith("/") ? targetFolder : `/${targetFolder}`;
+    const encodedFolder = encodeUrlPathSegments(folderClean);
+    const remoteRootUrl = folderClean.startsWith("/sites/") ? `${origin}${encodedFolder ? `/${encodedFolder}` : ""}` : `${siteUrl.replace(/\/$/, "")}${encodedFolder ? `/${encodedFolder}` : ""}`;
+    const files = manifest.files || {};
+    const allKeys = Object.keys(files).sort();
+    const fileKeys = allKeys.filter((k) => !isNonIndexableBinary(k));
+    const lines = [
+      "[SHAREPOINT REMOTE WORKSPACE]",
+      `Remote Root URL: ${remoteRootUrl}`,
+      `Sync Status: Synchronized (Local SSOT) | Total Files: ${fileKeys.length}`,
+      "",
+      "Files Index:"
+    ];
+    const MAX_MAP_FILES = 120;
+    if (fileKeys.length === 0) {
+      lines.push("- (No files recorded in sync manifest)");
+    } else {
+      const displayKeys = fileKeys.slice(0, MAX_MAP_FILES);
+      for (const k of displayKeys) {
+        const item = files[k];
+        const sizeKb = (item.size / 1024).toFixed(1);
+        const guidStr = item.uniqueId ? ` | UniqueId: ${item.uniqueId}` : "";
+        let fileWebUrl = "";
+        if (item.serverRelativeUrl) {
+          const encodedServerUrl = encodeUrlPathSegments(item.serverRelativeUrl);
+          fileWebUrl = item.serverRelativeUrl.startsWith("/sites/") ? `${origin}${encodedServerUrl ? `/${encodedServerUrl}` : ""}` : `${siteUrl.replace(/\/$/, "")}${encodedServerUrl ? `/${encodedServerUrl}` : ""}`;
+        } else {
+          const encodedRelPath = encodeUrlPathSegments(k);
+          fileWebUrl = `${remoteRootUrl}/${encodedRelPath}`;
+        }
+        let statusTag = "[CLOUD-READY]";
+        if (item.firstCreatedAt !== undefined && item.firstCreatedAt !== null && item.lastSyncedAt !== undefined && item.lastSyncedAt !== null) {
+          if (String(item.firstCreatedAt) === String(item.lastSyncedAt)) {
+            const createdTime = typeof item.firstCreatedAt === "number" ? item.firstCreatedAt : !Number.isNaN(Number(item.firstCreatedAt)) ? Number(item.firstCreatedAt) : new Date(item.firstCreatedAt).getTime();
+            if (!Number.isNaN(createdTime) && Date.now() - createdTime < 60000) {
+              statusTag = "[LOCAL-NEW: use read_file]";
+            }
+          }
+        }
+        lines.push(`- ${k.replace(/\\/g, "/")} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl} | Status: ${statusTag})`);
+      }
+      if (fileKeys.length > MAX_MAP_FILES) {
+        lines.push(`- ... (${fileKeys.length - MAX_MAP_FILES} more files synchronized at ${remoteRootUrl})`);
+      }
+    }
+    if (manifest.folders && Object.keys(manifest.folders).length > 0) {
+      const folderKeys = Object.keys(manifest.folders).sort();
+      lines.push("");
+      lines.push("### [DIRECTORIES / EMPTY FOLDERS]");
+      for (const fk of folderKeys) {
+        const fEntry = manifest.folders[fk];
+        const lastSyncedStr = fEntry?.lastSyncedAt ? ` (LastSynced: ${fEntry.lastSyncedAt})` : "";
+        lines.push(`- ${fk.replace(/\\/g, "/")}${lastSyncedStr}`);
+      }
+    }
+    lines.push("");
+    lines.push("Guidance: All repository files are grounded at the SharePoint paths above. You may cite, inspect or trace them directly by relative path or URL.");
+    return lines.join(`
+`);
+  }
+}
+
 // src/protocol/tool-bridge.ts
-import fs8 from "node:fs";
-import path12 from "node:path";
-import crypto4 from "node:crypto";
+import fs9 from "node:fs";
+import path13 from "node:path";
+import crypto6 from "node:crypto";
 // src/tools/read.ts
 import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import path7 from "node:path";
+import path8 from "node:path";
 var defaultReadOperations = {
   readFile: (p) => fsReadFile(p),
   access: (p) => fsAccess(p, constants.R_OK)
@@ -8138,7 +8968,7 @@ function createReadTool(cwd, options) {
       if (!filePath) {
         throw new Error("path parameter is required for read tool");
       }
-      const absolutePath = path7.isAbsolute(filePath) ? filePath : path7.resolve(cwd, filePath);
+      const absolutePath = path8.isAbsolute(filePath) ? filePath : path8.resolve(cwd, filePath);
       await ops.access(absolutePath);
       if (signal?.aborted) {
         throw new Error("Operation aborted");
@@ -8180,7 +9010,7 @@ function createReadTool(cwd, options) {
 }
 // src/tools/write.ts
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "node:fs/promises";
-import path8 from "node:path";
+import path9 from "node:path";
 var defaultWriteOperations = {
   writeFile: (p, content) => fsWriteFile(p, content, "utf-8"),
   mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {})
@@ -8206,8 +9036,8 @@ function createWriteTool(cwd, options) {
       if (!filePath) {
         throw new Error("path parameter is required for write tool");
       }
-      const absolutePath = path8.isAbsolute(filePath) ? filePath : path8.resolve(cwd, filePath);
-      const parentDir = path8.dirname(absolutePath);
+      const absolutePath = path9.isAbsolute(filePath) ? filePath : path9.resolve(cwd, filePath);
+      const parentDir = path9.dirname(absolutePath);
       await ops.mkdir(parentDir);
       if (signal?.aborted) {
         throw new Error("Operation aborted");
@@ -8230,7 +9060,7 @@ function createWriteTool(cwd, options) {
 var Diff = __toESM(require_lib(), 1);
 import { access as fsAccess2, readFile as fsReadFile2, writeFile as fsWriteFile2 } from "node:fs/promises";
 import { constants as constants2 } from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 var defaultEditOperations = {
   readFile: (p) => fsReadFile2(p),
   writeFile: (p, content) => fsWriteFile2(p, content, "utf-8"),
@@ -8369,7 +9199,7 @@ function createEditTool(cwd, options) {
       if (!Array.isArray(edits) || edits.length === 0) {
         throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
       }
-      const absolutePath = path9.isAbsolute(filePath) ? filePath : path9.resolve(cwd, filePath);
+      const absolutePath = path10.isAbsolute(filePath) ? filePath : path10.resolve(cwd, filePath);
       try {
         await ops.access(absolutePath);
       } catch (err) {
@@ -8428,17 +9258,17 @@ function createEditTool(cwd, options) {
   };
 }
 // src/tools/bash.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { existsSync } from "node:fs";
-import path10 from "node:path";
+import path11 from "node:path";
 function resolveShellConfig(customShellPath) {
   if (customShellPath && existsSync(customShellPath)) {
     return { shell: customShellPath, args: ["-c"] };
   }
   if (process.platform === "win32") {
     const candidates = [
-      process.env.ProgramFiles ? path10.join(process.env.ProgramFiles, "Git", "bin", "bash.exe") : null,
-      process.env["ProgramFiles(x86)"] ? path10.join(process.env["ProgramFiles(x86)"], "Git", "bin", "bash.exe") : null,
+      process.env.ProgramFiles ? path11.join(process.env.ProgramFiles, "Git", "bin", "bash.exe") : null,
+      process.env["ProgramFiles(x86)"] ? path11.join(process.env["ProgramFiles(x86)"], "Git", "bin", "bash.exe") : null,
       "C:\\Program Files\\Git\\bin\\bash.exe",
       "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
     ].filter((p) => Boolean(p && existsSync(p)));
@@ -8460,7 +9290,7 @@ function killProcess(child) {
     return;
   try {
     if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      spawn2("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
         windowsHide: true,
         stdio: "ignore"
       });
@@ -8479,7 +9309,7 @@ function createLocalBashOperations(options) {
           reject(new Error("aborted"));
           return;
         }
-        const child = spawn(shellCfg.shell, [...shellCfg.args, command], {
+        const child = spawn2(shellCfg.shell, [...shellCfg.args, command], {
           cwd,
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
@@ -8622,9 +9452,9 @@ function createCodingTools(cwd, options) {
 }
 
 // src/transport/file-porter.ts
-import fs7 from "node:fs";
-import path11 from "node:path";
-import { spawn as spawn2 } from "node:child_process";
+import fs8 from "node:fs";
+import path12 from "node:path";
+import { spawn as spawn3 } from "node:child_process";
 
 class FilePorter {
   cwd;
@@ -8633,12 +9463,12 @@ class FilePorter {
   timeoutMs;
   constructor(options) {
     this.cwd = options.cwd;
-    this.scratchDir = options.scratchDir || path11.join(this.cwd, ".cph", "scratch");
+    this.scratchDir = options.scratchDir || path12.join(this.cwd, ".cph", "scratch");
     this.cdpClient = options.cdpClient;
     this.timeoutMs = options.timeoutMs ?? 60000;
   }
   detectRuntime(fileName) {
-    const ext = path11.extname(fileName).toLowerCase();
+    const ext = path12.extname(fileName).toLowerCase();
     switch (ext) {
       case ".py":
         return "python";
@@ -8659,15 +9489,15 @@ class FilePorter {
     }
   }
   resolveDestination(fileName, customPath) {
-    const dest = customPath ? path11.isAbsolute(customPath) ? customPath : path11.join(this.cwd, customPath) : path11.join(this.scratchDir, fileName);
-    const dir = path11.dirname(dest);
-    if (!fs7.existsSync(dir)) {
-      fs7.mkdirSync(dir, { recursive: true });
+    const dest = customPath ? path12.isAbsolute(customPath) ? customPath : path12.join(this.cwd, customPath) : path12.join(this.scratchDir, fileName);
+    const dir = path12.dirname(dest);
+    if (!fs8.existsSync(dir)) {
+      fs8.mkdirSync(dir, { recursive: true });
     }
     return dest;
   }
   async saveAndExecute(params) {
-    const fileName = path11.basename(params.fileName || "downloaded_file.txt");
+    const fileName = path12.basename(params.fileName || "downloaded_file.txt");
     const filePath = this.resolveDestination(fileName, params.destinationPath);
     let content = params.content;
     if (content === undefined && params.downloadUrl) {
@@ -8685,7 +9515,7 @@ class FilePorter {
     if (content === undefined) {
       content = "";
     }
-    fs7.writeFileSync(filePath, content, "utf-8");
+    fs8.writeFileSync(filePath, content, "utf-8");
     const runtime = this.detectRuntime(fileName);
     const shouldExecute = params.autoExecute ?? runtime !== undefined;
     if (!shouldExecute || !runtime) {
@@ -8695,7 +9525,7 @@ class FilePorter {
         downloaded: true,
         executed: false,
         formattedOutput: `【TOOL_RESULT: file_porter (${fileName}) - SUCCESS】
-文件已通过 File Porter 成功搬运并落盘至：${path11.relative(this.cwd, filePath) || filePath}
+文件已通过 File Porter 成功搬运并落盘至：${path12.relative(this.cwd, filePath) || filePath}
 【END_TOOL_RESULT】`
       };
     }
@@ -8703,7 +9533,7 @@ class FilePorter {
       const execRes = await this.runScript(filePath, runtime);
       const isSuccess = execRes.exitCode === 0;
       const statusText = isSuccess ? "SUCCESS" : "FAILED";
-      let output = `文件已搬运落盘至：${path11.relative(this.cwd, filePath) || filePath}
+      let output = `文件已搬运落盘至：${path12.relative(this.cwd, filePath) || filePath}
 宿主执行环境: ${runtime}
 `;
       if (execRes.stdout) {
@@ -8766,7 +9596,7 @@ ${output.trim()}
         command = process.platform === "win32" ? "bun.exe" : "bun";
         args = ["run", filePath];
       }
-      const proc = spawn2(command, args, {
+      const proc = spawn3(command, args, {
         cwd: this.cwd,
         env: process.env,
         shell: false
@@ -8788,7 +9618,7 @@ ${output.trim()}
       proc.on("error", (err) => {
         clearTimeout(timer);
         if (runtime === "python" && command === "python.exe") {
-          const fallback = spawn2("python", [filePath], { cwd: this.cwd });
+          const fallback = spawn3("python", [filePath], { cwd: this.cwd });
           let fbOut = "";
           let fbErr = "";
           fallback.stdout.on("data", (c) => fbOut += c.toString());
@@ -8827,14 +9657,14 @@ function persistLargeOutputIfNeeded(output, workspaceRoot, toolName = "tool") {
   }
   let relPath = undefined;
   try {
-    const artifactsDir = path12.join(workspaceRoot, ".cph", "artifacts");
-    fs8.mkdirSync(artifactsDir, { recursive: true });
+    const artifactsDir = path13.join(workspaceRoot, ".cph", "artifacts");
+    fs9.mkdirSync(artifactsDir, { recursive: true });
     const timestamp = Date.now();
-    const hash = crypto4.createHash("sha256").update(output).digest("hex").slice(0, 8);
+    const hash = crypto6.createHash("sha256").update(output).digest("hex").slice(0, 8);
     const fileName = `tool-output-${timestamp}-${hash}.log`;
-    const absolutePath = path12.join(artifactsDir, fileName);
-    fs8.writeFileSync(absolutePath, output, "utf-8");
-    relPath = path12.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
+    const absolutePath = path13.join(artifactsDir, fileName);
+    fs9.writeFileSync(absolutePath, output, "utf-8");
+    relPath = path13.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
   } catch {}
   return {
     displayOutput: output,
@@ -8988,7 +9818,7 @@ class ToolBridge {
     return this.cwd;
   }
   setCwd(newCwd, ledger) {
-    this.cwd = path12.resolve(newCwd);
+    this.cwd = path13.resolve(newCwd);
     if (ledger !== undefined) {
       this.ledger = ledger;
     }
@@ -9292,9 +10122,9 @@ Options: ${qArgs.options.join(", ")}` : "");
       const hasSlice = readArgs.limit !== undefined || action.start_line !== undefined || action.startLine !== undefined || action.end_line !== undefined || action.endLine !== undefined || action.limit !== undefined || action.lines !== undefined;
       if (!hasSlice && rawPath) {
         try {
-          const fullPath = path12.isAbsolute(rawPath) ? rawPath : path12.resolve(this.cwd, rawPath);
-          if (fs8.existsSync(fullPath)) {
-            const stat = fs8.statSync(fullPath);
+          const fullPath = path13.isAbsolute(rawPath) ? rawPath : path13.resolve(this.cwd, rawPath);
+          if (fs9.existsSync(fullPath)) {
+            const stat = fs9.statSync(fullPath);
             if (stat.isFile() && stat.size > MAX_READ_FILE_BYTES_CIRCUIT_BREAKER) {
               const fileSize = stat.size;
               const output = `[ToolBridge Error] File "${rawPath}" (${(fileSize / (1024 * 1024)).toFixed(2)} MB) exceeds the 1MB safety threshold. Please specify start_line and end_line to inspect a targeted slice, or use run_command with head/tail.`;
@@ -9449,13 +10279,17 @@ class PromptBuilder {
 【核心目录结构预览】
 ${options.dirTree}
 ` : "";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `
+${virtualRepoMap}
+` : "";
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
 【本地宿主机与工作区事实 (Grounding Facts)】
 - 工作区绝对路径: ${wsNorm}
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}
+${treePreview}${repoMapSection}
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -9501,7 +10335,7 @@ ${options.task}
 
 ` : ""}${this.PROTOCOL_REMINDER}`;
   }
-  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "", concurrencyWorkers) {
+  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "", concurrencyWorkers, virtualRepoMap) {
     const wsNorm = workspaceRoot.replace(/\\/g, "/");
     let prompt = `【本地宿主机工作区事实】
 - 工作区绝对路径: ${wsNorm}`;
@@ -9514,6 +10348,12 @@ ${options.task}
 
 【工作区受控目录骨架 (2-Level Skeleton)】
 ${dirSkeleton.trim()}`;
+    }
+    const effectiveRepoMap = virtualRepoMap ?? PnPWorkspaceSyncEngine.readVirtualRepoMap(workspaceRoot);
+    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
+      prompt += `
+
+${effectiveRepoMap.trim()}`;
     }
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
       prompt += `
@@ -9679,12 +10519,16 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
+    const virtualRepoMap = PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot);
+    const repoMapSection = virtualRepoMap ? `
+
+${virtualRepoMap.trim()}` : "";
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。本地物理环境已连接。
 
 【本地宿主机与工作区事实 (Session Re-grounding)】
 - 工作区绝对路径: ${wsNorm}
 - 最新 Git 仓库状态:
-${gitFacts}
+${gitFacts}${repoMapSection}
 
 【前序轮次执行摘要 (Context Transfer)】
 ${history}
@@ -10521,8 +11365,8 @@ ${actionBlock}
 }
 
 // src/ui/terminal-logger.ts
-import fs9 from "node:fs";
-import path13 from "node:path";
+import fs10 from "node:fs";
+import path14 from "node:path";
 function stripAnsi(str) {
   if (!str)
     return "";
@@ -10551,15 +11395,15 @@ class TerminalLogger {
   initSessionTree(sessionId, workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const cleanSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const sessionDir = path13.join(root, ".cph", "logs", cleanSessionId);
-    const subagentsDir = path13.join(sessionDir, "subagents");
-    fs9.mkdirSync(subagentsDir, { recursive: true });
-    const mainLogPath = path13.join(sessionDir, "main.log");
-    if (!fs9.existsSync(mainLogPath)) {
-      fs9.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
+    const sessionDir = path14.join(root, ".cph", "logs", cleanSessionId);
+    const subagentsDir = path14.join(sessionDir, "subagents");
+    fs10.mkdirSync(subagentsDir, { recursive: true });
+    const mainLogPath = path14.join(sessionDir, "main.log");
+    if (!fs10.existsSync(mainLogPath)) {
+      fs10.writeFileSync(mainLogPath, `=== [CPH-PI Main Session Log: ${sessionId}] ===
 `, "utf8");
     }
-    const timelineLogPath = path13.join(sessionDir, "timeline.jsonl");
+    const timelineLogPath = path14.join(sessionDir, "timeline.jsonl");
     return {
       sessionDir,
       mainLogPath,
@@ -10567,8 +11411,8 @@ class TerminalLogger {
       createSubagentLogStream: (subagentId, role) => {
         const cleanId = subagentId.replace(/[^a-zA-Z0-9_-]/g, "_");
         const cleanRole = role.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const subLogPath = path13.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
-        const stream = fs9.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
+        const subLogPath = path14.join(subagentsDir, `${cleanId}-${cleanRole}.log`);
+        const stream = fs10.createWriteStream(subLogPath, { flags: "a", encoding: "utf8" });
         stream.write(`=== [CPH-PI Subagent Log: ${subagentId} (${role})] ===
 `);
         return stream;
@@ -10577,7 +11421,7 @@ class TerminalLogger {
         const line = JSON.stringify({ ...event, timestamp: event.timestamp || Date.now() }) + `
 `;
         try {
-          fs9.appendFileSync(timelineLogPath, line, "utf8");
+          fs10.appendFileSync(timelineLogPath, line, "utf8");
         } catch {}
       }
     };
@@ -10585,22 +11429,22 @@ class TerminalLogger {
   resolveDefaultLogPath(workspaceRoot) {
     const root = workspaceRoot || process.cwd();
     const dateStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const logDir = path13.join(root, ".cph", "logs");
+    const logDir = path14.join(root, ".cph", "logs");
     try {
-      fs9.mkdirSync(logDir, { recursive: true });
+      fs10.mkdirSync(logDir, { recursive: true });
     } catch {}
-    return path13.join(logDir, `cph-terminal-${dateStr}.log`);
+    return path14.join(logDir, `cph-terminal-${dateStr}.log`);
   }
   start(options = {}) {
     if (this.isHooked && this.logFilePath) {
       return this.logFilePath;
     }
     const targetPath = options.logFilePath || this.resolveDefaultLogPath(options.workspaceRoot);
-    const resolvedPath = path13.resolve(targetPath);
+    const resolvedPath = path14.resolve(targetPath);
     try {
-      const parentDir = path13.dirname(resolvedPath);
-      fs9.mkdirSync(parentDir, { recursive: true });
-      this.stream = fs9.createWriteStream(resolvedPath, {
+      const parentDir = path14.dirname(resolvedPath);
+      fs10.mkdirSync(parentDir, { recursive: true });
+      this.stream = fs10.createWriteStream(resolvedPath, {
         flags: "a",
         encoding: "utf8"
       });
@@ -10802,12 +11646,12 @@ class SessionLineageTracker {
 }
 
 // src/session/main-plan-snapshot.ts
-import fs11 from "node:fs";
-import path15 from "node:path";
+import fs12 from "node:fs";
+import path16 from "node:path";
 
 // src/session/ledger/execution-ledger.ts
-import fs10 from "node:fs";
-import path14 from "node:path";
+import fs11 from "node:fs";
+import path15 from "node:path";
 
 class ExecutionLedger {
   workspaceRoot;
@@ -10818,9 +11662,9 @@ class ExecutionLedger {
   cachedEntries = [];
   constructor(workspaceRoot) {
     this.workspaceRoot = workspaceRoot;
-    this.stateDir = path14.join(this.workspaceRoot, ".cph", "state");
-    this.jsonlPath = path14.join(this.stateDir, "execution-ledger.jsonl");
-    this.mdPath = path14.join(this.stateDir, "execution-ledger.md");
+    this.stateDir = path15.join(this.workspaceRoot, ".cph", "state");
+    this.jsonlPath = path15.join(this.stateDir, "execution-ledger.jsonl");
+    this.mdPath = path15.join(this.stateDir, "execution-ledger.md");
     this.initFromDisk();
   }
   getPaths() {
@@ -10831,11 +11675,11 @@ class ExecutionLedger {
   }
   initFromDisk() {
     try {
-      if (!fs10.existsSync(this.stateDir)) {
-        fs10.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs11.existsSync(this.stateDir)) {
+        fs11.mkdirSync(this.stateDir, { recursive: true });
       }
-      if (fs10.existsSync(this.jsonlPath)) {
-        const lines = fs10.readFileSync(this.jsonlPath, "utf8").split(`
+      if (fs11.existsSync(this.jsonlPath)) {
+        const lines = fs11.readFileSync(this.jsonlPath, "utf8").split(`
 `).map((l) => l.trim()).filter(Boolean);
         for (const line of lines) {
           try {
@@ -10861,10 +11705,10 @@ class ExecutionLedger {
     };
     this.cachedEntries.push(entry);
     try {
-      if (!fs10.existsSync(this.stateDir)) {
-        fs10.mkdirSync(this.stateDir, { recursive: true });
+      if (!fs11.existsSync(this.stateDir)) {
+        fs11.mkdirSync(this.stateDir, { recursive: true });
       }
-      fs10.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
+      fs11.appendFileSync(this.jsonlPath, JSON.stringify(entry) + `
 `, "utf8");
       this.writeMarkdownView();
     } catch (err) {
@@ -10893,7 +11737,7 @@ class ExecutionLedger {
       }
     }
     const filesSummary = modifiedFiles.size > 0 ? `[${Array.from(modifiedFiles).slice(0, 5).join(", ")}${modifiedFiles.size > 5 ? `, ...+${modifiedFiles.size - 5}` : ""}]` : "无";
-    const relativeMdPath = path14.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
+    const relativeMdPath = path15.relative(this.workspaceRoot, this.mdPath).replace(/\\/g, "/");
     return [
       `【系统物理执行账本已挂载】`,
       `- 账本路径: ${relativeMdPath || ".cph/state/execution-ledger.md"}`,
@@ -10920,7 +11764,7 @@ class ExecutionLedger {
     const content = header.concat(rows).join(`
 `) + `
 `;
-    fs10.writeFileSync(this.mdPath, content, "utf8");
+    fs11.writeFileSync(this.mdPath, content, "utf8");
   }
 }
 
@@ -10938,12 +11782,12 @@ function createMainPlanSnapshot(params) {
   };
 }
 function saveMainPlanSnapshot(snapshot, workspaceRoot) {
-  const handoffsDir = path15.join(workspaceRoot, ".cph", "handoffs");
-  fs11.mkdirSync(handoffsDir, { recursive: true });
+  const handoffsDir = path16.join(workspaceRoot, ".cph", "handoffs");
+  fs12.mkdirSync(handoffsDir, { recursive: true });
   const cleanId = snapshot.originalSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const jsonPath = path15.join(handoffsDir, `main-plan-${cleanId}.json`);
-  const mdPath = path15.join(handoffsDir, `main-plan-${cleanId}.md`);
-  fs11.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
+  const jsonPath = path16.join(handoffsDir, `main-plan-${cleanId}.json`);
+  const mdPath = path16.join(handoffsDir, `main-plan-${cleanId}.md`);
+  fs12.writeFileSync(jsonPath, JSON.stringify(snapshot, null, 2), "utf8");
   const mdContent = `# 主控规划快照: ${snapshot.snapshotId}
 
 - **前序会话**: ${snapshot.originalSessionId}
@@ -10965,7 +11809,7 @@ ${sub.prompt || ""}
 `).join(`
 `)}
 `;
-  fs11.writeFileSync(mdPath, mdContent, "utf8");
+  fs12.writeFileSync(mdPath, mdContent, "utf8");
   return { jsonPath, mdPath };
 }
 function formatSuccessorTurn1Prompt(snapshot, reportsSummary, customLedgerMountHeader, concurrencyWorkers, dirSkeleton) {
@@ -10989,10 +11833,14 @@ ${mountHeader}
 
 【工作区受控目录骨架 (2-Level Skeleton)】
 ${dirSkeleton.trim()}` : "";
+  const virtualRepoMap = snapshot.workspaceRoot ? PnPWorkspaceSyncEngine.readVirtualRepoMap(snapshot.workspaceRoot) : undefined;
+  const repoMapFact = virtualRepoMap && virtualRepoMap.trim() !== "" ? `
+
+${virtualRepoMap.trim()}` : "";
   return `【主控接力与成果审阅】
 前序主控会话已完成工程规划并调度专项子代理完成了攻坚。系统已在本地持久化前序规划快照。
 
-【本地宿主机工作区事实】${workspaceFact}${clusterFact}${skeletonFact}
+【本地宿主机工作区事实】${workspaceFact}${clusterFact}${skeletonFact}${repoMapFact}
 
 ### 1. 原始工程目标与规划思路
 - **原始目标**:
@@ -11066,11 +11914,11 @@ class Orchestrator {
   isHandshakePending = true;
   pendingTask = "";
   pendingSkills = "";
-  conversationId = crypto5.randomUUID();
+  conversationId = crypto7.randomUUID();
   sessionId;
   lastHandoffDocPath;
   constructor(options = {}) {
-    this.workspaceRoot = path16.resolve(options.workspaceRoot || process.cwd());
+    this.workspaceRoot = path17.resolve(options.workspaceRoot || process.cwd());
     this.maxTurns = options.maxTurns ?? 30;
     this.maxGenerations = options.maxGenerations ?? 50;
     this.maxRefusalRetries = options.maxRefusalRetries ?? 3;
@@ -11086,7 +11934,7 @@ class Orchestrator {
     this.coderAgentId = options.coderAgentId;
     this.researcherAgentId = options.researcherAgentId;
     this.subagentRunner = options.subagentRunner;
-    this.sessionId = options.sessionId || crypto5.randomUUID();
+    this.sessionId = options.sessionId || crypto7.randomUUID();
     this.enableInSessionCompaction = options.enableInSessionCompaction ?? false;
     this.graphTokenProvider = options.graphTokenProvider;
     this.enableCloudAttachment = options.enableCloudAttachment ?? true;
@@ -11168,7 +12016,7 @@ class Orchestrator {
     return this.workspaceRoot;
   }
   setWorkspaceRoot(newRoot, skillRegistry) {
-    this.workspaceRoot = path16.resolve(newRoot);
+    this.workspaceRoot = path17.resolve(newRoot);
     if (this.bridge && typeof this.bridge.setCwd === "function") {
       this.bridge.setCwd(this.workspaceRoot);
     } else {
@@ -11222,8 +12070,8 @@ class Orchestrator {
     this.isHandshakePending = !this.customAgentId;
     this.pendingTask = "";
     this.pendingSkills = "";
-    this.conversationId = crypto5.randomUUID();
-    this.sessionId = crypto5.randomUUID();
+    this.conversationId = crypto7.randomUUID();
+    this.sessionId = crypto7.randomUUID();
     this.generation = 1;
     this.lastHandoffDocPath = undefined;
   }
@@ -11241,44 +12089,227 @@ class Orchestrator {
     return "";
   }
   async run(options) {
-    const { task, signal, events } = options;
-    const rootUserPrompt = options.rootUserPrompt || options.task;
-    if (signal?.aborted) {
-      const abortError = new Error("The operation was aborted");
-      abortError.name = "AbortError";
-      throw abortError;
-    }
-    let sessionId = options.sessionId || this.sessionId;
-    this.sessionId = sessionId;
-    let conversationId = this.conversationId;
-    this.lineageTracker.register({
-      sessionId: this.sessionId,
-      role: "main",
-      status: "active"
-    });
-    let client = this.chatClient;
-    if (!client) {
-      const pool = this.pool || new AccountPool;
-      this.pool = pool;
-      try {
-        const token = await pool.getNextAvailableToken({
-          forAgentId: this.customAgentId,
-          sessionId: this.sessionId
+    try {
+      const { task, signal, events } = options;
+      const rootUserPrompt = options.rootUserPrompt || options.task;
+      if (signal?.aborted) {
+        const abortError = new Error("The operation was aborted");
+        abortError.name = "AbortError";
+        throw abortError;
+      }
+      let sessionId = options.sessionId || this.sessionId;
+      this.sessionId = sessionId;
+      let conversationId = this.conversationId;
+      this.lineageTracker.register({
+        sessionId: this.sessionId,
+        role: "main",
+        status: "active"
+      });
+      let client = this.chatClient;
+      if (!client) {
+        const pool = this.pool || new AccountPool;
+        this.pool = pool;
+        try {
+          const token = await pool.getNextAvailableToken({
+            forAgentId: this.customAgentId,
+            sessionId: this.sessionId
+          });
+          client = this.chatClientFactory ? this.chatClientFactory(token, {
+            modelTone: this.modelTone,
+            customAgentId: this.customAgentId
+          }) : new ChatHubClient(token, {
+            modelTone: this.modelTone,
+            customAgentId: this.customAgentId
+          });
+        } catch (err) {
+          if (this.isRateLimitError(err)) {
+            return await this.executeDisasterRecoveryArbitration({
+              task,
+              history: [],
+              client,
+              lastError: String(err?.message || err),
+              signal,
+              events,
+              sessionId,
+              arbitratorChatClient: options.arbitratorChatClient,
+              rootUserPrompt
+            });
+          }
+          throw err;
+        }
+      }
+      const gitFacts = this.collectGitFacts();
+      const dirTree = this.collectDirTreePreview();
+      const skillsToUse = options.activeSkills !== undefined ? options.activeSkills : this.activeSkills;
+      const skillsSection = this.formatSkillsSection(skillsToUse);
+      let currentPrompt;
+      if (this.customAgentId) {
+        const workerCount = this.getConcurrencyWorkerCount();
+        currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree, workerCount);
+      } else if (this.isHandshakePending) {
+        this.pendingTask = task;
+        this.pendingSkills = skillsSection;
+        currentPrompt = PromptBuilder.buildHandshakePrompt(this.workspaceRoot, gitFacts, dirTree);
+      } else {
+        currentPrompt = PromptBuilder.buildTurn1Prompt({
+          workspaceRoot: this.workspaceRoot,
+          gitFacts,
+          dirTree,
+          task,
+          skillsSection
         });
-        client = this.chatClientFactory ? this.chatClientFactory(token, {
-          modelTone: this.modelTone,
-          customAgentId: this.customAgentId
-        }) : new ChatHubClient(token, {
-          modelTone: this.modelTone,
-          customAgentId: this.customAgentId
-        });
-      } catch (err) {
-        if (this.isRateLimitError(err)) {
+      }
+      const history = [];
+      let refusalRetries = 0;
+      let emptyResponseRetries = 0;
+      const maxEmptyResponseRetries = 2;
+      let turn = 1;
+      let currentAnnotations = options.initialAnnotations ? [...options.initialAnnotations] : [];
+      const isWorkspaceSnapshotEnabled = options.enableWorkspaceSnapshot !== undefined ? options.enableWorkspaceSnapshot : this.enableWorkspaceSnapshot;
+      if (isWorkspaceSnapshotEnabled && this.workspaceRoot) {
+        try {
+          const generation = this.generation || 1;
+          const snap = SnapshotGenerator.generateWorkspaceSnapshot(this.workspaceRoot, undefined, generation);
+          const cacheFile = path17.join(this.workspaceRoot, ".cph", "state", "workspace-snapshot-cache.json");
+          let cached = null;
+          if (fs13.existsSync(cacheFile)) {
+            try {
+              cached = JSON.parse(fs13.readFileSync(cacheFile, "utf-8"));
+            } catch {
+              cached = null;
+            }
+          }
+          if (cached && cached.snapshotHash === snap.hash && cached.uploadResult?.annotation) {
+            currentAnnotations.unshift(cached.uploadResult.annotation);
+            events?.onAttachmentUploaded?.(cached.uploadResult, "workspace_snapshot");
+          } else {
+            const graphToken = await this.acquireGraphToken();
+            if (!graphToken) {
+              throw new Error("No Graph access token available for workspace snapshot upload");
+            }
+            const snapshotBuffer = fs13.readFileSync(snap.snapshotPath);
+            const uploadResult = await SubstrateUploader.uploadDocumentAuto(graphToken, snapshotBuffer, snap.cloudFileName, signal);
+            const cacheData = {
+              snapshotHash: snap.hash,
+              uploadResult,
+              updatedAt: new Date().toISOString()
+            };
+            fs13.mkdirSync(path17.dirname(cacheFile), { recursive: true });
+            fs13.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
+            currentAnnotations.unshift(uploadResult.annotation);
+            events?.onAttachmentUploaded?.(uploadResult, "workspace_snapshot");
+          }
+        } catch (err) {
+          try {
+            const errLogPath = path17.join(this.workspaceRoot, ".cph", "state", "upload-error.log");
+            fs13.mkdirSync(path17.dirname(errLogPath), { recursive: true });
+            const errContent = `[${new Date().toISOString()}] Turn 1 workspace snapshot upload failed:
+${err?.stack || err?.message || String(err)}
+
+`;
+            fs13.appendFileSync(errLogPath, errContent, "utf-8");
+          } catch {}
+          const warnMsg = "[WARN: Turn 1 workspace snapshot upload failed]";
+          if (this.tuiRenderer?.c?.yellow) {
+            console.warn(this.tuiRenderer.c.yellow(warnMsg));
+          } else {
+            console.warn(warnMsg);
+          }
+          const degradationNotice = `
+[WORKSPACE NOTICE: 全景代码快照上传暂未就绪，当前进入增量探查降级模式，请按需调用 read_file 探查所需文件]
+`;
+          currentPrompt = degradationNotice + currentPrompt;
+        }
+      }
+      while (turn <= this.maxTurns) {
+        if (signal?.aborted) {
+          const abortError = new Error("The operation was aborted");
+          abortError.name = "AbortError";
+          throw abortError;
+        }
+        if (turn === this.maxTurns - 1 && !this.isHandshakePending && refusalRetries === 0) {
+          currentPrompt = PromptBuilder.buildHandoffPreparationPrompt(this.pendingTask || task, options.sessionId || this.sessionId);
+        }
+        events?.onTurnStart?.(turn);
+        const turnIndex = turn;
+        const turnInputPrompt = currentPrompt;
+        const requestId = crypto7.randomUUID();
+        let turnResponseText = "";
+        let turnReasoningText = "";
+        try {
+          const res = await client.sendMessage({
+            text: currentPrompt,
+            conversationId,
+            sessionId,
+            requestId,
+            isStartOfSession: turn === 1,
+            signal,
+            annotations: currentAnnotations.length > 0 ? currentAnnotations : undefined
+          }, {
+            onDelta: (delta) => {
+              if (delta.type === "reasoning") {
+                turnReasoningText += delta.content;
+                events?.onReasoning?.(delta.content);
+              } else if (delta.type === "text") {
+                turnResponseText += delta.content;
+                events?.onDelta?.(delta.content);
+              }
+            },
+            onRateLimitDetected: async (email) => {
+              if (this.pool) {
+                this.pool.markThrottled(email);
+                const nextToken = await this.pool.getNextAvailableToken();
+                events?.onAccountSwitched?.(email, nextToken.email);
+                client = new ChatHubClient(nextToken, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId
+                });
+              }
+            }
+          });
+          turnResponseText = res.text;
+          currentAnnotations = [];
+        } catch (err) {
+          if (signal?.aborted || err?.name === "AbortError" || err?.message?.includes("aborted")) {
+            const abortError = new Error("The operation was aborted");
+            abortError.name = "AbortError";
+            throw abortError;
+          }
+          if (this.isRecoverableTransportError(err)) {
+            if (turnReasoningText || turnResponseText) {
+              history.push({
+                turn,
+                userInput: currentPrompt,
+                thought: turnReasoningText,
+                response: turnResponseText,
+                error: String(err?.message || err)
+              });
+            }
+            return await this.executeDisasterRecoveryArbitration({
+              task,
+              history,
+              client,
+              lastError: String(err?.message || err),
+              signal,
+              events,
+              sessionId,
+              arbitratorChatClient: options.arbitratorChatClient,
+              rootUserPrompt,
+              lastPartialOutput: turnReasoningText || turnResponseText ? {
+                reasoning: turnReasoningText,
+                response: turnResponseText
+              } : undefined
+            });
+          }
+          events?.onError?.(err);
+          throw err;
+        }
+        if (this.isRateLimitResponseText(turnResponseText)) {
           return await this.executeDisasterRecoveryArbitration({
             task,
-            history: [],
+            history,
             client,
-            lastError: String(err?.message || err),
+            lastError: turnResponseText,
             signal,
             events,
             sessionId,
@@ -11286,560 +12317,439 @@ class Orchestrator {
             rootUserPrompt
           });
         }
-        throw err;
-      }
-    }
-    const gitFacts = this.collectGitFacts();
-    const dirTree = this.collectDirTreePreview();
-    const skillsToUse = options.activeSkills !== undefined ? options.activeSkills : this.activeSkills;
-    const skillsSection = this.formatSkillsSection(skillsToUse);
-    let currentPrompt;
-    if (this.customAgentId) {
-      const workerCount = this.getConcurrencyWorkerCount();
-      currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree, workerCount);
-    } else if (this.isHandshakePending) {
-      this.pendingTask = task;
-      this.pendingSkills = skillsSection;
-      currentPrompt = PromptBuilder.buildHandshakePrompt(this.workspaceRoot, gitFacts, dirTree);
-    } else {
-      currentPrompt = PromptBuilder.buildTurn1Prompt({
-        workspaceRoot: this.workspaceRoot,
-        gitFacts,
-        dirTree,
-        task,
-        skillsSection
-      });
-    }
-    const history = [];
-    let refusalRetries = 0;
-    let emptyResponseRetries = 0;
-    const maxEmptyResponseRetries = 2;
-    let turn = 1;
-    let currentAnnotations = options.initialAnnotations ? [...options.initialAnnotations] : [];
-    const isWorkspaceSnapshotEnabled = options.enableWorkspaceSnapshot !== undefined ? options.enableWorkspaceSnapshot : this.enableWorkspaceSnapshot;
-    if (isWorkspaceSnapshotEnabled && this.workspaceRoot) {
-      try {
-        const generation = this.generation || 1;
-        const snap = SnapshotGenerator.generateWorkspaceSnapshot(this.workspaceRoot, undefined, generation);
-        const cacheFile = path16.join(this.workspaceRoot, ".cph", "state", "workspace-snapshot-cache.json");
-        let cached = null;
-        if (fs12.existsSync(cacheFile)) {
-          try {
-            cached = JSON.parse(fs12.readFileSync(cacheFile, "utf-8"));
-          } catch {
-            cached = null;
-          }
-        }
-        if (cached && cached.snapshotHash === snap.hash && cached.uploadResult?.annotation) {
-          currentAnnotations.unshift(cached.uploadResult.annotation);
-          events?.onAttachmentUploaded?.(cached.uploadResult, "workspace_snapshot");
-        } else {
-          const graphToken = await this.acquireGraphToken();
-          if (!graphToken) {
-            throw new Error("No Graph access token available for workspace snapshot upload");
-          }
-          const snapshotBuffer = fs12.readFileSync(snap.snapshotPath);
-          const uploadResult = await SubstrateUploader.uploadDocumentAuto(graphToken, snapshotBuffer, snap.cloudFileName, signal);
-          const cacheData = {
-            snapshotHash: snap.hash,
-            uploadResult,
-            updatedAt: new Date().toISOString()
-          };
-          fs12.mkdirSync(path16.dirname(cacheFile), { recursive: true });
-          fs12.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
-          currentAnnotations.unshift(uploadResult.annotation);
-          events?.onAttachmentUploaded?.(uploadResult, "workspace_snapshot");
-        }
-      } catch (err) {
-        try {
-          const errLogPath = path16.join(this.workspaceRoot, ".cph", "state", "upload-error.log");
-          fs12.mkdirSync(path16.dirname(errLogPath), { recursive: true });
-          const errContent = `[${new Date().toISOString()}] Turn 1 workspace snapshot upload failed:
-${err?.stack || err?.message || String(err)}
-
-`;
-          fs12.appendFileSync(errLogPath, errContent, "utf-8");
-        } catch {}
-        const warnMsg = "[WARN: Turn 1 workspace snapshot upload failed]";
-        if (this.tuiRenderer?.c?.yellow) {
-          console.warn(this.tuiRenderer.c.yellow(warnMsg));
-        } else {
-          console.warn(warnMsg);
-        }
-        const degradationNotice = `
-[WORKSPACE NOTICE: 全景代码快照上传暂未就绪，当前进入增量探查降级模式，请按需调用 read_file 探查所需文件]
-`;
-        currentPrompt = degradationNotice + currentPrompt;
-      }
-    }
-    while (turn <= this.maxTurns) {
-      if (signal?.aborted) {
-        const abortError = new Error("The operation was aborted");
-        abortError.name = "AbortError";
-        throw abortError;
-      }
-      if (turn === this.maxTurns - 1 && !this.isHandshakePending && refusalRetries === 0) {
-        currentPrompt = PromptBuilder.buildHandoffPreparationPrompt(this.pendingTask || task, options.sessionId || this.sessionId);
-      }
-      events?.onTurnStart?.(turn);
-      const turnIndex = turn;
-      const turnInputPrompt = currentPrompt;
-      const requestId = crypto5.randomUUID();
-      let turnResponseText = "";
-      let turnReasoningText = "";
-      try {
-        const res = await client.sendMessage({
-          text: currentPrompt,
-          conversationId,
-          sessionId,
-          requestId,
-          signal,
-          annotations: currentAnnotations.length > 0 ? currentAnnotations : undefined
-        }, {
-          onDelta: (delta) => {
-            if (delta.type === "reasoning") {
-              turnReasoningText += delta.content;
-              events?.onReasoning?.(delta.content);
-            } else if (delta.type === "text") {
-              turnResponseText += delta.content;
-              events?.onDelta?.(delta.content);
-            }
-          },
-          onRateLimitDetected: async (email) => {
-            if (this.pool) {
-              this.pool.markThrottled(email);
-              const nextToken = await this.pool.getNextAvailableToken();
-              events?.onAccountSwitched?.(email, nextToken.email);
-              client = new ChatHubClient(nextToken, {
-                modelTone: this.modelTone,
-                customAgentId: this.customAgentId
-              });
-            }
-          }
-        });
-        turnResponseText = res.text;
-        currentAnnotations = [];
-      } catch (err) {
-        if (signal?.aborted || err?.name === "AbortError" || err?.message?.includes("aborted")) {
-          const abortError = new Error("The operation was aborted");
-          abortError.name = "AbortError";
-          throw abortError;
-        }
-        if (this.isRecoverableTransportError(err)) {
-          if (turnReasoningText || turnResponseText) {
-            history.push({
-              turn,
-              userInput: currentPrompt,
-              thought: turnReasoningText,
-              response: turnResponseText,
-              error: String(err?.message || err)
+        if (RefusalGuard.detectRefusal(turnResponseText)) {
+          events?.onRefusalIntercepted?.(turnResponseText, refusalRetries + 1);
+          if (RefusalGuard.shouldRetry(refusalRetries, this.maxRefusalRetries)) {
+            refusalRetries++;
+            const strategy = RefusalGuard.getRetryStrategy(refusalRetries, {
+              workspaceRoot: this.workspaceRoot,
+              candidateFile: "package.json"
             });
+            if (strategy.shouldSwitchAccount && this.pool) {
+              try {
+                const currentEmail = client?.token?.email || "";
+                if (currentEmail)
+                  this.pool.markThrottled(currentEmail);
+                const nextToken = await this.pool.getNextAvailableToken();
+                events?.onAccountSwitched?.(currentEmail, nextToken.email);
+                client = new ChatHubClient(nextToken, {
+                  modelTone: this.modelTone,
+                  customAgentId: this.customAgentId
+                });
+              } catch {}
+            }
+            currentPrompt = strategy.rewrittenPrompt;
+            continue;
           }
-          return await this.executeDisasterRecoveryArbitration({
-            task,
-            history,
-            client,
-            lastError: String(err?.message || err),
-            signal,
-            events,
-            sessionId,
-            arbitratorChatClient: options.arbitratorChatClient,
-            rootUserPrompt,
-            lastPartialOutput: turnReasoningText || turnResponseText ? {
-              reasoning: turnReasoningText,
-              response: turnResponseText
-            } : undefined
-          });
         }
-        events?.onError?.(err);
-        throw err;
-      }
-      if (this.isRateLimitResponseText(turnResponseText)) {
-        return await this.executeDisasterRecoveryArbitration({
-          task,
-          history,
-          client,
-          lastError: turnResponseText,
-          signal,
-          events,
-          sessionId,
-          arbitratorChatClient: options.arbitratorChatClient,
-          rootUserPrompt
-        });
-      }
-      if (RefusalGuard.detectRefusal(turnResponseText)) {
-        events?.onRefusalIntercepted?.(turnResponseText, refusalRetries + 1);
-        if (RefusalGuard.shouldRetry(refusalRetries, this.maxRefusalRetries)) {
-          refusalRetries++;
-          const strategy = RefusalGuard.getRetryStrategy(refusalRetries, {
-            workspaceRoot: this.workspaceRoot,
-            candidateFile: "package.json"
-          });
-          if (strategy.shouldSwitchAccount && this.pool) {
+        refusalRetries = 0;
+        const parsed = ResilientParser.parse(turnResponseText);
+        if (parsed.type === "empty_response") {
+          if (emptyResponseRetries < maxEmptyResponseRetries) {
+            emptyResponseRetries++;
+            continue;
+          }
+          if (this.pool) {
             try {
               const currentEmail = client?.token?.email || "";
-              if (currentEmail)
-                this.pool.markThrottled(currentEmail);
               const nextToken = await this.pool.getNextAvailableToken();
               events?.onAccountSwitched?.(currentEmail, nextToken.email);
               client = new ChatHubClient(nextToken, {
                 modelTone: this.modelTone,
                 customAgentId: this.customAgentId
               });
+              emptyResponseRetries = 0;
+              continue;
             } catch {}
           }
-          currentPrompt = strategy.rewrittenPrompt;
-          continue;
+          throw new Error("EMPTY_RESPONSE_LIMIT_EXCEEDED: 上游模型持续返回空载荷");
         }
-      }
-      refusalRetries = 0;
-      const parsed = ResilientParser.parse(turnResponseText);
-      if (parsed.type === "empty_response") {
-        if (emptyResponseRetries < maxEmptyResponseRetries) {
-          emptyResponseRetries++;
-          continue;
-        }
-        if (this.pool) {
-          try {
-            const currentEmail = client?.token?.email || "";
-            const nextToken = await this.pool.getNextAvailableToken();
-            events?.onAccountSwitched?.(currentEmail, nextToken.email);
-            client = new ChatHubClient(nextToken, {
-              modelTone: this.modelTone,
-              customAgentId: this.customAgentId
+        emptyResponseRetries = 0;
+        if (parsed.type === "final_answer") {
+          if (this.isHandshakePending) {
+            history.push({
+              turn,
+              userInput: currentPrompt,
+              thought: parsed.thought || turnReasoningText,
+              response: turnResponseText
             });
-            emptyResponseRetries = 0;
+            currentPrompt = `[请先输出 action 块执行 git status 以验证本地物理工具连接]
+
+${PromptBuilder.PROTOCOL_REMINDER}`;
+            events?.onTurnEnd?.(turn, turnResponseText);
+            turn++;
             continue;
-          } catch {}
-        }
-        throw new Error("EMPTY_RESPONSE_LIMIT_EXCEEDED: 上游模型持续返回空载荷");
-      }
-      emptyResponseRetries = 0;
-      if (parsed.type === "final_answer") {
-        if (this.isHandshakePending) {
+          }
+          const finalAnswer = parsed.answer.summary || parsed.answer.raw;
           history.push({
             turn,
             userInput: currentPrompt,
             thought: parsed.thought || turnReasoningText,
             response: turnResponseText
           });
-          currentPrompt = `[请先输出 action 块执行 git status 以验证本地物理工具连接]
-
-${PromptBuilder.PROTOCOL_REMINDER}`;
           events?.onTurnEnd?.(turn, turnResponseText);
-          turn++;
-          continue;
-        }
-        const finalAnswer = parsed.answer.summary || parsed.answer.raw;
-        history.push({
-          turn,
-          userInput: currentPrompt,
-          thought: parsed.thought || turnReasoningText,
-          response: turnResponseText
-        });
-        events?.onTurnEnd?.(turn, turnResponseText);
-        events?.onCompleted?.(finalAnswer);
-        return {
-          finalAnswer,
-          turnsCount: turn,
-          completed: true,
-          history,
-          handedOff: false
-        };
-      }
-      if (parsed.type === "handoff") {
-        const targetSessionId = options.sessionId || this.sessionId;
-        let docPath;
-        if (this.workspaceRoot) {
-          const handoffsDir = path16.join(this.workspaceRoot, ".cph", "handoffs");
-          fs12.mkdirSync(handoffsDir, { recursive: true });
-          docPath = path16.join(handoffsDir, `handoff-${targetSessionId}.md`);
-          fs12.writeFileSync(docPath, parsed.handoffDoc, "utf8");
-          this.lastHandoffDocPath = docPath;
-        }
-        history.push({
-          turn,
-          userInput: currentPrompt,
-          thought: parsed.thought || turnReasoningText,
-          response: turnResponseText
-        });
-        events?.onTurnEnd?.(turn, turnResponseText);
-        events?.onHandoff?.(parsed.handoffDoc, docPath);
-        return {
-          finalAnswer: "Session handed off with native handoff document.",
-          turnsCount: turn,
-          completed: false,
-          history,
-          handedOff: true,
-          handoffSnapshot: parsed.handoffDoc,
-          handoffDocPath: docPath
-        };
-      }
-      if (parsed.type === "action") {
-        events?.onToolStart?.(parsed.action);
-        let toolResult;
-        let isInlineScout = false;
-        if (parsed.action.tool === "invoke_subagent") {
-          const thought = parsed.thought || parsed.action?.thought || "";
-          const subagents = parsed.action.subagents || [];
-          isInlineScout = isInlineScoutTask(subagents);
-          let snapshot = null;
-          if (!isInlineScout) {
-            snapshot = createMainPlanSnapshot({
-              originalSessionId: this.sessionId,
-              originalTask: this.pendingTask || task,
-              thought,
-              workspaceRoot: this.workspaceRoot,
-              plannedSubagents: subagents
-            });
-            const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
-            events?.onMainSessionVirtualized?.(snapshot, mdPath);
-            try {
-              client?.close?.();
-            } catch {}
-            this.pool?.releaseSessionLease?.(this.sessionId);
-          }
-          const runner = this.subagentRunner || new SubagentRunner({
-            workspaceRoot: this.workspaceRoot,
-            mainSessionId: this.sessionId,
-            coderAgentId: this.coderAgentId,
-            researcherAgentId: this.researcherAgentId,
-            pool: this.pool,
-            chatClientFactory: this.chatClientFactory,
-            modelTone: this.modelTone,
-            loggerTree: TerminalLogger.getInstance().initSessionTree(this.sessionId, this.workspaceRoot),
-            lineageTracker: this.lineageTracker
-          });
-          const reports = await runner.executeBatch(subagents, signal, {
-            onSubagentStart: events?.onSubagentStart,
-            onSubagentEnd: events?.onSubagentEnd,
-            onSubagentProgress: events?.onSubagentProgress
-          });
-          const summaryOutput = runner.formatReportSummary(reports);
-          const successCount = reports.filter((r) => r.success).length;
-          const isAllSuccess = successCount === reports.length;
-          const isPartialSuccess = successCount > 0 && !isAllSuccess;
-          toolResult = {
-            actionName: "invoke_subagent",
-            piToolName: "subagent",
-            target: `${reports.length} subagents (${successCount}/${reports.length} 成功)`,
-            success: successCount > 0,
-            output: summaryOutput,
-            formatted: summaryOutput
-          };
-          if (!isInlineScout) {
-            const prevSessionId = this.sessionId;
-            this.generation++;
-            const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
-            this.sessionId = nextSessionId;
-            sessionId = nextSessionId;
-            this.conversationId = crypto5.randomUUID();
-            conversationId = this.conversationId;
-            this.lineageTracker?.register({
-              sessionId: nextSessionId,
-              role: "main",
-              status: "active",
-              predecessorId: prevSessionId
-            });
-            this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
-            events?.onSuccessorAwakened?.(nextSessionId, this.generation);
-            if (!this.chatClient && this.pool) {
-              try {
-                const token = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
-                client = this.chatClientFactory ? this.chatClientFactory(token, {
-                  modelTone: this.modelTone,
-                  customAgentId: this.customAgentId
-                }) : new ChatHubClient(token, {
-                  modelTone: this.modelTone,
-                  customAgentId: this.customAgentId
-                });
-              } catch {}
-            }
-            const workerCount = this.getConcurrencyWorkerCount();
-            const dirTree = this.collectDirTreePreview();
-            this.pendingTask = snapshot.originalTask || this.pendingTask || task;
-            currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount, dirTree);
-            this.completeHandshake();
-            refusalRetries = 0;
-            turn = 0;
-          }
-        } else {
-          toolResult = await this.bridge.executeAction(parsed.action, signal);
-        }
-        events?.onToolEnd?.(toolResult);
-        if (toolResult.success && (parsed.action.tool === "edit" || parsed.action.tool === "patch_file" || parsed.action.tool === "write_file")) {
-          const modFile = parsed.action.path || parsed.action.file || parsed.action.filePath || parsed.action.targetPath;
-          if (modFile && typeof modFile === "string") {
-            this.lastModifiedFile = modFile;
-          }
-        }
-        let isGreenTestResult = false;
-        if (toolResult.success) {
-          const rawOut = toolResult.rawOutput || toolResult.output || "";
-          const isTestCommand = (parsed.action.tool === "run_command" || toolResult.actionName === "run_command") && parsed.action.command && /(?:test|vitest|jest|pytest|cargo\s+test)/i.test(parsed.action.command);
-          const hasGreenPattern = /(?:pass(?:ed)?|绿灯|\b\d+\s+pass(?:ed)?\b|status:\s*green|all\s+tests\s+pass(?:ed)?)/i.test(rawOut);
-          if (isTestCommand && hasGreenPattern || hasGreenPattern && /(?:pass|0 fail|passed)/i.test(rawOut)) {
-            isGreenTestResult = true;
-          }
-        }
-        let fingerprintHeader = "";
-        if (isGreenTestResult) {
-          const branch = this.getCurrentGitBranch() || "main";
-          const targetFile = this.lastModifiedFile || parsed.action?.path || parsed.action?.file || "workspace";
-          fingerprintHeader = [
-            "[WORKSPACE STATE UPDATE]",
-            `Branch: ${branch}`,
-            `Status: Green`,
-            `Target: ${targetFile} (Verified: Tests passed on disk)`,
-            `Cloud Mirror: Synced to SharePoint`
-          ].join(`
-`);
-          try {
-            const syncScript = path16.join(this.workspaceRoot, "scripts", "sp-sync-engine.ps1");
-            if (fs12.existsSync(syncScript)) {
-              const child = spawn3("powershell.exe", [
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                syncScript,
-                "-Action",
-                "SyncSingleFile",
-                "-SourceFile",
-                targetFile,
-                "-WorkspaceRoot",
-                this.workspaceRoot
-              ], {
-                cwd: this.workspaceRoot,
-                stdio: "ignore",
-                detached: true
-              });
-              child.unref();
-            }
-          } catch {}
-        }
-        let uploadedAttachment = null;
-        const rawContent = toolResult.rawOutput || toolResult.output || "";
-        const lineCount = rawContent.split(/\r?\n/).length;
-        const charCount = rawContent.length;
-        const isFileReadAction = (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("read") || (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("cat");
-        const shouldUpload = this.enableCloudAttachment && !isGreenTestResult && toolResult.success && charCount > 0 && (isFileReadAction || (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines));
-        if (shouldUpload) {
-          try {
-            const graphToken = await this.acquireGraphToken();
-            if (graphToken) {
-              const actionTag = (parsed.action.tool || toolResult.actionName || "tool").replace(/[^a-zA-Z0-9_-]/g, "_");
-              let uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
-              if (isFileReadAction && (parsed.action?.path || parsed.action?.file || parsed.action?.filePath)) {
-                const targetPath = parsed.action?.path || parsed.action?.file || parsed.action?.filePath || "";
-                const cleanBase = path16.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
-                uploadFileName = `read-${cleanBase}-${Date.now()}.txt`;
-              }
-              uploadedAttachment = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, rawContent, uploadFileName);
-              currentAnnotations = [uploadedAttachment.annotation];
-              events?.onAttachmentUploaded?.(uploadedAttachment, parsed.action.tool || toolResult.actionName);
-            }
-          } catch (uploadErr) {}
-        }
-        const currentTurnRecord = {
-          turn: turnIndex,
-          userInput: turnInputPrompt,
-          thought: parsed.thought || turnReasoningText,
-          response: turnResponseText,
-          action: parsed.action,
-          toolName: toolResult.actionName || parsed.action.tool,
-          toolOutput: rawContent,
-          success: toolResult.success
-        };
-        history.push(currentTurnRecord);
-        if (this.enableInSessionCompaction && history.length > 2) {
-          const compaction = CompactionService.compactTurns(history, {
-            preserveRecentTurns: 2
-          });
-          if (compaction.clearedCharsCount > 0) {
-            history.splice(0, history.length, ...compaction.compactedTurns);
-            events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
-          }
-        }
-        if (parsed.action.tool === "invoke_subagent" && !isInlineScout) {} else if (this.isHandshakePending) {
-          this.completeHandshake();
-          if (uploadedAttachment) {
-            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
-            const workerCount = this.getConcurrencyWorkerCount();
-            currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, workerCount);
-          } else {
-            const workerCount = this.getConcurrencyWorkerCount();
-            currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
-              task: this.pendingTask,
-              toolResult: toolResult.output,
-              skillsSection: this.pendingSkills,
-              toolName: parsed.action.tool || toolResult.actionName,
-              concurrencyWorkers: workerCount
-            });
-          }
-        } else {
-          const currentTask = this.pendingTask || task || "";
-          if (uploadedAttachment) {
-            const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
-            currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, currentTask);
-          } else {
-            currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output, currentTask);
-          }
-        }
-        if (fingerprintHeader) {
-          currentPrompt = `${fingerprintHeader}
-
-${currentPrompt}`;
-        }
-        events?.onTurnEnd?.(turnIndex, turnResponseText);
-        if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
-          const targetSessionId = options.sessionId || this.sessionId;
-          const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
-          const handoffDocPath = this.lastHandoffDocPath;
-          events?.onHandoff?.(handoffSnapshot, handoffDocPath);
+          events?.onCompleted?.(finalAnswer);
           return {
-            finalAnswer: `Max generations reached (${this.maxGenerations}) without completion. Triggered autonomous session handoff.`,
-            turnsCount: turnIndex,
+            finalAnswer,
+            turnsCount: turn,
+            completed: true,
+            history,
+            handedOff: false
+          };
+        }
+        if (parsed.type === "handoff") {
+          const targetSessionId = options.sessionId || this.sessionId;
+          let docPath;
+          let finalHandoffDoc = (parsed.handoffDoc || "").trim();
+          if (this.workspaceRoot) {
+            const handoffsDir = path17.join(this.workspaceRoot, ".cph", "handoffs");
+            fs13.mkdirSync(handoffsDir, { recursive: true });
+            docPath = path17.join(handoffsDir, `handoff-${targetSessionId}.md`);
+            if (finalHandoffDoc.length >= 50) {
+              fs13.writeFileSync(docPath, finalHandoffDoc, "utf8");
+              this.lastHandoffDocPath = docPath;
+            } else {
+              if (fs13.existsSync(docPath)) {
+                try {
+                  fs13.unlinkSync(docPath);
+                } catch {}
+              }
+              finalHandoffDoc = this.generateHandoffSnapshot(task, history, targetSessionId);
+              docPath = this.lastHandoffDocPath;
+            }
+          } else {
+            if (finalHandoffDoc.length < 50) {
+              finalHandoffDoc = this.generateHandoffSnapshot(task, history, targetSessionId);
+            }
+          }
+          history.push({
+            turn,
+            userInput: currentPrompt,
+            thought: parsed.thought || turnReasoningText,
+            response: turnResponseText
+          });
+          events?.onTurnEnd?.(turn, turnResponseText);
+          events?.onHandoff?.(finalHandoffDoc, docPath);
+          return {
+            finalAnswer: "Session handed off with native handoff document.",
+            turnsCount: turn,
             completed: false,
             history,
             handedOff: true,
-            handoffSnapshot,
-            handoffDocPath
+            handoffSnapshot: finalHandoffDoc,
+            handoffDocPath: docPath
           };
         }
-        turn++;
-        continue;
-      }
-      history.push({
-        turn,
-        userInput: currentPrompt,
-        thought: parsed.thought || turnReasoningText,
-        response: turnResponseText
-      });
-      if (this.isHandshakePending) {
-        currentPrompt = `[请先输出 action 块执行 git status 以验证本地物理工具连接]
+        if (parsed.type === "action") {
+          events?.onToolStart?.(parsed.action);
+          let toolResult;
+          let isInlineScout = false;
+          if (parsed.action.tool === "invoke_subagent") {
+            const thought = parsed.thought || parsed.action?.thought || "";
+            const subagents = parsed.action.subagents || [];
+            isInlineScout = isInlineScoutTask(subagents);
+            let snapshot = null;
+            if (!isInlineScout) {
+              snapshot = createMainPlanSnapshot({
+                originalSessionId: this.sessionId,
+                originalTask: this.pendingTask || task,
+                thought,
+                workspaceRoot: this.workspaceRoot,
+                plannedSubagents: subagents
+              });
+              const { mdPath } = saveMainPlanSnapshot(snapshot, this.workspaceRoot);
+              events?.onMainSessionVirtualized?.(snapshot, mdPath);
+              try {
+                client?.close?.();
+              } catch {}
+              this.pool?.releaseSessionLease?.(this.sessionId);
+            }
+            const runner = this.subagentRunner || new SubagentRunner({
+              workspaceRoot: this.workspaceRoot,
+              mainSessionId: this.sessionId,
+              coderAgentId: this.coderAgentId,
+              researcherAgentId: this.researcherAgentId,
+              pool: this.pool,
+              chatClientFactory: this.chatClientFactory,
+              modelTone: this.modelTone,
+              loggerTree: TerminalLogger.getInstance().initSessionTree(this.sessionId, this.workspaceRoot),
+              lineageTracker: this.lineageTracker
+            });
+            const reports = await runner.executeBatch(subagents, signal, {
+              onSubagentStart: events?.onSubagentStart,
+              onSubagentEnd: events?.onSubagentEnd,
+              onSubagentProgress: events?.onSubagentProgress
+            });
+            const summaryOutput = runner.formatReportSummary(reports);
+            const successCount = reports.filter((r) => r.success).length;
+            const isAllSuccess = successCount === reports.length;
+            const isPartialSuccess = successCount > 0 && !isAllSuccess;
+            toolResult = {
+              actionName: "invoke_subagent",
+              piToolName: "subagent",
+              target: `${reports.length} subagents (${successCount}/${reports.length} 成功)`,
+              success: successCount > 0,
+              output: summaryOutput,
+              formatted: summaryOutput
+            };
+            if (!isInlineScout) {
+              const prevSessionId = this.sessionId;
+              if (this.pool && prevSessionId && typeof this.pool.releaseSessionLease === "function") {
+                try {
+                  this.pool.releaseSessionLease(prevSessionId);
+                } catch {}
+              }
+              this.generation++;
+              const nextSessionId = `${this.sessionId.replace(/_gen\d+$/, "")}_gen${this.generation}`;
+              this.sessionId = nextSessionId;
+              sessionId = nextSessionId;
+              this.conversationId = crypto7.randomUUID();
+              conversationId = this.conversationId;
+              this.lineageTracker?.register({
+                sessionId: nextSessionId,
+                role: "main",
+                status: "active",
+                predecessorId: prevSessionId
+              });
+              this.lineageTracker?.linkSuccessor(prevSessionId, nextSessionId);
+              events?.onSuccessorAwakened?.(nextSessionId, this.generation);
+              if (!this.chatClient && this.pool) {
+                try {
+                  const token = await this.pool.getNextAvailableToken({
+                    sessionId: nextSessionId,
+                    ...this.customAgentId ? { forAgentId: this.customAgentId } : {}
+                  });
+                  client = this.chatClientFactory ? this.chatClientFactory(token, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId
+                  }) : new ChatHubClient(token, {
+                    modelTone: this.modelTone,
+                    customAgentId: this.customAgentId
+                  });
+                } catch {}
+              }
+              const workerCount = this.getConcurrencyWorkerCount();
+              const dirTree = this.collectDirTreePreview();
+              this.pendingTask = snapshot.originalTask || this.pendingTask || task;
+              currentPrompt = formatSuccessorTurn1Prompt(snapshot, summaryOutput, undefined, workerCount, dirTree);
+              this.completeHandshake();
+              refusalRetries = 0;
+              turn = 0;
+            }
+          } else {
+            toolResult = await this.bridge.executeAction(parsed.action, signal);
+          }
+          events?.onToolEnd?.(toolResult);
+          if (toolResult.success && (parsed.action.tool === "edit" || parsed.action.tool === "patch_file" || parsed.action.tool === "write_file")) {
+            const modFile = parsed.action.path || parsed.action.file || parsed.action.filePath || parsed.action.targetPath;
+            if (modFile && typeof modFile === "string") {
+              this.lastModifiedFile = modFile;
+              const relMod = path17.isAbsolute(modFile) ? path17.relative(this.workspaceRoot, modFile).replace(/\\/g, "/") : modFile.replace(/\\/g, "/");
+              const cleanRel = relMod.replace(/^\.\//, "");
+              if (cleanRel && !cleanRel.startsWith(".cph/") && !cleanRel.startsWith(".git/") && !cleanRel.startsWith("../") && !path17.isAbsolute(cleanRel)) {
+                const manifestPath = path17.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
+                if (fs13.existsSync(manifestPath)) {
+                  const syncStart = Date.now();
+                  const syncAbort = new AbortController;
+                  let syncTimer;
+                  try {
+                    const engine = new PnPWorkspaceSyncEngine;
+                    const existingManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                    const siteUrl = existingManifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+                    const targetFolder = existingManifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
+                    const mockTransport = Boolean(existingManifest?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+                    await Promise.race([
+                      engine.syncFile(this.workspaceRoot, cleanRel, targetFolder, {
+                        siteUrl,
+                        mockTransport,
+                        signal: syncAbort.signal
+                      }),
+                      new Promise((_, reject) => {
+                        syncTimer = setTimeout(() => {
+                          syncAbort.abort();
+                          reject(new Error("SYNC_TIMEOUT"));
+                        }, 15000);
+                        syncTimer?.unref?.();
+                      })
+                    ]);
+                    const updatedManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                    if (updatedManifest) {
+                      const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(updatedManifest, siteUrl, targetFolder);
+                      fs13.writeFileSync(path17.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md"), mapMd, "utf8");
+                    }
+                    const elapsedMs = Date.now() - syncStart;
+                    const syncNote = `
+[Cloud Mirror: Synced ${cleanRel} to SharePoint (${elapsedMs}ms)]`;
+                    toolResult.output = (toolResult.output || "") + syncNote;
+                    if (toolResult.rawOutput)
+                      toolResult.rawOutput += syncNote;
+                  } catch {
+                    const pendingNote = `
+[Cloud Mirror: PENDING (local file updated; use read_file if re-reading)]`;
+                    toolResult.output = (toolResult.output || "") + pendingNote;
+                    if (toolResult.rawOutput)
+                      toolResult.rawOutput += pendingNote;
+                  } finally {
+                    if (syncTimer)
+                      clearTimeout(syncTimer);
+                  }
+                }
+              }
+            }
+          }
+          let isGreenTestResult = false;
+          if (toolResult.success) {
+            const rawOut = toolResult.rawOutput || toolResult.output || "";
+            const isTestCommand = (parsed.action.tool === "run_command" || toolResult.actionName === "run_command") && parsed.action.command && /(?:test|vitest|jest|pytest|cargo\s+test)/i.test(parsed.action.command);
+            const hasGreenPattern = /(?:pass(?:ed)?|绿灯|\b\d+\s+pass(?:ed)?\b|status:\s*green|all\s+tests\s+pass(?:ed)?)/i.test(rawOut);
+            if (isTestCommand && hasGreenPattern || hasGreenPattern && /(?:pass|0 fail|passed)/i.test(rawOut)) {
+              isGreenTestResult = true;
+            }
+          }
+          let fingerprintHeader = "";
+          if (isGreenTestResult) {
+            const branch = this.getCurrentGitBranch() || "main";
+            const targetFile = this.lastModifiedFile || parsed.action?.path || parsed.action?.file || "workspace";
+            fingerprintHeader = [
+              "[WORKSPACE STATE UPDATE]",
+              `Branch: ${branch}`,
+              `Status: Green`,
+              `Target: ${targetFile} (Verified: Tests passed on disk)`,
+              `Cloud Mirror: Synced to SharePoint`
+            ].join(`
+`);
+          }
+          let uploadedAttachment = null;
+          const rawContent = toolResult.rawOutput || toolResult.output || "";
+          const lineCount = rawContent.split(/\r?\n/).length;
+          const charCount = rawContent.length;
+          const isFileReadAction = (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("read") || (parsed.action.tool || toolResult.actionName || "").toLowerCase().includes("cat");
+          const shouldUpload = this.enableCloudAttachment && !isGreenTestResult && toolResult.success && charCount > 0 && (isFileReadAction || (this.cloudAttachmentThresholdChars === 0 && this.cloudAttachmentThresholdLines === 0 ? true : charCount > this.cloudAttachmentThresholdChars || lineCount > this.cloudAttachmentThresholdLines));
+          if (shouldUpload) {
+            try {
+              const graphToken = await this.acquireGraphToken();
+              if (graphToken) {
+                const actionTag = (parsed.action.tool || toolResult.actionName || "tool").replace(/[^a-zA-Z0-9_-]/g, "_");
+                let uploadFileName = `tool-result-${actionTag}-${Date.now()}.txt`;
+                if (isFileReadAction && (parsed.action?.path || parsed.action?.file || parsed.action?.filePath)) {
+                  const targetPath = parsed.action?.path || parsed.action?.file || parsed.action?.filePath || "";
+                  const cleanBase = path17.basename(targetPath).replace(/[^a-zA-Z0-9_.-]/g, "_");
+                  uploadFileName = `read-${cleanBase}-${Date.now()}.txt`;
+                }
+                uploadedAttachment = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, rawContent, uploadFileName);
+                currentAnnotations = [uploadedAttachment.annotation];
+                events?.onAttachmentUploaded?.(uploadedAttachment, parsed.action.tool || toolResult.actionName);
+              }
+            } catch (uploadErr) {}
+          }
+          const currentTurnRecord = {
+            turn: turnIndex,
+            userInput: turnInputPrompt,
+            thought: parsed.thought || turnReasoningText,
+            response: turnResponseText,
+            action: parsed.action,
+            toolName: toolResult.actionName || parsed.action.tool,
+            toolOutput: rawContent,
+            success: toolResult.success
+          };
+          history.push(currentTurnRecord);
+          if (this.enableInSessionCompaction && history.length > 2) {
+            const compaction = CompactionService.compactTurns(history, {
+              preserveRecentTurns: 2
+            });
+            if (compaction.clearedCharsCount > 0) {
+              history.splice(0, history.length, ...compaction.compactedTurns);
+              events?.onCompacted?.(compaction.clearedCharsCount, compaction.compressionRatio);
+            }
+          }
+          if (parsed.action.tool === "invoke_subagent" && !isInlineScout) {} else if (this.isHandshakePending) {
+            this.completeHandshake();
+            if (uploadedAttachment) {
+              const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
+              const workerCount = this.getConcurrencyWorkerCount();
+              currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, workerCount);
+            } else {
+              const workerCount = this.getConcurrencyWorkerCount();
+              currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
+                task: this.pendingTask,
+                toolResult: toolResult.output,
+                skillsSection: this.pendingSkills,
+                toolName: parsed.action.tool || toolResult.actionName,
+                concurrencyWorkers: workerCount
+              });
+            }
+          } else {
+            const currentTask = this.pendingTask || task || "";
+            if (uploadedAttachment) {
+              const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
+              currentPrompt = PromptBuilder.buildAttachedToolResultPrompt(parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, currentTask);
+            } else {
+              currentPrompt = PromptBuilder.buildToolResultPrompt(parsed.action.tool || toolResult.actionName, toolResult.success, toolResult.output, toolResult.success ? undefined : toolResult.output, currentTask);
+            }
+          }
+          if (fingerprintHeader) {
+            currentPrompt = `${fingerprintHeader}
+
+${currentPrompt}`;
+          }
+          events?.onTurnEnd?.(turnIndex, turnResponseText);
+          if (parsed.action.tool === "invoke_subagent" && !isInlineScout && this.generation > this.maxGenerations) {
+            const targetSessionId = options.sessionId || this.sessionId;
+            const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
+            const handoffDocPath = this.lastHandoffDocPath;
+            events?.onHandoff?.(handoffSnapshot, handoffDocPath);
+            return {
+              finalAnswer: `Max generations reached (${this.maxGenerations}) without completion. Triggered autonomous session handoff.`,
+              turnsCount: turnIndex,
+              completed: false,
+              history,
+              handedOff: true,
+              handoffSnapshot,
+              handoffDocPath
+            };
+          }
+          turn++;
+          continue;
+        }
+        history.push({
+          turn,
+          userInput: currentPrompt,
+          thought: parsed.thought || turnReasoningText,
+          response: turnResponseText
+        });
+        if (this.isHandshakePending) {
+          currentPrompt = `[请先输出 action 块执行 git status 以验证本地物理工具连接]
 
 ${PromptBuilder.PROTOCOL_REMINDER}`;
-      } else {
-        currentPrompt = `${parsed.warning}
+        } else {
+          currentPrompt = `${parsed.warning}
 ${PromptBuilder.PROTOCOL_REMINDER}`;
+        }
+        events?.onTurnEnd?.(turn, turnResponseText);
+        turn++;
       }
-      events?.onTurnEnd?.(turn, turnResponseText);
-      turn++;
+      const targetSessionId = options.sessionId || this.sessionId;
+      const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
+      const handoffDocPath = this.lastHandoffDocPath;
+      events?.onHandoff?.(handoffSnapshot, handoffDocPath);
+      return {
+        finalAnswer: "Max turns reached without final answer.",
+        turnsCount: turn - 1,
+        completed: false,
+        history,
+        handedOff: true,
+        handoffSnapshot,
+        handoffDocPath
+      };
+    } finally {
+      if (this.pool && this.sessionId) {
+        try {
+          if (typeof this.pool.releaseSessionLease === "function") {
+            this.pool.releaseSessionLease(this.sessionId);
+          }
+        } catch {}
+      }
     }
-    const targetSessionId = options.sessionId || this.sessionId;
-    const handoffSnapshot = this.generateHandoffSnapshot(task, history, targetSessionId);
-    const handoffDocPath = this.lastHandoffDocPath;
-    events?.onHandoff?.(handoffSnapshot, handoffDocPath);
-    return {
-      finalAnswer: "Max turns reached without final answer.",
-      turnsCount: turn - 1,
-      completed: false,
-      history,
-      handedOff: true,
-      handoffSnapshot,
-      handoffDocPath
-    };
   }
   extractKeyError(output) {
     if (!output)
@@ -11876,9 +12786,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     }
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const docPath = path16.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
-        if (fs12.existsSync(docPath)) {
-          const existingDoc = fs12.readFileSync(docPath, "utf8").trim();
+        const docPath = path17.join(this.workspaceRoot, ".cph", "handoffs", `handoff-${effectiveSessionId}.md`);
+        if (fs13.existsSync(docPath)) {
+          const existingDoc = fs13.readFileSync(docPath, "utf8").trim();
           if (existingDoc.length > 50) {
             this.lastHandoffDocPath = docPath;
             return existingDoc;
@@ -11931,14 +12841,55 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
       }
     }
     let verifiedFactsSection = "";
+    let diskLedgerEntries = [];
+    if (this.workspaceRoot) {
+      try {
+        const ledgerJsonlPath = path17.join(this.workspaceRoot, ".cph", "state", "execution-ledger.jsonl");
+        if (fs13.existsSync(ledgerJsonlPath)) {
+          const lines = fs13.readFileSync(ledgerJsonlPath, "utf8").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          for (const line of lines) {
+            try {
+              diskLedgerEntries.push(JSON.parse(line));
+            } catch {}
+          }
+        }
+      } catch {}
+    }
     if (history.length === 0) {
-      verifiedFactsSection = `- （暂无已执行的物理动作成果）
+      if (diskLedgerEntries.length > 0) {
+        const parts = [
+          `- **物理工具执行汇总 (来自磁盘总账 \`.cph/state/execution-ledger.jsonl\` 共 ${diskLedgerEntries.length} 项记录)**:`
+        ];
+        const actions = [];
+        const findings = [];
+        for (const entry of diskLedgerEntries) {
+          const status = entry.success !== false ? "成功" : "失败";
+          const tool = entry.canonicalTool || entry.tool || "tool";
+          const target = entry.actionTarget ? ` (${entry.actionTarget})` : "";
+          actions.push(`- Step ${entry.stepIndex ?? "?"}: [${status}] ${tool}${target}`);
+          if (entry.outputSummary) {
+            findings.push(`- Step ${entry.stepIndex ?? "?"} (${tool}): ${entry.outputSummary}`);
+          }
+        }
+        parts.push(``);
+        parts.push(`**已执行动作清单**:`);
+        parts.push(actions.join(`
+`));
+        parts.push(``);
+        parts.push(`**最近工具发现与上下文**:`);
+        parts.push(findings.length > 0 ? findings.slice(-5).join(`
+`) : "- 暂无显著工具发现");
+        verifiedFactsSection = parts.join(`
+`);
+      } else {
+        verifiedFactsSection = `- （暂无已执行的物理动作成果）
 
 **已执行动作清单**:
 - 无已执行的物理工具调用
 
 **最近工具发现与上下文**:
 - 暂无显著工具发现`;
+      }
     } else {
       const parts = [];
       if (successfulRecords.length > 0) {
@@ -12050,7 +13001,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
       }
       nextSteps.push(`2. **接续完成目标**: 围绕原始任务目标【${cleanTask}】继续执行。`);
     }
-    nextSteps.push(`- **避坑提示**: 请勿重复执行前序已验证成功的步骤与文件探测，直接基于上述已验证客观事实推进。`);
+    nextSteps.push(`- **推进提示**: 请直接基于上述已验证客观事实推进，复用前序已验证成功的步骤与文件探测成果。`);
     nextStepsSection = [
       `**接力建议**: 请接续上方成果与状态，避免重复执行已验证步骤，继续完成剩余需求。`,
       ``,
@@ -12060,9 +13011,9 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
     let reviewDraftContent = "";
     if (this.workspaceRoot) {
       try {
-        const reviewDraftPath = path16.join(this.workspaceRoot, ".cph", "review_draft.md");
-        if (fs12.existsSync(reviewDraftPath)) {
-          reviewDraftContent = fs12.readFileSync(reviewDraftPath, "utf8").trim();
+        const reviewDraftPath = path17.join(this.workspaceRoot, ".cph", "review_draft.md");
+        if (fs13.existsSync(reviewDraftPath)) {
+          reviewDraftContent = fs13.readFileSync(reviewDraftPath, "utf8").trim();
         }
       } catch {}
     }
@@ -12101,10 +13052,10 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
 `);
     if (effectiveSessionId && this.workspaceRoot) {
       try {
-        const handoffsDir = path16.join(this.workspaceRoot, ".cph", "handoffs");
-        fs12.mkdirSync(handoffsDir, { recursive: true });
-        const docPath = path16.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
-        fs12.writeFileSync(docPath, doc, "utf8");
+        const handoffsDir = path17.join(this.workspaceRoot, ".cph", "handoffs");
+        fs13.mkdirSync(handoffsDir, { recursive: true });
+        const docPath = path17.join(handoffsDir, `handoff-${effectiveSessionId}.md`);
+        fs13.writeFileSync(docPath, doc, "utf8");
         this.lastHandoffDocPath = docPath;
       } catch {}
     }
@@ -12144,15 +13095,15 @@ ${status}` : "clean (无未提交变更)"}`;
         ".cache",
         "build"
       ]);
-      const entries = fs12.readdirSync(this.workspaceRoot, { withFileTypes: true });
+      const entries = fs13.readdirSync(this.workspaceRoot, { withFileTypes: true });
       const lines = [];
       const topEntries = entries.filter((e) => !e.name.startsWith(".") && !ignored.has(e.name)).slice(0, 20);
       for (const entry of topEntries) {
         if (entry.isDirectory()) {
           lines.push(`- ${entry.name}/`);
           try {
-            const subPath = path16.join(this.workspaceRoot, entry.name);
-            const subEntries = fs12.readdirSync(subPath, { withFileTypes: true }).filter((se) => !se.name.startsWith(".") && !ignored.has(se.name)).slice(0, 10);
+            const subPath = path17.join(this.workspaceRoot, entry.name);
+            const subEntries = fs13.readdirSync(subPath, { withFileTypes: true }).filter((se) => !se.name.startsWith(".") && !ignored.has(se.name)).slice(0, 10);
             for (const sub of subEntries) {
               lines.push(`  - ${sub.name}${sub.isDirectory() ? "/" : ""}`);
             }
@@ -12279,12 +13230,12 @@ ${status}` : "clean (无未提交变更)"}`;
       this.pool.markThrottled(victimEmail, durationMs, throttleReason);
     }
     const targetHandoffRelativePath = `.cph/handoffs/handoff-${sessionId}.md`;
-    const handoffsDir = path16.join(this.workspaceRoot, ".cph", "handoffs");
-    const targetHandoffAbsolutePath = path16.join(handoffsDir, `handoff-${sessionId}.md`);
+    const handoffsDir = path17.join(this.workspaceRoot, ".cph", "handoffs");
+    const targetHandoffAbsolutePath = path17.join(handoffsDir, `handoff-${sessionId}.md`);
     if (!this.pool && !params.arbitratorChatClient && !this.arbitratorChatClient) {
-      fs12.mkdirSync(handoffsDir, { recursive: true });
+      fs13.mkdirSync(handoffsDir, { recursive: true });
       const localHandoffDoc = this.generateHandoffSnapshot(params.rootUserPrompt || task, history, sessionId);
-      fs12.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
+      fs13.writeFileSync(targetHandoffAbsolutePath, localHandoffDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(localHandoffDoc, targetHandoffAbsolutePath);
@@ -12315,7 +13266,7 @@ ${status}` : "clean (无未提交变更)"}`;
         nextToken = await this.pool.getNextAvailableToken(this.customAgentId ? { forAgentId: this.customAgentId } : undefined);
       }
     } catch (poolErr) {
-      fs12.mkdirSync(handoffsDir, { recursive: true });
+      fs13.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (All Accounts Throttled)`,
         `> ⚠️ 账号池所有可用账号均已耗尽频控 (${poolErr.message || String(poolErr)})，本地保障黑匣子生成与落盘。`,
@@ -12323,7 +13274,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs12.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs13.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -12342,7 +13293,7 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    const arbitratorSessionId = `ses_arb_${crypto5.randomUUID()}`;
+    const arbitratorSessionId = `ses_arb_${crypto7.randomUUID()}`;
     const nextEmail = nextToken?.email || "next-account";
     this.lineageTracker.register({
       sessionId: arbitratorSessionId,
@@ -12384,7 +13335,7 @@ ${status}` : "clean (无未提交变更)"}`;
       `2. 【已验证客观事实与阶段性成果】（提炼前序已确认事实与已生成资产）`,
       `3. 【关键卡点、报错与最新诊断】（客观记录中断原因与现场状态）`,
       `4. 【已修改/生成文件清单】（记录已落盘与已修改的文件）`,
-      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，严禁误导后继者提前交付退出）`,
+      `5. 【接力第一优先级待办事项 (Actionable Next Steps)】（必须梳理未完成切片并设为最高优先级待办，请明确未完成切片的具体行动路径，引导后继会话优先推进核心业务交付）`,
       ``,
       `【行动交付要求】`,
       `请必须使用 action: write_file 将交接文档写入 \`${targetHandoffRelativePath}\`。`,
@@ -12395,9 +13346,9 @@ ${status}` : "clean (无未提交变更)"}`;
     try {
       const arbRes = await arbitratorClient.sendMessage({
         text: arbitratorPrompt,
-        conversationId: crypto5.randomUUID(),
+        conversationId: crypto7.randomUUID(),
         sessionId: arbitratorSessionId,
-        requestId: crypto5.randomUUID(),
+        requestId: crypto7.randomUUID(),
         signal
       });
       arbitratorResponseText = arbRes.text;
@@ -12407,7 +13358,7 @@ ${status}` : "clean (无未提交变更)"}`;
         abortError.name = "AbortError";
         throw abortError;
       }
-      fs12.mkdirSync(handoffsDir, { recursive: true });
+      fs13.mkdirSync(handoffsDir, { recursive: true });
       const fallbackDoc = [
         `# \uD83D\uDD04 CPH-PI 容灾降级交接文档 (Arbitrator Session Failed)`,
         `> ⚠️ 仲裁会话执行异常 (${arbErr.message || String(arbErr)})，本地保障黑匣子生成与落盘。`,
@@ -12415,7 +13366,7 @@ ${status}` : "clean (无未提交变更)"}`;
         disasterBlackbox
       ].join(`
 `);
-      fs12.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
+      fs13.writeFileSync(targetHandoffAbsolutePath, fallbackDoc, "utf8");
       this.lastHandoffDocPath = targetHandoffAbsolutePath;
       if (events?.onHandoff) {
         events.onHandoff(fallbackDoc, targetHandoffAbsolutePath);
@@ -12434,19 +13385,21 @@ ${status}` : "clean (无未提交变更)"}`;
         lastPartialOutput: params.lastPartialOutput
       };
     }
-    fs12.mkdirSync(handoffsDir, { recursive: true });
+    fs13.mkdirSync(handoffsDir, { recursive: true });
     const parsed = ResilientParser.parse(arbitratorResponseText);
     if (parsed.type === "action") {
       events?.onToolStart?.(parsed.action);
       const toolResult = await this.bridge.executeAction(parsed.action, signal);
       events?.onToolEnd?.(toolResult);
     }
-    if (!fs12.existsSync(targetHandoffAbsolutePath)) {
-      const contentToPersist = parsed.type === "handoff" ? parsed.handoffDoc : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText;
-      fs12.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
+    const existingArbitrationDoc = fs13.existsSync(targetHandoffAbsolutePath) ? fs13.readFileSync(targetHandoffAbsolutePath, "utf8").trim() : "";
+    if (existingArbitrationDoc.length < 50) {
+      const candidateContent = (parsed.type === "handoff" ? parsed.handoffDoc || "" : parsed.type === "final_answer" ? parsed.answer.summary || parsed.answer.raw || arbitratorResponseText : parsed.type === "action" && parsed.action?.content ? parsed.action.content : arbitratorResponseText).trim();
+      const contentToPersist = candidateContent.length >= 50 ? candidateContent : disasterBlackbox;
+      fs13.writeFileSync(targetHandoffAbsolutePath, contentToPersist, "utf8");
     }
     this.lastHandoffDocPath = targetHandoffAbsolutePath;
-    const finalDocContent = fs12.existsSync(targetHandoffAbsolutePath) ? fs12.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
+    const finalDocContent = fs13.existsSync(targetHandoffAbsolutePath) ? fs13.readFileSync(targetHandoffAbsolutePath, "utf8") : disasterBlackbox;
     if (events?.onArbitratorHandoffComplete) {
       await Promise.resolve(events.onArbitratorHandoffComplete(targetHandoffAbsolutePath, arbitratorSessionId));
     }
@@ -12493,8 +13446,8 @@ function resolveExistingFilePath(candidate, workspaceRoot) {
   }
   for (const item of tryCandidates) {
     try {
-      const absPath = path17.isAbsolute(item) ? item : path17.resolve(workspaceRoot, item);
-      if (fs13.existsSync(absPath) && fs13.statSync(absPath).isFile()) {
+      const absPath = path18.isAbsolute(item) ? item : path18.resolve(workspaceRoot, item);
+      if (fs14.existsSync(absPath) && fs14.statSync(absPath).isFile()) {
         return absPath;
       }
     } catch {}
@@ -12577,7 +13530,7 @@ class SubagentRunner {
   }
   async executeBatch(tasks, signal, events) {
     const poolStatus = this.pool?.getPoolStatus?.() || [];
-    const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled && !acc.isLeased);
+    const activeAllowedAccounts = poolStatus.filter((acc) => acc.isAllowed !== false && !acc.isThrottled && !acc.isLeased && !acc.authExpired && acc.isAvailable !== false);
     const effectiveCapacity = activeAllowedAccounts.length > 0 ? activeAllowedAccounts.length : poolStatus.length > 0 && poolStatus.every((a) => a.isThrottled) ? 1 : Math.max(1, poolStatus.length);
     const maxConcurrency = Math.max(1, Math.min(effectiveCapacity, tasks.length));
     this.loggerTree?.logTimelineEvent({
@@ -12623,8 +13576,8 @@ class SubagentRunner {
             continue;
           }
           const taskSpec = item.task;
-          const subId = `sub-${item.index + 1}-${crypto6.randomBytes(3).toString("hex")}`;
-          const role = taskSpec.role === "coder" ? "coder" : "researcher";
+          const subId = `sub-${item.index + 1}-${crypto8.randomBytes(3).toString("hex")}`;
+          const role = taskSpec.role === "researcher" ? "researcher" : "coder";
           try {
             const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
             settled[item.index] = { status: "fulfilled", value: report };
@@ -12641,8 +13594,8 @@ class SubagentRunner {
             const itemIndex = stageCursor++;
             const item = stageTasks[itemIndex];
             const taskSpec = item.task;
-            const subId = `sub-${item.index + 1}-${crypto6.randomBytes(3).toString("hex")}`;
-            const role = taskSpec.role === "coder" ? "coder" : "researcher";
+            const subId = `sub-${item.index + 1}-${crypto8.randomBytes(3).toString("hex")}`;
+            const role = taskSpec.role === "researcher" ? "researcher" : "coder";
             try {
               const report = await this.runSingleSubagent(subId, role, taskSpec, signal, events);
               settled[item.index] = { status: "fulfilled", value: report };
@@ -12705,7 +13658,7 @@ class SubagentRunner {
     }
     return settled.map((result, idx) => {
       const task = tasks[idx] || {};
-      const role = task.role === "coder" ? "coder" : "researcher";
+      const role = task.role === "researcher" ? "researcher" : "coder";
       const description = task.description || `Task ${idx + 1}`;
       if (result?.status === "fulfilled" && result.value) {
         return {
@@ -12775,12 +13728,6 @@ ${spec.prompt}
 `);
     let hopCount = 0;
     let currentTaskPrompt = spec.prompt;
-    const isScout = isInlineScoutTask([spec]);
-    if (isScout) {
-      currentTaskPrompt = `【斥候宏观侦察工单】：本阶段任务聚焦于目标文件的宏观结构概览与顶层大纲探查（顶层函数/类列表、对外导出与大致行号分布）。请在梳理出清晰目录大纲后，立即输出包含大纲与建议切片的 FINAL_ANSWER 结题，以便主控进入下一阶段精准拆解任务。
-
-` + currentTaskPrompt;
-    }
     let previousSessionId = undefined;
     let totalTurns = 0;
     let lastFinalAnswer = "";
@@ -12797,9 +13744,9 @@ ${spec.prompt}
         }
         if (graphToken) {
           const sliceResult = SnapshotGenerator.generateScopedSubagentSlice(this.workspaceRoot, specTargetFiles, prerequisiteReports);
-          if (sliceResult && fs13.existsSync(sliceResult.slicePath)) {
-            const sliceBuffer = fs13.readFileSync(sliceResult.slicePath);
-            const sliceName = `subagent-slice-${subId}-${path17.basename(sliceResult.slicePath)}`;
+          if (sliceResult && fs14.existsSync(sliceResult.slicePath)) {
+            const sliceBuffer = fs14.readFileSync(sliceResult.slicePath);
+            const sliceName = `subagent-slice-${subId}-${path18.basename(sliceResult.slicePath)}`;
             const uploaded = await SubstrateUploader.uploadDocumentAuto(graphToken, sliceBuffer, sliceName);
             if (uploaded && uploaded.annotation) {
               initialAnnotations = [uploaded.annotation];
@@ -12814,15 +13761,15 @@ ${spec.prompt}
 ⚠️ [开局局部微切片直传失败，降级本地工具读取] ${err?.message || err}
 `);
       }
-    } else if (targetFilePath && fs13.existsSync(targetFilePath)) {
+    } else if (targetFilePath && fs14.existsSync(targetFilePath)) {
       try {
         let graphToken;
         if (this.pool && typeof this.pool.getGraphAccessToken === "function") {
           graphToken = await this.pool.getGraphAccessToken();
         }
         if (graphToken) {
-          const fileContent = fs13.readFileSync(targetFilePath, "utf8");
-          const fileName = path17.basename(targetFilePath);
+          const fileContent = fs14.readFileSync(targetFilePath, "utf8");
+          const fileName = path18.basename(targetFilePath);
           const uploaded = await SubstrateUploader.uploadDocumentToOneDrive(graphToken, fileContent, fileName);
           if (uploaded && uploaded.annotation) {
             initialAnnotations = [uploaded.annotation];
@@ -12935,10 +13882,10 @@ ${spec.prompt}
         }
         if (res.handedOff && res.handoffDocPath) {
           const docPath = res.handoffDocPath;
-          const resolvedPath = path17.isAbsolute(docPath) ? docPath : path17.join(this.workspaceRoot, docPath);
+          const resolvedPath = path18.isAbsolute(docPath) ? docPath : path18.join(this.workspaceRoot, docPath);
           let docContent = "";
-          if (fs13.existsSync(resolvedPath)) {
-            docContent = fs13.readFileSync(resolvedPath, "utf8");
+          if (fs14.existsSync(resolvedPath)) {
+            docContent = fs14.readFileSync(resolvedPath, "utf8");
           } else {
             docContent = `（交接文档路径：${docPath}，前序总结：${res.finalAnswer || "无"}）`;
           }
@@ -13008,10 +13955,10 @@ ${spec.prompt}
 `);
       let deliverablePath;
       try {
-        const reportsDir = path17.join(this.workspaceRoot, ".cph", "reports");
-        fs13.mkdirSync(reportsDir, { recursive: true });
+        const reportsDir = path18.join(this.workspaceRoot, ".cph", "reports");
+        fs14.mkdirSync(reportsDir, { recursive: true });
         const reportFileName = `report-${role}-${subId}.md`;
-        const absReportPath = path17.join(reportsDir, reportFileName);
+        const absReportPath = path18.join(reportsDir, reportFileName);
         const header = [
           `# 专项任务交付报告: ${spec.description}`,
           ``,
@@ -13030,7 +13977,7 @@ ${spec.prompt}
           ``
         ].join(`
 `);
-        fs13.writeFileSync(absReportPath, header + finalAnswer + `
+        fs14.writeFileSync(absReportPath, header + finalAnswer + `
 `, "utf8");
         deliverablePath = `.cph/reports/${reportFileName}`;
       } catch (saveErr) {}
@@ -13170,288 +14117,11 @@ ${spec.prompt}
     parts.push(`【主控对账与推进指引 (Plan Convergence Guidance)】:`);
     parts.push(`1. 对于状态为【✅ 成功】的子任务，其完整交付报告已落盘至对应物理文件，请立即使用 patch_file 将 plan.md 对应项更新打勾为 \`- [x] ...\`；`);
     if (failedCount > 0) {
-      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，严禁全盘推翻已完成成果或重写整个计划！`);
+      parts.push(`2. 对于状态为【❌ 失败】的 ${failedCount} 项子任务，仅对其发起针对性的单点重试或补充调研，请保护并复用已成功编写的计划，针对失败项进行定向补充！`);
     } else {
       parts.push(`2. 所有规划子任务均已圆满交付，若无后续 Stage，即可验证后收敛输出 FINAL_ANSWER。`);
     }
     return parts.join(`
-`);
-  }
-}
-
-// src/workspace/pnp-sync-engine.ts
-import fs14 from "node:fs";
-import path18 from "node:path";
-import crypto7 from "node:crypto";
-import { spawn as spawn4 } from "node:child_process";
-var __dirname = "E:\\copilot-web proxy\\CPH-PI\\src\\workspace";
-
-class PnPWorkspaceSyncEngine {
-  static DEFAULT_SITE_URL = "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN";
-  static DEFAULT_TARGET_FOLDER = "/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01 Team/03 AFR/AFR SCHK/06_Training/New Hire Training/2025/Vincent Fu/WorkSpace/live test";
-  scriptPath;
-  constructor(customScriptPath) {
-    if (customScriptPath) {
-      this.scriptPath = customScriptPath;
-    } else {
-      this.scriptPath = path18.resolve(__dirname, "../../scripts/sp-sync-engine.ps1");
-    }
-  }
-  static getFileSha256(filePath) {
-    const hash = crypto7.createHash("sha256");
-    const buffer = fs14.readFileSync(filePath);
-    hash.update(buffer);
-    return hash.digest("hex");
-  }
-  static loadManifest(manifestPath) {
-    if (fs14.existsSync(manifestPath)) {
-      try {
-        let raw = fs14.readFileSync(manifestPath, "utf8");
-        if (raw.charCodeAt(0) === 65279) {
-          raw = raw.slice(1);
-        }
-        return JSON.parse(raw);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-  static saveManifest(manifestPath, manifest) {
-    const dir = path18.dirname(manifestPath);
-    if (!fs14.existsSync(dir)) {
-      fs14.mkdirSync(dir, { recursive: true });
-    }
-    fs14.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-  }
-  async executePowerShell(args, signal) {
-    return new Promise((resolve, reject) => {
-      const psArgs = [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        this.scriptPath,
-        ...args
-      ];
-      const child = spawn4("powershell.exe", psArgs, {
-        windowsHide: true
-      });
-      let stdout = "";
-      let stderr = "";
-      if (signal) {
-        if (signal.aborted) {
-          child.kill();
-          return reject(new Error("Operation aborted"));
-        }
-        signal.addEventListener("abort", () => {
-          child.kill();
-          reject(new Error("Operation aborted"));
-        });
-      }
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-      child.on("error", (err) => {
-        reject(new Error(`Failed to spawn powershell.exe: ${err.message}`));
-      });
-      child.on("close", (code) => {
-        const startMarker = "###REPORT_JSON_START###";
-        const endMarker = "###REPORT_JSON_END###";
-        const startIndex = stdout.indexOf(startMarker);
-        const endIndex = stdout.indexOf(endMarker);
-        let report = null;
-        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-          const jsonStr = stdout.substring(startIndex + startMarker.length, endIndex).trim();
-          try {
-            report = JSON.parse(jsonStr);
-          } catch (e) {}
-        }
-        if (code !== 0) {
-          return reject(new Error(`sp-sync-engine.ps1 exited with code ${code}.
-STDERR: ${stderr.trim()}
-STDOUT: ${stdout.trim()}`));
-        }
-        if (!report) {
-          return reject(new Error(`Failed to parse report JSON from sp-sync-engine.ps1 output.
-STDOUT: ${stdout.trim()}`));
-        }
-        resolve({ stdout, stderr, report });
-      });
-    });
-  }
-  async prewarm(options) {
-    const siteUrl = options.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-    const targetFolder = options.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-    const manifestPath = options.manifestPath || path18.join(options.workspaceRoot, ".cph", "state", "sync-manifest.json");
-    const dirtyLogPath = options.dirtyLogPath || path18.join(options.workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
-    const args = [
-      "-Action",
-      "Prewarm",
-      "-WorkspaceRoot",
-      options.workspaceRoot,
-      "-TargetFolder",
-      targetFolder,
-      "-SiteUrl",
-      siteUrl,
-      "-ManifestPath",
-      manifestPath,
-      "-DirtyLogPath",
-      dirtyLogPath
-    ];
-    if (options.hardReset) {
-      args.push("-HardReset");
-    }
-    if (options.mockTransport) {
-      args.push("-MockTransport");
-    }
-    const { report } = await this.executePowerShell(args, options.signal);
-    try {
-      const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-      if (manifest) {
-        const mapContent = PnPWorkspaceSyncEngine.generateVirtualRepoMap(manifest, siteUrl, targetFolder);
-        const mapPath = path18.join(options.workspaceRoot, ".cph", "state", "virtual-repo-map.md");
-        fs14.mkdirSync(path18.dirname(mapPath), { recursive: true });
-        fs14.writeFileSync(mapPath, mapContent, "utf8");
-      }
-    } catch {}
-    return report;
-  }
-  async syncFile(workspaceRoot, relativePath, targetFolder, options) {
-    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-    const manifestPath = options?.manifestPath || path18.join(workspaceRoot, ".cph", "state", "sync-manifest.json");
-    const dirtyLogPath = options?.dirtyLogPath || path18.join(workspaceRoot, ".cph", "state", "dirty-sync.jsonl");
-    const args = [
-      "-Action",
-      "SyncSingleFile",
-      "-WorkspaceRoot",
-      workspaceRoot,
-      "-FilePath",
-      relativePath,
-      "-TargetFolder",
-      folder,
-      "-SiteUrl",
-      siteUrl,
-      "-ManifestPath",
-      manifestPath,
-      "-DirtyLogPath",
-      dirtyLogPath
-    ];
-    if (options?.mockTransport) {
-      args.push("-MockTransport");
-    }
-    const { report } = await this.executePowerShell(args, options?.signal);
-    const result = report.results?.[0] || {
-      relativePath,
-      status: "failed",
-      error: "No result returned"
-    };
-    return result;
-  }
-  async pullFile(workspaceRoot, relativePath, targetFolder, options) {
-    const siteUrl = options?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-    const folder = targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-    const args = [
-      "-Action",
-      "PullFile",
-      "-WorkspaceRoot",
-      workspaceRoot,
-      "-FilePath",
-      relativePath,
-      "-TargetFolder",
-      folder,
-      "-SiteUrl",
-      siteUrl
-    ];
-    if (options?.mockTransport) {
-      args.push("-MockTransport");
-    }
-    const { report } = await this.executePowerShell(args, options?.signal);
-    const result = report.results?.[0] || {
-      relativePath,
-      status: "failed",
-      error: "No result returned"
-    };
-    return result;
-  }
-  async verifyCloudMirror(options) {
-    const siteUrl = options.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-    const targetFolder = options.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-    const args = [
-      "-Action",
-      "VerifyMirror",
-      "-WorkspaceRoot",
-      options.workspaceRoot,
-      "-TargetFolder",
-      targetFolder,
-      "-SiteUrl",
-      siteUrl
-    ];
-    if (options.mockTransport) {
-      args.push("-MockTransport");
-    }
-    const { report } = await this.executePowerShell(args, options.signal);
-    return report;
-  }
-  async verifyMirror(options) {
-    return this.verifyCloudMirror(options);
-  }
-  async syncCloudWorkspace(options) {
-    if (!options.skipVerify) {
-      const verifyResult = await this.verifyCloudMirror({
-        workspaceRoot: options.workspaceRoot,
-        targetFolder: options.targetFolder,
-        siteUrl: options.siteUrl,
-        mockTransport: options.mockTransport,
-        signal: options.signal
-      });
-      if (!verifyResult.valid) {
-        throw new Error(verifyResult.reason);
-      }
-    }
-    return this.prewarm(options);
-  }
-  static generateVirtualRepoMap(manifest, siteUrl, targetFolder) {
-    let origin = "";
-    try {
-      origin = new URL(siteUrl).origin;
-    } catch {
-      origin = siteUrl.replace(/\/$/, "");
-    }
-    const folderClean = targetFolder.startsWith("/") ? targetFolder : `/${targetFolder}`;
-    const remoteRootUrl = folderClean.startsWith("/sites/") ? `${origin}${folderClean}` : `${siteUrl.replace(/\/$/, "")}${folderClean}`;
-    const files = manifest.files || {};
-    const fileKeys = Object.keys(files).sort();
-    const lines = [
-      "[SHAREPOINT REMOTE WORKSPACE]",
-      `Remote Root URL: ${remoteRootUrl}`,
-      `Sync Status: Synchronized (Local SSOT) | Total Files: ${fileKeys.length}`,
-      "",
-      "Files Index:"
-    ];
-    if (fileKeys.length === 0) {
-      lines.push("- (No files recorded in sync manifest)");
-    } else {
-      for (const k of fileKeys) {
-        const item = files[k];
-        const sizeKb = (item.size / 1024).toFixed(1);
-        const guidStr = item.uniqueId ? ` | UniqueId: ${item.uniqueId}` : "";
-        let fileWebUrl = "";
-        if (item.serverRelativeUrl) {
-          fileWebUrl = item.serverRelativeUrl.startsWith("/sites/") ? `${origin}${item.serverRelativeUrl}` : `${siteUrl.replace(/\/$/, "")}/${item.serverRelativeUrl.replace(/^\//, "")}`;
-        } else {
-          fileWebUrl = `${remoteRootUrl}/${k.replace(/\\/g, "/")}`;
-        }
-        lines.push(`- ${k.replace(/\\/g, "/")} (Size: ${sizeKb}KB${guidStr} | Web: ${fileWebUrl})`);
-      }
-    }
-    lines.push("");
-    lines.push("Guidance: All repository files are grounded at the SharePoint paths above. You may cite, inspect or trace them directly by relative path or URL.");
-    return lines.join(`
 `);
   }
 }
@@ -13479,6 +14149,9 @@ class RpcHandler {
   pendingHandoffSnapshot = null;
   maxAutonomousHandoffHops = 3;
   graphTokenProvider;
+  get orchestrator() {
+    return this.options.orchestrator;
+  }
   static getGlobalConfigPath() {
     if (process.env.CPH_GLOBAL_CONFIG_PATH) {
       return process.env.CPH_GLOBAL_CONFIG_PATH;
@@ -13579,7 +14252,9 @@ class RpcHandler {
       this.sessionManager = undefined;
     }
     if (this.ws && typeof this.ws.on === "function") {
-      this.ws.on("message", (data) => this.handleMessage(data));
+      this.ws.on("message", (data) => {
+        this.handleMessage(data);
+      });
       this.ws.on("error", (err) => {
         console.warn("[RpcHandler] WebSocket error:", err.message);
       });
@@ -13599,69 +14274,80 @@ class RpcHandler {
 `);
           }
         }
-        this.ws.send(JSON.stringify({ type, payload }));
+        this.ws.send(JSON.stringify({ type, payload, data: payload }));
       } catch (err) {
         console.warn(`[RpcHandler] Failed to send packet ${type}:`, err.message);
       }
     }
   }
-  handleMessage(data) {
+  async handleMessage(data) {
     try {
       const rawStr = typeof data === "string" ? data : data.toString("utf-8");
       const packet = JSON.parse(rawStr);
       if (!packet || typeof packet.type !== "string")
         return;
+      const rawPayload = packet.payload !== undefined ? packet.payload : packet.data;
       if (this.debug) {
         const timeStr = new Date().toISOString().slice(11, 19);
-        const preview = packet.payload ? JSON.stringify(packet.payload).slice(0, 120) : "";
+        const preview = rawPayload ? JSON.stringify(rawPayload).slice(0, 120) : "";
         process.stdout.write(`[${timeStr}] [Web RPC <== ${packet.type}] ${preview}
 `);
       }
       switch (packet.type) {
         case "session:new":
-          this.handleSessionNew(packet.payload);
+          this.handleSessionNew(rawPayload);
           break;
         case "session:select":
-          this.handleSessionSelect(packet.payload);
+          this.handleSessionSelect(rawPayload);
           break;
         case "workspace:set":
-          this.handleWorkspaceSet(packet.payload);
+          this.handleWorkspaceSet(rawPayload);
           break;
         case "workspace:verify-cloud":
-          this.handleWorkspaceVerifyCloud(packet.payload);
+          this.handleWorkspaceVerifyCloud(rawPayload);
           break;
         case "workspace:sync-cloud":
-          this.handleWorkspaceSyncCloud(packet.payload);
+          this.handleWorkspaceSyncCloud(rawPayload);
           break;
         case "accounts:list":
           this.send("accounts:update", this.getAccountsPayload());
           break;
         case "accounts:toggle":
-          this.handleAccountToggle(packet.payload);
+          this.handleAccountToggle(rawPayload);
           break;
         case "accounts:whitelist":
-          this.handleAccountWhitelist(packet.payload);
+          this.handleAccountWhitelist(rawPayload);
           break;
         case "accounts:reset-cooldown":
-          this.handleAccountResetCooldown(packet.payload);
+        case "account:reset-cooldown":
+        case "account:reset_cooldown":
+          this.handleAccountResetCooldown(rawPayload);
+          break;
+        case "account:pkce_start":
+        case "auth:start-pkce":
+          this.handlePkceStart(rawPayload);
+          break;
+        case "account:pkce_complete":
+        case "auth:exchange-code":
+          await this.handlePkceComplete(rawPayload);
           break;
         case "agent:get":
           this.send("agent:update", this.getAgentConfigPayload());
           break;
         case "agent:set":
-          this.handleAgentSet(packet.payload);
+          this.handleAgentSet(rawPayload);
           break;
         case "agent:reset":
-          this.handleAgentReset(packet.payload);
+          this.handleAgentReset(rawPayload);
           break;
         case "agent:add-custom":
-          this.handleAgentAddCustom(packet.payload);
+          this.handleAgentAddCustom(rawPayload);
           break;
         case "agent:remove-custom":
-          this.handleAgentRemoveCustom(packet.payload);
+          this.handleAgentRemoveCustom(rawPayload);
           break;
         case "user:submit":
-          this.handleUserSubmit(packet.payload);
+          this.handleUserSubmit(rawPayload);
           break;
         case "user:interrupt":
           this.handleUserInterrupt();
@@ -14147,6 +14833,9 @@ class RpcHandler {
     }
   }
   handleSessionNew(payload) {
+    if (this.options.orchestrator && typeof this.options.orchestrator.resetHandshake === "function") {
+      this.options.orchestrator.resetHandshake();
+    }
     const title = payload?.title || "新会话";
     let newId = `ses_${Date.now()}`;
     const modelTone = this.options.cliApp?.getModelTone?.() || this.options.orchestrator?.modelTone || this.agentConfig?.modelTone || "Gpt_61_Sol_Reasoning";
@@ -14249,9 +14938,18 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
         this.send("turn:end", { error: err?.message || String(err) });
       } finally {
         this.running = false;
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
       }
     } else {
-      await this.runDefaultGeneration(newTurn, executionTask, targetSkill);
+      try {
+        await this.runDefaultGeneration(newTurn, executionTask, targetSkill);
+      } finally {
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
+      }
     }
   }
   async runOrchestrator(turn, task, targetSkill) {
@@ -14526,11 +15224,19 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
             const nextStage = hopCount + 1;
             const prevSessionId = this.activeSessionId || sessionId;
             let newSessionId = `ses_${Date.now()}`;
+            let newSessionTitle = `接力任务 (接力 ${hopCount})`;
+            if (this.pool && prevSessionId) {
+              this.pool.releaseSessionLease(prevSessionId);
+            }
+            if (this.options.orchestrator && typeof this.options.orchestrator.resetHandshake === "function") {
+              this.options.orchestrator.resetHandshake();
+            }
             if (this.sessionManager) {
               const prevRecord = this.sessionManager.loadSession(prevSessionId);
               const rootTitle = prevRecord?.title || "接力任务";
+              newSessionTitle = `${rootTitle} (接力 ${hopCount})`;
               const newSession = this.sessionManager.createSession({
-                title: `${rootTitle} (接力 ${hopCount})`,
+                title: newSessionTitle,
                 workspaceRoot: this.workspaceRoot || undefined,
                 maxTurns,
                 modelTone,
@@ -14560,6 +15266,12 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
               memoSnippet: runResult.handoffSnapshot ? runResult.handoffSnapshot.slice(0, 300) : "",
               generation: nextStage
             });
+            this.send("session:created", {
+              sessionId: newSessionId,
+              title: newSessionTitle,
+              generation: nextStage,
+              predecessorSessionId: prevSessionId
+            });
             this.send("terminal:chunk", {
               stream: "system",
               content: `
@@ -14572,7 +15284,7 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
               `交接资产: 详细交接文档已${currentInitialAnnotations ? "通过云端附件无损送达" : "落盘于工作区"} (本地路径: ${runResult.handoffDocPath || "未落盘"})`,
               `物理账本: .cph/state/execution-ledger.md`,
               `【接力行动准则】`,
-              `请优先推进未完成的核心业务切片，严禁仅做基线核验即提前退出。`
+              `请优先推进未完成的核心业务切片，聚焦于增量功能交付与深度代码构建，持续输出实质性工程成果。`
             ].join(`
 `);
             const nextTurnId = `turn-${Date.now()}`;
@@ -14592,6 +15304,11 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
             };
             this.turns.push(nextTurn);
             currentTurn = nextTurn;
+            this.send("turn:start", {
+              turn: nextTurn,
+              activeSessionId: newSessionId,
+              generation: nextStage
+            });
             continue;
           }
           break;
@@ -14609,6 +15326,9 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
         }
       } finally {
         this.activeAbortController = undefined;
+        if (this.pool && this.activeSessionId) {
+          this.pool.releaseSessionLease(this.activeSessionId);
+        }
       }
     } else if (typeof orchestrator.runTurn === "function") {
       await orchestrator.runTurn(task, {
@@ -14709,6 +15429,9 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
         this.options.orchestrator.interrupt();
       } catch {}
     }
+    if (this.pool && this.activeSessionId) {
+      this.pool.releaseSessionLease(this.activeSessionId);
+    }
     this.send("turn:end", { status: "interrupted" });
   }
   loadAgentConfig() {
@@ -14786,9 +15509,14 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
       cooldownRemainingSec: Math.max(0, Math.ceil((s.cooldownUntil - now) / 1000)),
       totalRequests: s.totalRequests,
       throttledCount: s.throttledCount,
-      throttleReason: s.throttleReason
+      throttleReason: s.throttleReason,
+      authExpired: s.authExpired,
+      authErrorReason: s.authErrorReason
     }));
     return { accounts, allowedAccounts: allowed ?? null };
+  }
+  sendAccountsStatus() {
+    this.send("accounts:update", this.getAccountsPayload());
   }
   getAgentConfigPayload() {
     return { ...this.agentConfig };
@@ -14804,7 +15532,7 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
     }
     const allowed = this.pool.getAllowedAccounts();
     this.saveWorkspaceConfig({ allowedAccounts: allowed });
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
   }
   handleAccountWhitelist(payload) {
     if (!payload)
@@ -14812,13 +15540,56 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
     const emails = Array.isArray(payload.emails) && payload.emails.length > 0 ? payload.emails : undefined;
     this.pool.setAllowedAccounts(emails);
     this.saveWorkspaceConfig({ allowedAccounts: emails });
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
   }
   handleAccountResetCooldown(payload) {
     if (!payload || !payload.email)
       return;
     this.pool.resetCooldown(payload.email);
-    this.send("accounts:update", this.getAccountsPayload());
+    this.sendAccountsStatus();
+  }
+  handlePkceStart(rawPayload) {
+    const payload = rawPayload?.payload || rawPayload?.data || rawPayload;
+    const targetEmail = payload?.email || payload?.targetEmail;
+    try {
+      const session = this.pool.startPkceAuth(targetEmail);
+      const data = {
+        authSessionId: session.authSessionId,
+        authUrl: session.authUrl,
+        state: session.state,
+        targetEmail
+      };
+      this.send("account:pkce_started", {
+        ...data,
+        data
+      });
+    } catch (err) {
+      const errData = { message: err?.message || String(err) };
+      this.send("account:pkce_error", {
+        ...errData,
+        data: errData
+      });
+    }
+  }
+  async handlePkceComplete(rawPayload) {
+    const payload = rawPayload?.payload || rawPayload?.data || rawPayload;
+    try {
+      const redirectUrl = payload?.redirectUrl || payload?.url || payload?.code || "";
+      const state = payload?.state;
+      const expectedEmail = payload?.expectedEmail || payload?.email;
+      const result = await this.pool.completePkceAuth(redirectUrl, state, expectedEmail);
+      this.sendAccountsStatus();
+      this.send("account:pkce_completed", {
+        ...result,
+        data: result
+      });
+    } catch (err) {
+      const errData = { message: err?.message || String(err) };
+      this.send("account:pkce_error", {
+        ...errData,
+        data: errData
+      });
+    }
   }
   handleAgentSet(payload) {
     if (!payload || !payload.role)
@@ -16090,6 +16861,14 @@ function parseCliArgs(args) {
     } else if (!arg.startsWith("-")) {
       if (arg === "web" && !result.subcommand && positional.length === 0) {
         result.subcommand = "web";
+      } else if (arg === "auth" && !result.subcommand && positional.length === 0) {
+        result.subcommand = "auth";
+        if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+          result.authAction = args[++i];
+          if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+            result.authTargetEmail = args[++i];
+          }
+        }
       } else {
         positional.push(arg);
       }
@@ -16144,10 +16923,11 @@ function parseCliArgs(args) {
     result.workspaceRoot = baseDir;
   }
   if (!result.task && positional.length > 0) {
-    if (result.subcommand !== "web") {
+    if (result.subcommand !== "web" && result.subcommand !== "auth") {
       result.task = positional.join(" ");
     }
   }
+  result.positional = positional;
   return result;
 }
 function getHelpText() {
@@ -16156,6 +16936,7 @@ function getHelpText() {
     "",
     source_default.bold("用法 (Usage):"),
     `  cph-pi [选项] [任务描述...]`,
+    `  cph-pi auth login [email]`,
     `  cph-pi web [选项]`,
     `  bun run src/cli.ts [选项] [任务描述...]`,
     "",
@@ -16183,10 +16964,13 @@ function getHelpText() {
     `    ${source_default.green("--host <string>")}        Web 监听地址 (默认: 127.0.0.1)`,
     `    ${source_default.green("--no-open")}              禁用自动打开默认浏览器`,
     "",
+    source_default.bold("账号授权与换票 (Authentication):"),
+    `  cph-pi auth login [email]               通过浏览器交互式 PKCE 刷新或新增账号凭据`,
+    "",
     source_default.bold("交互模式命令 (Interactive Commands):"),
     `  ${source_default.yellow("/help")}        显示终端帮助与交互快捷键`,
     `  ${source_default.yellow("/status")}      查看当前会话诊断卡与账号池状态`,
-    `  ${source_default.yellow("/accounts")}    查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+    `  ${source_default.yellow("/accounts")}    查看或配置账号池 (/accounts login|enable|disable|set|reset)`,
     `  ${source_default.yellow("/agent [id|clear]")} 查看、绑定或解除工作区专属智能体`,
     `  ${source_default.yellow("/model [tone]")}    查看或动态切换模型风格`,
     `  ${source_default.yellow("/debug [on|off|path]")} 查看、开启或关闭终端输出实时落盘`,
@@ -16228,7 +17012,7 @@ var BUILTIN_SLASH_COMMANDS = {
 可用命令列表:`),
       `  ${source_default.bold.yellow("/help")}        - 显示本帮助信息与按键说明`,
       `  ${source_default.bold.yellow("/status")}      - 查看当前会话诊断卡与账号池状态`,
-      `  ${source_default.bold.yellow("/accounts")}    - 查看或配置账号池白名单 (/accounts enable|disable|set|reset)`,
+      `  ${source_default.bold.yellow("/accounts")}    - 查看或配置账号池 (/accounts login|enable|disable|set|reset)`,
       `  ${source_default.bold.yellow("/agent [id|clear]")} - 查看、绑定或解除专属智能体`,
       `  ${source_default.bold.yellow("/model [tone]")}      - 查看或动态切换当前模型风格`,
       `  ${source_default.bold.yellow("/debug [on|off|path]")} - 查看、开启或关闭终端输出实时落盘`,
@@ -16368,8 +17152,8 @@ var BUILTIN_SLASH_COMMANDS = {
     process.stdout.write(cli.getDiagnosticCard() + `
 `);
   },
-  "/accounts": (cli, args) => {
-    cli.handleAccountsCommand(args);
+  "/accounts": async (cli, args) => {
+    await cli.handleAccountsCommand(args);
   },
   "/agent": (cli, args) => {
     cli.handleAgentCommand(args);
@@ -17224,7 +18008,9 @@ ${source_default.yellow(msg)}
   }
   close() {
     if (this.rl) {
-      this.rl.close();
+      if (typeof this.rl.close === "function") {
+        this.rl.close();
+      }
       this.rl = undefined;
     }
     this.isInteractive = false;
@@ -17445,20 +18231,23 @@ ${source_default.yellow(msg)}
         const isAllowed = s.isAllowed !== false;
         const mark = isAllowed ? source_default.green("[✓]") : source_default.gray("[ ]");
         const emailStr = isAllowed ? source_default.bold.white(s.email) : source_default.gray(s.email);
-        const throttleBadge = s.isThrottled ? source_default.red("(429限频冷却)") : source_default.green("(就绪)");
+        let throttleBadge = s.isThrottled ? source_default.red("(429限频冷却)") : source_default.green("(就绪)");
+        if (s.authExpired) {
+          throttleBadge = source_default.red(`\uD83D\uDD12 凭据已失效 (执行 /accounts login ${s.email} 刷新)`);
+        }
         const allowedBadge = isAllowed ? source_default.cyan("(已启用)") : source_default.gray("(已跳过)");
         return `  ${mark} ${emailStr} ${throttleBadge} ${allowedBadge}`;
       }),
       source_default.gray("──────────────────────────────────────────────────"),
       hasFilter ? source_default.yellow(`  当前白名单限制: 仅启用 ${allowed.length} 个账号，其余已跳过`) : source_default.dim("  当前白名单限制: 未设置 (默认全部账号轮转)"),
       "",
-      source_default.dim("提示: /accounts enable <email> 启用 | /accounts disable <email> 跳过 | /accounts set <e1,e2> 批量设置 | /accounts reset 全量重置"),
+      source_default.dim("提示: /accounts login <email> 刷新凭据 | /accounts enable <email> 启用 | /accounts disable <email> 跳过 | /accounts set <e1,e2> 批量设置 | /accounts reset 全量重置"),
       ""
     ];
     return lines.join(`
 `);
   }
-  handleAccountsCommand(args) {
+  async handleAccountsCommand(args) {
     const raw = args ? args.trim() : "";
     if (!raw) {
       process.stdout.write(this.formatAccountsList() + `
@@ -17468,6 +18257,11 @@ ${source_default.yellow(msg)}
     const parts = raw.split(/\s+/);
     const sub = parts[0].toLowerCase();
     const rest = raw.slice(parts[0].length).trim();
+    if (sub === "login") {
+      const email = rest ? rest.trim() : undefined;
+      await runCliPkceAuthFlow(this.pool, email, this.rl);
+      return;
+    }
     if (sub === "reset") {
       this.pool.setAllowedAccounts(undefined);
       this.saveWorkspaceConfig({ allowedAccounts: undefined });
@@ -17534,7 +18328,7 @@ ${source_default.yellow(msg)}
       return;
     }
     process.stdout.write(source_default.red(`
-未知子命令: "${sub}"。可用子命令: /accounts [set|enable|disable|reset]
+未知子命令: "${sub}"。可用子命令: /accounts [login|set|enable|disable|reset]
 
 `));
   }
@@ -17853,6 +18647,81 @@ ${result.handoffSnapshot}`,
   }
 }
 var CPH_PI_VERSION = "0.1.0";
+async function runCliPkceAuthFlow(pool, targetEmail, customRl) {
+  const session = pool.startPkceAuth(targetEmail);
+  process.stdout.write(`
+` + source_default.bold.cyan("==================================================") + `
+`);
+  process.stdout.write(source_default.bold.cyan("           Microsoft 365 账号授权与换票           ") + `
+`);
+  process.stdout.write(source_default.bold.cyan("==================================================") + `
+
+`);
+  if (targetEmail) {
+    process.stdout.write(source_default.yellow(`目标授权账号: ${source_default.bold(targetEmail)}
+
+`));
+  }
+  process.stdout.write(source_default.bold(`请复制以下链接在系统浏览器中打开并完成登录:
+`));
+  process.stdout.write(source_default.underline.blue(session.authUrl) + `
+
+`);
+  process.stdout.write(source_default.dim(`登录完成后浏览器将跳转至空白页 (或显示无法访问)。
+`));
+  process.stdout.write(source_default.dim(`请从浏览器地址栏复制完整重定向 URL，或直接粘贴返回的 code 参数。
+
+`));
+  const shouldCloseRl = !customRl;
+  const rl = customRl || readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  const input = await new Promise((resolve) => {
+    rl.question(source_default.yellow("请输入重定向 URL 或 Code: "), (answer) => {
+      resolve((answer || "").trim());
+    });
+  });
+  if (shouldCloseRl) {
+    rl.close();
+  }
+  if (!input) {
+    process.stdout.write(source_default.red(`
+✖ 输入为空，授权流程已取消。
+
+`));
+    return false;
+  }
+  try {
+    const result = await pool.completePkceAuth(input, session.state, targetEmail);
+    if (!result.success) {
+      process.stdout.write(source_default.red(`
+✖ 凭据刷新失败: ${result.error || "授权验证未通过"}
+
+`));
+      return false;
+    }
+    if (result.emailMismatch) {
+      process.stdout.write(source_default.yellow(`
+⚠️  检测到实际登录账号为 ${source_default.bold(result.email)}，原目标账号 ${source_default.bold(targetEmail)} 仍处于待重登状态。
+`) + source_default.green(`✔ 账号 ${source_default.bold(result.email)} 已安全保存至 accounts.json 并就绪可用。
+
+`));
+    } else {
+      process.stdout.write(source_default.green(`
+✔ 凭据刷新成功! 账号 ${source_default.bold(result.email)} 已安全保存至 accounts.json 并就绪可用。
+
+`));
+    }
+    return true;
+  } catch (err) {
+    process.stdout.write(source_default.red(`
+✖ 授权流程发生异常: ${err.message || String(err)}
+
+`));
+    return false;
+  }
+}
 async function runCli(args = process.argv.slice(2), customOptions = {}, isDirectRun = false) {
   const parsed = parseCliArgs(args);
   if (parsed.help) {
@@ -17951,6 +18820,25 @@ async function runCli(args = process.argv.slice(2), customOptions = {}, isDirect
     }
     return { exitCode: 0, mode: "web", serverInstance };
   }
+  if (parsed.subcommand === "auth") {
+    if (parsed.authAction === "login" || !parsed.authAction) {
+      const pool = cli.getPool();
+      const success = await runCliPkceAuthFlow(pool, parsed.authTargetEmail, customOptions.rl);
+      cli.close();
+      if (isDirectRun)
+        process.exit(success ? 0 : 1);
+      return { exitCode: success ? 0 : 1, mode: "auth" };
+    } else {
+      process.stdout.write(source_default.yellow(`
+未知 auth 动作: "${parsed.authAction}"。可用命令: cph-pi auth login [email]
+
+`));
+      cli.close();
+      if (isDirectRun)
+        process.exit(1);
+      return { exitCode: 1, mode: "auth" };
+    }
+  }
   if (parsed.task) {
     try {
       if (parsed.task.startsWith("/")) {
@@ -18002,6 +18890,7 @@ export {
   renderHelpBanner,
   resolveWebDistDir,
   runCli,
+  runCliPkceAuthFlow,
   startWebServer,
   stopWebServer
 };
