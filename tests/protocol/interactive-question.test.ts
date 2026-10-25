@@ -168,8 +168,9 @@ describe("Interactive Question Protocol & ask_question Tool Wiring", () => {
         options: ["跳过", "执行"],
       });
 
-      // In non-interactive mode, should fallback to default first option
-      expect(answer).toBe("跳过");
+      // In non-interactive mode, the harness must not fabricate a user answer.
+      expect(answer).toContain("QUESTION_UNAVAILABLE");
+      expect(answer).toContain("FINAL_ANSWER");
       expect(written).toContain("自动测试中，是否跳过长任务？");
     });
 

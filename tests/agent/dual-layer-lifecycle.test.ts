@@ -83,6 +83,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         chatClient: mockChatClient,
         enableWorkspaceSnapshot: true,
         isHandshakePending: false,
@@ -164,6 +165,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         chatClient: mockChatClient,
         enableWorkspaceSnapshot: true,
         isHandshakePending: false,
@@ -220,6 +222,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         chatClient: mockChatClient,
         enableWorkspaceSnapshot: true,
         isHandshakePending: false,
@@ -284,6 +287,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         chatClient: mockChatClient,
         bridge: mockBridge as any,
         enableWorkspaceSnapshot: false, // Turn off snapshot to isolate green header
@@ -334,6 +338,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         enableWorkspaceSnapshot: true,
       });
 
@@ -401,6 +406,7 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
 
       const runner = new SubagentRunner({
         workspaceRoot: tempDir,
+        enableWorkspaceCatalog: false,
         mainSessionId: "main_ses_slice_test",
         pool: mockPool as any,
         createOrchestratorFn: mockCreateOrchestrator as any,
@@ -428,3 +434,4 @@ describe("Phase 3: Dual-Layer Snapshot Lifecycle & Pipeline Integration", () => 
     });
   });
 });
+

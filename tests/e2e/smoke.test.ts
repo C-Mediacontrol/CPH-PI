@@ -272,6 +272,7 @@ FINAL_ANSWER:
             interruptController,
             chatClient,
             pool: mockPool,
+            enableWorkspaceCatalog: false,
             cloudAttachmentThresholdChars: 0,
             cloudAttachmentThresholdLines: 0,
           } as any
@@ -380,3 +381,4 @@ FINAL_ANSWER:
     });
   });
 });
+

@@ -16,6 +16,7 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
   it("should default cloud attachment thresholds to 12000 chars / 200 lines (optimized anti-blindness)", () => {
     const orchestrator = new CopilotOrchestrator({
       workspaceRoot: process.cwd(),
+      enableWorkspaceCatalog: false,
     });
     const thresholds = orchestrator.getCloudAttachmentThresholds();
 
@@ -89,6 +90,7 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
 
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: process.cwd(),
+        enableWorkspaceCatalog: false,
         bridge: mockBridge,
         chatClient: mockClient,
         customAgentId: "T_test_agent",
@@ -179,6 +181,7 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
       // Custom thresholds configured: only upload if > 500 chars or > 20 lines
       const orchestrator = new CopilotOrchestrator({
         workspaceRoot: process.cwd(),
+        enableWorkspaceCatalog: false,
         bridge: mockBridge,
         chatClient: mockClient,
         customAgentId: "T_test_agent",
@@ -204,3 +207,4 @@ describe("Aggressive Cloud Attachment Policy & Lossless Attachment Pipeline", ()
     });
   });
 });
+

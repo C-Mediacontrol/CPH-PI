@@ -67,6 +67,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
 
       const cli = new CphPiCli({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         sessionManager,
         renderer,
         chatClient: mockClient,
@@ -148,6 +149,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
 
       const cli = new CphPiCli({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         sessionManager,
         renderer,
         chatClient: mockClient,
@@ -201,6 +203,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
 
       const cli = new CphPiCli({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         sessionManager,
         renderer,
         chatClient: mockClient,
@@ -239,6 +242,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
 
       const cli = new CphPiCli({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         sessionManager,
         renderer,
         chatClient: mockClient,
@@ -306,6 +310,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
 
       const cli = new CphPiCli({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         sessionManager,
         renderer,
         interruptController,
@@ -352,3 +357,4 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
     });
   });
 });
+

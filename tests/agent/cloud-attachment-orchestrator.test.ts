@@ -102,6 +102,7 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
       // 4. Instantiate Orchestrator with cloud attachment enabled
       const orchestrator = new Orchestrator({
         workspaceRoot: tmpDir,
+        enableWorkspaceCatalog: false,
         bridge: mockBridge,
         chatClient: mockClient,
         customAgentId: "T_test_dev_agent", // Direct agent mode
@@ -200,6 +201,7 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
 
     const orchestrator = new Orchestrator({
       workspaceRoot: tmpDir,
+      enableWorkspaceCatalog: false,
       bridge: mockBridge,
       chatClient: mockClient,
       customAgentId: "T_test_dev_agent",
@@ -263,6 +265,7 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
 
     const orchestrator = new Orchestrator({
       workspaceRoot: tmpDir,
+      enableWorkspaceCatalog: false,
       bridge: mockBridge,
       chatClient: mockClient,
       customAgentId: "T_test_dev_agent",
@@ -282,4 +285,5 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
     expect(sentMessages[1].text).toContain("[TOOL_RESULT for run_command - SUCCESS]");
   });
 });
+
 

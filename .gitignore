@@ -15,3 +15,7 @@ web/node_modules/
 .docs/reports/*-raw*.txt
 scripts/*.png
 
+
+# non-deterministic generated zip (rebuild with bun run package)
+package/agent-bundle/copilot-agent-bundle.zip
+
