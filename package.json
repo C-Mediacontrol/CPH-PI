@@ -5,6 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/cli.ts",
+    "build": "bun run build:package && npm --prefix web run build",
+    "web": "bun run src/cli.ts web",
+    "web:node": "bun run build:package && node package/bin/cph-pi.js web",
+    "web:build": "npm --prefix web run build",
+    "web:dev": "npm --prefix web run dev",
     "check:accounts": "bun run scripts/probe-agent-access.ts",
     "check:accounts:apply": "bun run scripts/probe-agent-access.ts --apply",
     "package": "bun run scripts/package-agent-bundle.ts",
@@ -12,11 +17,13 @@
     "test": "bun test tests/"
   },
   "dependencies": {
+    "adm-zip": "^0.6.1",
     "chalk": "^5.4.1",
     "diff": "^7.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.6.0",
     "@types/diff": "^5.2.3",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13"
