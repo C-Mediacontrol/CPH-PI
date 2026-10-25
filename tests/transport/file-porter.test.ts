@@ -319,4 +319,60 @@ describe("FilePorter asyncgw normalization, SSRF guard, and zip semantics", () =
 
     fs.rmSync(tmpWorkspace, { recursive: true, force: true });
   });
+
+  test("normalizeAsyncGwUrl supports exact asyncgw.teams.microsoft.com host", () => {
+    const raw =
+      "https://asyncgw.teams.microsoft.com/v1/objects/obj-99/views/original/test-spec.md";
+    const norm = FilePorter.normalizeAsyncGwUrl(raw);
+    expect(norm.fileNameFromUrl).toBe("test-spec.md");
+    expect(norm.fetchUrl).toBe(
+      "https://asyncgw.teams.microsoft.com/v1/objects/obj-99/views/original"
+    );
+  });
+
+  test("deliverToWorkspace detects existing directory without trailing slash as isDirTarget", async () => {
+    const tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "cph-porter-existdir-"));
+    const targetDir = path.join(tmpWorkspace, "existing_folder");
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const mockFetch = (async () => new Response("folder file content", { status: 200 })) as typeof fetch;
+
+    const porter = new FilePorter({
+      cwd: tmpWorkspace,
+      fetchFn: mockFetch,
+    });
+
+    const res = await porter.deliverToWorkspace({
+      downloadUrl: "https://fr-prod.asyncgw.teams.microsoft.com/v1/objects/obj-1/views/original/doc.txt",
+      destinationPath: "existing_folder",
+    });
+
+    expect(res.landedFiles).toEqual(["existing_folder/doc.txt"]);
+    expect(fs.readFileSync(path.join(targetDir, "doc.txt"), "utf-8")).toBe("folder file content");
+
+    fs.rmSync(tmpWorkspace, { recursive: true, force: true });
+  });
+
+  test("deliverToWorkspace sanitizes filename to prevent traversal when landing into directory", async () => {
+    const tmpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "cph-porter-traversal-"));
+    const mockFetch = (async () => new Response("safe content", { status: 200 })) as typeof fetch;
+
+    const porter = new FilePorter({
+      cwd: tmpWorkspace,
+      fetchFn: mockFetch,
+    });
+
+    // fileNameFromUrl containing path traversal like ../../evil.txt
+    const res = await porter.deliverToWorkspace({
+      downloadUrl: "https://sharepoint.com/sites/team/..%2F..%2Fevil.txt",
+      destinationPath: "target_dir/",
+    });
+
+    // Should sanitize base name to "evil.txt" and land strictly inside target_dir/
+    expect(res.landedFiles).toEqual(["target_dir/evil.txt"]);
+    expect(fs.existsSync(path.join(tmpWorkspace, "target_dir", "evil.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpWorkspace, "evil.txt"))).toBe(false);
+
+    fs.rmSync(tmpWorkspace, { recursive: true, force: true });
+  });
 });

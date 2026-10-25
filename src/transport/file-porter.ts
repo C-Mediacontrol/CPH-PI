@@ -76,7 +76,11 @@ export class FilePorter {
   } {
     try {
       const u = new URL(rawUrl);
-      if (u.hostname.endsWith(".asyncgw.teams.microsoft.com")) {
+      const host = u.hostname.toLowerCase();
+      if (
+        host === "asyncgw.teams.microsoft.com" ||
+        host.endsWith(".asyncgw.teams.microsoft.com")
+      ) {
         const match = u.pathname.match(
           /^(\/v1\/objects\/[^/]+\/views\/[^/]+)(?:\/([^/]+))?$/i
         );
@@ -215,7 +219,9 @@ export class FilePorter {
     }
 
     const isDirTarget = Boolean(
-      params.isDirectory || /[\\/]$/.test(params.destinationPath)
+      params.isDirectory ||
+        /[\\/]$/.test(params.destinationPath) ||
+        (fs.existsSync(resolvedDest) && fs.statSync(resolvedDest).isDirectory())
     );
     const isExplicitZipFile = params.destinationPath.toLowerCase().endsWith(".zip");
 
@@ -319,7 +325,13 @@ export class FilePorter {
 
     let targetFilePath: string;
     if (isDirTarget) {
-      const finalName = fileNameFromUrl || "downloaded_file";
+      let finalName =
+        path.posix.basename(
+          (fileNameFromUrl || "downloaded_file").replace(/\\/g, "/")
+        ) || "downloaded_file";
+      if (finalName === "." || finalName === "..") {
+        finalName = "downloaded_file";
+      }
       targetFilePath = path.resolve(resolvedDest, finalName);
     } else {
       targetFilePath = resolvedDest;
