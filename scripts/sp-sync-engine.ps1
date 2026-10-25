@@ -1234,6 +1234,9 @@ switch ($Action) {
 
     'ReconcileUrls' {
         # 纯本地操作：按 SiteUrl + TargetFolder 重算 manifest 中的 serverRelativeUrl，不访问网络、不删除云端文件。
+        if (-not $PSBoundParameters.ContainsKey('TargetFolder')) {
+            throw "ReconcileUrls requires an explicit -TargetFolder; refusing to rewrite every manifest URL with a default path."
+        }
         $manifest = Get-SyncManifest -Path $ManifestPath
         $sitePath = ''
         if ($SiteUrl) {
@@ -1257,6 +1260,7 @@ switch ($Action) {
 
         $updatedCount = 0
         $totalCount = 0
+        $samples = @()
         foreach ($key in @($manifest.files.Keys)) {
             $entry = $manifest.files[$key]
             if (-not $entry) { continue }
@@ -1264,11 +1268,17 @@ switch ($Action) {
             $normalizedRel = ([string]$key).Replace('\', '/').TrimStart('/')
             $expected = "$prefix/$normalizedRel"
             if ([string]$entry.serverRelativeUrl -ne $expected) {
+                if ($samples.Count -lt 5) {
+                    $samples += "$normalizedRel :: $([string]$entry.serverRelativeUrl) -> $expected"
+                }
                 $entry["serverRelativeUrl"] = $expected
                 $updatedCount++
             }
         }
 
+        foreach ($sample in $samples) {
+            Write-Output "[RECONCILE-DIFF] $sample"
+        }
         Save-SyncManifest -Manifest $manifest -Path $ManifestPath
         Write-Output "[RECONCILE] updated=$updatedCount total=$totalCount prefix=$prefix"
 

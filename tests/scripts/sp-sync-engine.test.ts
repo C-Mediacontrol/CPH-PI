@@ -723,10 +723,47 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
 
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("[RECONCILE] updated=1 total=1");
+      expect(res.stdout).toContain("[RECONCILE-DIFF]");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
       expect(manifest.files["Library/a.ps1"].serverRelativeUrl).toBe(
         "/sites/test/AFRASIA/WorkSpace/test_workspace/Library/a.ps1"
       );
+    });
+
+    it("refuses to run without an explicit TargetFolder (protects manifest)", () => {
+      if (!IS_WINDOWS) {
+        expect(true).toBe(true);
+        return;
+      }
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      const before = JSON.stringify({
+        version: 2,
+        siteUrl: "https://tenant.sharepoint.com/sites/test",
+        targetFolder: "AFRASIA/WorkSpace/test_workspace",
+        files: {
+          "Library/a.ps1": {
+            sha256: "abc",
+            size: 1,
+            serverRelativeUrl: "/sites/test/AFRASIA/WorkSpace/test_workspace/Library/a.ps1",
+          },
+        },
+        folders: {},
+      });
+      fs.writeFileSync(manifestPath, before, "utf8");
+
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "ReconcileUrls",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-SiteUrl", "https://tenant.sharepoint.com/sites/test",
+      ]);
+
+      expect(res.status).not.toBe(0);
+      expect(res.stderr + res.stdout).toContain("explicit -TargetFolder");
+      // Manifest must stay byte-identical.
+      expect(fs.readFileSync(manifestPath, "utf8")).toBe(before);
     });
   });
 });
