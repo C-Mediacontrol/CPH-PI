@@ -526,6 +526,37 @@ export class PnPWorkspaceSyncEngine {
   }
 
   /**
+   * Static helper to run workspace synchronization
+   */
+  public static async syncWorkspace(
+    workspaceRoot: string,
+    targetFolder?: string,
+    options?: { siteUrl?: string; mockTransport?: boolean; signal?: AbortSignal }
+  ): Promise<PrewarmReport> {
+    const engine = new PnPWorkspaceSyncEngine();
+    return engine.prewarm({
+      workspaceRoot,
+      targetFolder,
+      ...options,
+    });
+  }
+
+  /**
+   * Instance method to run workspace synchronization (alias to prewarm)
+   */
+  public async syncWorkspace(
+    workspaceRoot: string,
+    targetFolder?: string,
+    options?: PrewarmOptions
+  ): Promise<PrewarmReport> {
+    return this.prewarm({
+      workspaceRoot,
+      targetFolder,
+      ...options,
+    });
+  }
+
+  /**
    * Reads .cph/state/remote-workspace-catalog.md from workspaceRoot if present and non-empty
    */
   public static readCatalogMarkdown(workspaceRoot?: string): string | undefined {

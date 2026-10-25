@@ -16,6 +16,8 @@ import {
   type CopilotAction,
   type ToolBridgeResult,
 } from "../protocol/tool-bridge.ts";
+import { DeliverablesParser, type DeliverableItem } from "../protocol/deliverables-parser.ts";
+import { FilePorter, type FilePorterDeliveryResult } from "../transport/file-porter.ts";
 import { PromptBuilder } from "../protocol/prompt-builder.ts";
 import { ResilientParser } from "../protocol/resilient-parser.ts";
 import { CompactionService, type TurnRecord } from "./compaction.ts";
@@ -90,6 +92,7 @@ export interface OrchestratorOptions {
   lineageTracker?: SessionLineageTracker;
   maxGenerations?: number;
   enableWorkspaceSnapshot?: boolean;
+  cdpClient?: any;
 }
 
 export type CopilotOrchestratorOptions = OrchestratorOptions;
@@ -128,6 +131,7 @@ export interface OrchestratorRunOptions {
   initialAnnotations?: AttachmentAnnotation[];
   rootUserPrompt?: string;
   enableWorkspaceSnapshot?: boolean;
+  cdpClient?: any;
 }
 
 export interface OrchestratorRunResult {
@@ -210,6 +214,7 @@ export class Orchestrator {
   public enableWorkspaceSnapshot: boolean;
   public lastNextSnapshotMeta?: SnapshotResult;
   private lastModifiedFile?: string;
+  private cdpClient?: any;
 
   // Handshake State Machine
   public isHandshakePending: boolean = true;
@@ -250,6 +255,7 @@ export class Orchestrator {
         : 200;
     this.lineageTracker = options.lineageTracker || new SessionLineageTracker();
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
+    this.cdpClient = options.cdpClient;
     this.isHandshakePending =
       options.isHandshakePending !== undefined
         ? options.isHandshakePending
@@ -538,6 +544,145 @@ export class Orchestrator {
     let currentAnnotations: AttachmentAnnotation[] = options.initialAnnotations
       ? [...options.initialAnnotations]
       : [];
+    const cdpClient = options.cdpClient ?? this.cdpClient;
+
+    // Pre-Turn 1: SharePoint Cloud Workspace Full Sync & Catalog Generation
+    if (this.workspaceRoot) {
+      const manifestPath = path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
+      if (fs.existsSync(manifestPath)) {
+        try {
+          const manifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+          if (manifest && manifest.targetFolder) {
+            const siteUrl = manifest.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+            const targetFolder = manifest.targetFolder;
+            const mockTransport = Boolean((manifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+            const syncAbort = new AbortController();
+            let syncTimer: any;
+            try {
+              await Promise.race([
+                PnPWorkspaceSyncEngine.syncWorkspace(this.workspaceRoot, targetFolder, {
+                  siteUrl,
+                  mockTransport,
+                  signal: syncAbort.signal,
+                }),
+                new Promise((_, reject) => {
+                  syncTimer = setTimeout(() => {
+                    syncAbort.abort();
+                    reject(new Error("SYNC_TIMEOUT"));
+                  }, 15000);
+                  syncTimer?.unref?.();
+                }),
+              ]);
+            } catch (syncErr: any) {
+              try {
+                const errLogPath = path.join(this.workspaceRoot, ".cph", "state", "sync-error.log");
+                fs.mkdirSync(path.dirname(errLogPath), { recursive: true });
+                fs.appendFileSync(
+                  errLogPath,
+                  `[${new Date().toISOString()}] Pre-Turn 1 syncWorkspace failed:\n${syncErr?.stack || syncErr?.message || String(syncErr)}\n\n`,
+                  "utf-8"
+                );
+              } catch {}
+            } finally {
+              if (syncTimer) clearTimeout(syncTimer);
+            }
+
+            try {
+              PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot, { siteUrl, targetFolder });
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+
+    // Pre-Turn 1: Workspace Catalog Attachment Mount with SHA-256 Cache
+    if (this.workspaceRoot) {
+      const catalogRelCandidates = [
+        path.join(".cph", "state", "remote-workspace-catalog.md"),
+        "remote-workspace-catalog.md",
+      ];
+      let catalogFilePath: string | undefined;
+      for (const rel of catalogRelCandidates) {
+        const p = path.join(this.workspaceRoot, rel);
+        if (fs.existsSync(p)) {
+          catalogFilePath = p;
+          break;
+        }
+      }
+
+      if (catalogFilePath) {
+        try {
+          const catalogBuffer = fs.readFileSync(catalogFilePath);
+          const catalogHash = crypto.createHash("sha256").update(catalogBuffer).digest("hex");
+          const catalogCacheFile = path.join(
+            this.workspaceRoot,
+            ".cph",
+            "state",
+            "workspace-catalog-cache.json"
+          );
+
+          let cachedCatalog: {
+            catalogHash?: string;
+            hash?: string;
+            uploadResult?: UploadDocumentResult;
+            updatedAt?: string;
+          } | null = null;
+
+          if (fs.existsSync(catalogCacheFile)) {
+            try {
+              cachedCatalog = JSON.parse(fs.readFileSync(catalogCacheFile, "utf-8"));
+            } catch {
+              cachedCatalog = null;
+            }
+          }
+
+          if (
+            cachedCatalog &&
+            (cachedCatalog.catalogHash === catalogHash || cachedCatalog.hash === catalogHash) &&
+            cachedCatalog.uploadResult?.annotation
+          ) {
+            currentAnnotations.push(cachedCatalog.uploadResult.annotation);
+            events?.onAttachmentUploaded?.(cachedCatalog.uploadResult, "workspace_catalog");
+          } else {
+            const graphToken = await this.acquireGraphToken();
+            if (!graphToken) {
+              throw new Error("No Graph access token available for workspace catalog upload");
+            }
+            const uploadResult = await SubstrateUploader.uploadDocumentAuto(
+              graphToken,
+              catalogBuffer,
+              "remote-workspace-catalog.md",
+              signal
+            );
+
+            const cacheData = {
+              catalogHash,
+              uploadResult,
+              updatedAt: new Date().toISOString(),
+            };
+            fs.mkdirSync(path.dirname(catalogCacheFile), { recursive: true });
+            fs.writeFileSync(catalogCacheFile, JSON.stringify(cacheData, null, 2), "utf-8");
+
+            currentAnnotations.push(uploadResult.annotation);
+            events?.onAttachmentUploaded?.(uploadResult, "workspace_catalog");
+          }
+        } catch (err: any) {
+          try {
+            const errLogPath = path.join(
+              this.workspaceRoot,
+              ".cph",
+              "state",
+              "upload-error.log"
+            );
+            fs.mkdirSync(path.dirname(errLogPath), { recursive: true });
+            const errContent = `[${new Date().toISOString()}] Turn 1 workspace catalog upload failed:\n${
+              err?.stack || err?.message || String(err)
+            }\n\n`;
+            fs.appendFileSync(errLogPath, errContent, "utf-8");
+          } catch {}
+        }
+      }
+    }
 
     // Turn 1: Workspace Snapshot Attachment, Cache Check & Explicit Fault Tolerance
     const isWorkspaceSnapshotEnabled =
@@ -831,6 +976,74 @@ export class Orchestrator {
         }
 
         const finalAnswer = parsed.answer.summary || parsed.answer.raw;
+
+        // Auto FilePorter Reconciliation on FINAL_ANSWER
+        if (this.workspaceRoot) {
+          try {
+            let deliverables = DeliverablesParser.parse(finalAnswer, this.workspaceRoot);
+            if (deliverables.length === 0 && turnResponseText && turnResponseText !== finalAnswer) {
+              deliverables = DeliverablesParser.parse(turnResponseText, this.workspaceRoot);
+            }
+            if (deliverables.length > 0) {
+              const deliveryResults = await Promise.all(
+                deliverables.map((item) =>
+                  FilePorter.fetchAndDeliver(item, this.workspaceRoot, {
+                    cdpClient,
+                  })
+                )
+              );
+
+              const landedPaths: string[] = [];
+              for (const res of deliveryResults) {
+                if (res.status === "success" && res.landedPaths.length > 0) {
+                  landedPaths.push(...res.landedPaths);
+                }
+              }
+
+              const manifestPath = path.join(this.workspaceRoot, ".cph", "state", "sync-manifest.json");
+              if (fs.existsSync(manifestPath) && landedPaths.length > 0) {
+                const existingManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                if (existingManifest && existingManifest.targetFolder) {
+                  const siteUrl = existingManifest.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+                  const targetFolder = existingManifest.targetFolder;
+                  const mockTransport = Boolean((existingManifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+                  const engine = new PnPWorkspaceSyncEngine();
+
+                  for (const relPath of landedPaths) {
+                    try {
+                      await engine.syncFile(this.workspaceRoot, relPath, targetFolder, {
+                        siteUrl,
+                        mockTransport,
+                        signal,
+                      });
+                    } catch {}
+                  }
+
+                  try {
+                    PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot, { siteUrl, targetFolder });
+                  } catch {}
+                }
+              }
+
+              if (landedPaths.length > 0) {
+                console.log(
+                  [
+                    "\n================ [FILE PORTER AUTO-RECONCILIATION] ================",
+                    `✔ 成功搬运落盘文件: ${landedPaths.length} 个`,
+                    ...landedPaths.map((p) => `  - ${p}`),
+                    fs.existsSync(manifestPath) ? "✔ 已触发 SharePoint 云端增量热同步" : "",
+                    "===================================================================\n",
+                  ]
+                    .filter(Boolean)
+                    .join("\n")
+                );
+              }
+            }
+          } catch (porterErr: any) {
+            console.warn(`[FilePorter] Auto-reconciliation failed: ${porterErr?.message || porterErr}`);
+          }
+        }
+
         history.push({
           turn,
           userInput: currentPrompt,
@@ -1050,32 +1263,37 @@ export class Orchestrator {
                 try {
                   const engine = new PnPWorkspaceSyncEngine();
                   const existingManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-                  const siteUrl = existingManifest?.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
-                  const targetFolder = existingManifest?.targetFolder || PnPWorkspaceSyncEngine.DEFAULT_TARGET_FOLDER;
-                  const mockTransport = Boolean((existingManifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
-                  await Promise.race([
-                    engine.syncFile(this.workspaceRoot, cleanRel, targetFolder, {
-                      siteUrl,
-                      mockTransport,
-                      signal: syncAbort.signal,
-                    }),
-                    new Promise((_, reject) => {
-                      syncTimer = setTimeout(() => {
-                        syncAbort.abort();
-                        reject(new Error("SYNC_TIMEOUT"));
-                      }, 15000);
-                      (syncTimer as any)?.unref?.();
-                    }),
-                  ]);
-                  const updatedManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
-                  if (updatedManifest) {
-                    const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(updatedManifest, siteUrl, targetFolder);
-                    fs.writeFileSync(path.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md"), mapMd, "utf8");
+                  if (existingManifest && existingManifest.targetFolder) {
+                    const siteUrl = existingManifest.siteUrl || PnPWorkspaceSyncEngine.DEFAULT_SITE_URL;
+                    const targetFolder = existingManifest.targetFolder;
+                    const mockTransport = Boolean((existingManifest as any)?.mockTransport || process.env.CPH_MOCK_TRANSPORT === "1");
+                    await Promise.race([
+                      engine.syncFile(this.workspaceRoot, cleanRel, targetFolder, {
+                        siteUrl,
+                        mockTransport,
+                        signal: syncAbort.signal,
+                      }),
+                      new Promise((_, reject) => {
+                        syncTimer = setTimeout(() => {
+                          syncAbort.abort();
+                          reject(new Error("SYNC_TIMEOUT"));
+                        }, 15000);
+                        (syncTimer as any)?.unref?.();
+                      }),
+                    ]);
+                    const updatedManifest = PnPWorkspaceSyncEngine.loadManifest(manifestPath);
+                    if (updatedManifest) {
+                      const mapMd = PnPWorkspaceSyncEngine.generateVirtualRepoMap(updatedManifest, siteUrl, targetFolder);
+                      fs.writeFileSync(path.join(this.workspaceRoot, ".cph", "state", "virtual-repo-map.md"), mapMd, "utf8");
+                      try {
+                        PnPWorkspaceSyncEngine.generateCatalogMarkdown(this.workspaceRoot, { siteUrl, targetFolder });
+                      } catch {}
+                    }
+                    const elapsedMs = Date.now() - syncStart;
+                    const syncNote = `\n[Cloud Mirror: Synced ${cleanRel} to SharePoint (${elapsedMs}ms)]`;
+                    toolResult.output = (toolResult.output || "") + syncNote;
+                    if (toolResult.rawOutput) toolResult.rawOutput += syncNote;
                   }
-                  const elapsedMs = Date.now() - syncStart;
-                  const syncNote = `\n[Cloud Mirror: Synced ${cleanRel} to SharePoint (${elapsedMs}ms)]`;
-                  toolResult.output = (toolResult.output || "") + syncNote;
-                  if (toolResult.rawOutput) toolResult.rawOutput += syncNote;
                 } catch {
                   const pendingNote = `\n[Cloud Mirror: PENDING (local file updated; use read_file if re-reading)]`;
                   toolResult.output = (toolResult.output || "") + pendingNote;
