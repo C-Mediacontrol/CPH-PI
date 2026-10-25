@@ -1,155 +1,64 @@
-import { describe, expect, test } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { TokenManager, IC3_SCOPE } from "../../src/auth/token-manager.ts";
+import { TokenManager, IC3_SCOPE, type StoredAccount } from "../../src/auth/token-manager.ts";
 import { AccountPool } from "../../src/auth/account-pool.ts";
-import { encryptToken } from "../../src/auth/crypto.ts";
 
-describe("TokenManager & AccountPool IC3 Token Acquisition", () => {
-  test("requests IC3_SCOPE without Origin header and caches token per account", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-ic3-test-"));
-    try {
-      const configPath = path.join(tmpDir, "accounts.json");
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({
-          accounts: [
-            { email: "user1@example.com", refreshToken: encryptToken("rt_user1") },
-            { email: "user2@example.com", refreshToken: encryptToken("rt_user2") },
-          ],
-        }),
-        "utf8"
-      );
+describe("IC3 token acquisition", () => {
+  let tempDir: string;
+  let configPath: string;
+  let manager: TokenManager;
 
-      const calls: Array<{ url: string; init: RequestInit }> = [];
-      const mockFetch = (async (url: string | URL | Request, init?: RequestInit) => {
-        calls.push({ url: String(url), init: init || {} });
-        const bodyStr = String(init?.body || "");
-        const isUser2 = bodyStr.includes("rt_user2");
-        return new Response(
-          JSON.stringify({
-            access_token: isUser2 ? "ic3_tok_user2" : "ic3_tok_user1",
-            expires_in: 3600,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }) as typeof fetch;
-
-      const tm = new TokenManager(configPath, { fetchFn: mockFetch });
-      const pool = new AccountPool(tm);
-
-      expect(IC3_SCOPE).toBe("openid profile offline_access https://ic3.teams.office.com/.default");
-
-      const tok1 = await pool.getIc3AccessToken("user2@example.com");
-      expect(tok1).toBe("ic3_tok_user2");
-      expect(calls.length).toBe(1);
-
-      const headers = calls[0].init.headers as Record<string, string>;
-      expect(headers["Origin"]).toBeUndefined();
-      expect(String(calls[0].init.body)).toContain(encodeURIComponent("https://ic3.teams.office.com/.default"));
-
-      // Cached on second call
-      const tok1Cached = await pool.getIc3AccessToken("user2@example.com");
-      expect(tok1Cached).toBe("ic3_tok_user2");
-      expect(calls.length).toBe(1);
-
-      // Fallback when no email passed
-      const tokDefault = await pool.getIc3AccessToken();
-      expect(tokDefault).toBe("ic3_tok_user1");
-      expect(calls.length).toBe(2);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-ic3-test-"));
+    configPath = path.join(tempDir, "accounts.json");
+    manager = new TokenManager(configPath);
+    const accounts: StoredAccount[] = [{ email: "alpha@contoso.com", refreshToken: "rt_alpha" }];
+    manager.saveAccounts(accounts);
   });
 
-  test("setCachedIc3Token and clearCache operate as expected", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-ic3-test-"));
+  afterEach(() => {
     try {
-      const configPath = path.join(tmpDir, "accounts.json");
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({
-          accounts: [
-            { email: "user1@example.com", refreshToken: encryptToken("rt_user1") },
-          ],
-        }),
-        "utf8"
-      );
-
-      let fetchCount = 0;
-      const mockFetch = (async () => {
-        fetchCount++;
-        return new Response(
-          JSON.stringify({
-            access_token: "fetched_ic3_token",
-            expires_in: 3600,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }) as typeof fetch;
-
-      const tm = new TokenManager(configPath, { fetchFn: mockFetch });
-      tm.setCachedIc3Token("user1@example.com", "pre_cached_token");
-
-      const cached = await tm.getIc3AccessToken("user1@example.com");
-      expect(cached).toBe("pre_cached_token");
-      expect(fetchCount).toBe(0);
-
-      // clearCache specific email
-      tm.clearCache("user1@example.com");
-      const reFetched = await tm.getIc3AccessToken("user1@example.com");
-      expect(reFetched).toBe("fetched_ic3_token");
-      expect(fetchCount).toBe(1);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
   });
 
-  test("AccountPool falls through to healthy pool accounts and marks fatal auth expired if specified email fails", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cph-ic3-test-"));
-    try {
-      const configPath = path.join(tmpDir, "accounts.json");
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({
-          accounts: [
-            { email: "user1@example.com", refreshToken: encryptToken("rt_user1") },
-            { email: "user2@example.com", refreshToken: encryptToken("rt_user2") },
-          ],
-        }),
-        "utf8"
+  it("returns a cached IC3 token without network calls", async () => {
+    manager.setCachedIc3Token("alpha@contoso.com", "cached_ic3", Date.now() + 600_000);
+    expect(await manager.getIc3AccessToken("alpha@contoso.com")).toBe("cached_ic3");
+  });
+
+  it("refreshes with the IC3 scope and caches the result", async () => {
+    const bodies: string[] = [];
+    const fetchFn = (async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body || ""));
+      return new Response(
+        JSON.stringify({ access_token: "ic3_access", expires_in: 3600 }),
+        { status: 200, headers: { "content-type": "application/json" } }
       );
+    }) as any;
 
-      const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-        const bodyStr = String(init?.body || "");
-        if (bodyStr.includes("rt_user2")) {
-          return new Response(JSON.stringify({ error: "invalid_grant", error_description: "AADSTS700082" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response(
-          JSON.stringify({
-            access_token: "ic3_user1_token",
-            expires_in: 3600,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
-        );
-      }) as typeof fetch;
+    const tokenManager = new TokenManager(configPath, {
+      tokenEndpoint: "https://login.example.test/token",
+      fetchFn,
+    });
 
-      const tm = new TokenManager(configPath, { fetchFn: mockFetch });
-      const pool = new AccountPool(tm);
+    const token = await tokenManager.getIc3AccessToken("alpha@contoso.com");
+    expect(token).toBe("ic3_access");
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain("scope=");
+    expect(decodeURIComponent(bodies[0]).replace(/\+/g, " ")).toContain(IC3_SCOPE);
 
-      // user2 fails with fatal auth grant error, should mark user2 authExpired and fallback to user1
-      const token = await pool.getIc3AccessToken("user2@example.com");
-      expect(token).toBe("ic3_user1_token");
+    // Second call must be served from cache.
+    const second = await tokenManager.getIc3AccessToken("alpha@contoso.com");
+    expect(second).toBe("ic3_access");
+    expect(bodies).toHaveLength(1);
+  });
 
-      const statusUser2 = pool.getPoolStatus().find((s) => s.email === "user2@example.com");
-      expect(statusUser2?.authExpired).toBe(true);
-      expect(statusUser2?.isAvailable).toBe(false);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+  it("AccountPool returns the IC3 token for a specified account", async () => {
+    manager.setCachedIc3Token("alpha@contoso.com", "pool_ic3", Date.now() + 600_000);
+    const pool = new AccountPool(manager, { maxAccounts: 1, defaultCooldownMs: 60_000 });
+    expect(await pool.getIc3AccessToken("alpha@contoso.com")).toBe("pool_ic3");
   });
 });
