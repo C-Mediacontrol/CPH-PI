@@ -257,12 +257,14 @@ ${this.PROTOCOL_REMINDER}`;
     if (success) {
       return `[TOOL_RESULT for ${toolName} - SUCCESS]:
 ${output}
+source: local | status: success | freshness: unknown
 ${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     } else {
       return `[TOOL_RESULT for ${toolName} - FAILED]:
 Error: ${error || "Execution failed"}
 Output: ${output}
+source: local | status: failed | freshness: unknown
 ${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
     }
@@ -315,6 +317,7 @@ ${this.PROTOCOL_REMINDER}`;
     return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ ${toolName} 执行成功 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)。
 完整执行结果已作为文件附件【${fileName}】挂载送达。
+source: cloud-attachment | status: attached | freshness: unknown
 【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件已解析的全部数据推进后续技术推演与操作。${fingerprintBlock}${invariantBlock}
 
 ${this.PROTOCOL_REMINDER}`;
@@ -423,7 +426,7 @@ ${this.PROTOCOL_REMINDER}`;
       params.taskInvariant && params.taskInvariant.trim() !== ""
         ? `\n【当前推进战役北极星 (Task Invariant)】:\n${params.taskInvariant.trim()}\n`
         : "";
-    return `[TOOL_RESULT for ${params.toolName} - SUCCESS]:\n${lines.join("\n")}\n${invariantBlock}\n${this.PROTOCOL_REMINDER}`;
+    return `[TOOL_RESULT for ${params.toolName} - SUCCESS]:\n${lines.join("\n")}\nsource: local+cloud | status: success | freshness: synced\n${invariantBlock}\n${this.PROTOCOL_REMINDER}`;
   }
 
   /**

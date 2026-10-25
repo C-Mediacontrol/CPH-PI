@@ -755,6 +755,8 @@ export class Orchestrator {
     let emptyResponseRetries = 0;
     const maxEmptyResponseRetries = 2;
     let turn = 1;
+    let lastFailedActionFp = "";
+    let repeatedFailureCount = 0;
     let currentAnnotations: AttachmentAnnotation[] = options.initialAnnotations
       ? [...options.initialAnnotations]
       : [];
@@ -904,6 +906,16 @@ export class Orchestrator {
       }
 
       events?.onTurnStart?.(turn);
+      if (process.env.CPH_DEBUG === "1" || (this as any).debug) {
+        const promptHash = crypto.createHash("sha256").update(currentPrompt).digest("hex").slice(0, 12);
+        const attachmentNames = currentAnnotations
+          .map((annotation: any) => annotation?.messageAnnotationMetadata?.fileName || annotation?.text || "")
+          .filter(Boolean)
+          .join(",");
+        console.debug(
+          `[CPH-FINGERPRINT] turn=${turn} agentId=${this.customAgentId || "web"} promptHash=${promptHash} attachments=[${attachmentNames}]`
+        );
+      }
       const turnIndex = turn;
       const turnInputPrompt = currentPrompt;
       const requestId = crypto.randomUUID();
@@ -1191,6 +1203,16 @@ export class Orchestrator {
       // Case 3c: Action invoked
       if (parsed.type === "action") {
         events?.onToolStart?.(parsed.action);
+        const actionFp = JSON.stringify({
+          tool: parsed.action.tool,
+          command: (parsed.action as any).command,
+          path: (parsed.action as any).path || (parsed.action as any).filePath,
+          question: (parsed.action as any).question,
+        });
+        const isKnownRepeat =
+          parsed.action.tool !== "invoke_subagent" &&
+          actionFp === lastFailedActionFp &&
+          repeatedFailureCount >= 2;
 
         let toolResult: ToolBridgeResult;
         let isInlineScout = false;
@@ -1307,11 +1329,36 @@ export class Orchestrator {
           Boolean((parsed.action as any).url || (parsed.action as any).downloadUrl)
         ) {
           toolResult = await this.deliverWriteFileFromUrl(parsed.action);
+        } else if (isKnownRepeat) {
+          toolResult = {
+            actionName: parsed.action.tool,
+            piToolName: parsed.action.tool,
+            target: "",
+            success: false,
+            output:
+              "[SYSTEM NOTICE: 该动作已连续失败，已跳过重复执行。请改用其他路径/工具，或输出 FINAL_ANSWER 说明阻塞点。]",
+            formatted: "skipped repeated failing action",
+          };
         } else {
           toolResult = await this.bridge.executeAction(parsed.action, signal);
         }
 
         events?.onToolEnd?.(toolResult);
+
+        if (toolResult.success) {
+          lastFailedActionFp = "";
+          repeatedFailureCount = 0;
+        } else if (actionFp === lastFailedActionFp) {
+          repeatedFailureCount += 1;
+        } else {
+          lastFailedActionFp = actionFp;
+          repeatedFailureCount = 1;
+        }
+        if (!toolResult.success && repeatedFailureCount >= 2) {
+          const notice =
+            "\n[SYSTEM NOTICE: 该动作已连续失败；请改用其他路径/工具，或输出 FINAL_ANSWER 说明阻塞点]";
+          toolResult.output = (toolResult.output || "") + notice;
+        }
 
         // Track last modified file for edit/patch_file/write_file
         if (

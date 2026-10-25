@@ -563,10 +563,7 @@ export class CphPiCli {
 
     // If non-interactive, stdin destroyed/closed, or readline not available
     if (!this.rl || !this.isInteractiveMode() || process.stdin.destroyed) {
-      if (qArgs.options && qArgs.options.length > 0) {
-        return qArgs.options[0];
-      }
-      return "[Non-interactive fallback: Auto-confirmed default]";
+      return "[QUESTION_UNAVAILABLE] 当前通道无法交互。请基于现有信息继续推进；若存在关键待确认点，请在 FINAL_ANSWER 中明确列出。";
     }
 
     return new Promise<string>((resolve) => {
