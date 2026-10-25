@@ -11,7 +11,6 @@ import { SkillRegistry } from "../skills/skill-registry.ts";
 import {
   DEFAULT_MAIN_AGENT_ID,
   DEFAULT_CODER_AGENT_ID,
-  DEFAULT_RESEARCHER_AGENT_ID,
 } from "../agent/subagent-runner.ts";
 import { PnPWorkspaceSyncEngine } from "../workspace/pnp-sync-engine.ts";
 import { SubstrateUploader, type AttachmentAnnotation } from "../transport/substrate-uploader.ts";
@@ -105,7 +104,7 @@ export interface CustomAgentItem {
   id: string;
   name: string;
   agentId: string;
-  role: "main" | "coder" | "researcher" | "custom";
+  role: "main" | "coder" | "custom";
   description?: string;
   createdAt?: number;
 }
@@ -113,10 +112,8 @@ export interface CustomAgentItem {
 export interface AgentConfig {
   customAgentId?: string;
   coderAgentId?: string;
-  researcherAgentId?: string;
   defaultMain: string;
   defaultCoder: string;
-  defaultResearcher: string;
   customAgents?: CustomAgentItem[];
 }
 
@@ -1759,7 +1756,6 @@ export class RpcHandler {
     const config: AgentConfig = {
       defaultMain: DEFAULT_MAIN_AGENT_ID,
       defaultCoder: DEFAULT_CODER_AGENT_ID,
-      defaultResearcher: DEFAULT_RESEARCHER_AGENT_ID,
       customAgents: [],
     };
     if (!this.workspaceRoot) return config;
@@ -1769,7 +1765,6 @@ export class RpcHandler {
         const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
         if (raw.customAgentId) config.customAgentId = raw.customAgentId;
         if (raw.coderAgentId) config.coderAgentId = raw.coderAgentId;
-        if (raw.researcherAgentId) config.researcherAgentId = raw.researcherAgentId;
         if (Array.isArray(raw.customAgents)) config.customAgents = raw.customAgents;
         if (Array.isArray(raw.agentMountedSkills) && this.skillRegistry) {
           this.skillRegistry.setAgentMountedSkills(raw.agentMountedSkills);
@@ -1944,9 +1939,9 @@ export class RpcHandler {
   }
 
   /**
-   * Handle setting agent ID (main/coder/researcher)
+   * Handle setting agent ID (main/coder/custom)
    */
-  private handleAgentSet(payload?: { role: "main" | "coder" | "researcher" | "custom"; id?: string }): void {
+  private handleAgentSet(payload?: { role: "main" | "coder" | "custom"; id?: string }): void {
     if (!payload || !payload.role) return;
     const rawId = payload.id ? payload.id.trim() : "";
     const normalized = rawId ? ChatHubClient.normalizeAgentId(rawId) : undefined;
@@ -1963,9 +1958,6 @@ export class RpcHandler {
     } else if (payload.role === "coder") {
       this.agentConfig.coderAgentId = normalized;
       this.saveWorkspaceConfig({ coderAgentId: normalized });
-    } else if (payload.role === "researcher") {
-      this.agentConfig.researcherAgentId = normalized;
-      this.saveWorkspaceConfig({ researcherAgentId: normalized });
     }
 
     this.send("agent:update", this.getAgentConfigPayload());
@@ -1974,7 +1966,7 @@ export class RpcHandler {
   /**
    * Handle resetting agent ID to default
    */
-  private handleAgentReset(payload?: { role: "main" | "coder" | "researcher" | "all" }): void {
+  private handleAgentReset(payload?: { role: "main" | "coder" | "all" }): void {
     const role = payload?.role || "all";
     if (role === "main" || role === "all") {
       this.agentConfig.customAgentId = undefined;
@@ -1989,10 +1981,6 @@ export class RpcHandler {
     if (role === "coder" || role === "all") {
       this.agentConfig.coderAgentId = undefined;
       this.saveWorkspaceConfig({ coderAgentId: undefined });
-    }
-    if (role === "researcher" || role === "all") {
-      this.agentConfig.researcherAgentId = undefined;
-      this.saveWorkspaceConfig({ researcherAgentId: undefined });
     }
 
     this.send("agent:update", this.getAgentConfigPayload());

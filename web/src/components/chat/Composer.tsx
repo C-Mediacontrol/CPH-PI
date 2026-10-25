@@ -34,10 +34,10 @@ export function Composer(): React.JSX.Element {
 
   // Proactively request skills list if typing slash and skills not loaded yet
   useEffect(() => {
-    if (isTypingSlash && (!availableSkills || availableSkills.length === 0)) {
+    if (isTypingSlash && !slashQuery.startsWith('debug') && (!availableSkills || availableSkills.length === 0)) {
       wsClient.send('skills:list');
     }
-  }, [isTypingSlash, availableSkills]);
+  }, [isTypingSlash, slashQuery, availableSkills]);
 
   useEffect(() => {
     setSlashDismissed(false);
@@ -46,6 +46,7 @@ export function Composer(): React.JSX.Element {
 
   const matchingSkills = useMemo(() => {
     if (!isTypingSlash || slashDismissed) return [];
+    if (slashQuery.startsWith('debug')) return [];
     if (!availableSkills || availableSkills.length === 0) return [];
 
     const list = availableSkills.filter((s) => {
@@ -100,6 +101,17 @@ export function Composer(): React.JSX.Element {
     if (!trimmed && attachments.length === 0) {
       return;
     }
+
+    if (trimmed.startsWith('/debug')) {
+      wsClient.send('debug:toggle', { arg: trimmed.slice(6).trim() });
+      setText('');
+      setAttachments([]);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = '24px';
+      }
+      return;
+    }
+
     if (running) {
       return;
     }

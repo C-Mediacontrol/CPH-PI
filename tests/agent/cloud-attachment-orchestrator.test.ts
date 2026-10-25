@@ -106,6 +106,7 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
         chatClient: mockClient,
         customAgentId: "T_test_dev_agent", // Direct agent mode
         graphTokenProvider: async () => "mock-graph-jwt-token",
+        enableWorkspaceCatalog: false,
         cloudAttachmentThresholdChars: 500,
         cloudAttachmentThresholdLines: 15,
       });
@@ -207,6 +208,7 @@ describe("Cloud Document Attachment & Pure HTTP Upload Orchestrator Integration"
         uploadedCalled = true;
         return "mock-token";
       },
+      enableWorkspaceCatalog: false,
       cloudAttachmentThresholdChars: 500,
       cloudAttachmentThresholdLines: 15,
     });

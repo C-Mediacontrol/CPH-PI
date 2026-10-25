@@ -5,46 +5,11 @@ var __require = /* @__PURE__ */ createRequire(import.meta.url);
 import fs2 from "node:fs";
 import path2 from "node:path";
 
-// pi/node_modules/chalk/source/utilities.js
-function stringReplaceAll(string, substring, postfix) {
-  let index = string.indexOf(substring);
-  if (index === -1) {
-    return string;
-  }
-  const substringLength = substring.length;
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    returnValue += string.slice(endIndex, index) + substring + postfix;
-    endIndex = index + substringLength;
-    index = string.indexOf(substring, endIndex);
-  } while (index !== -1);
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-function stringEncaseCRLFWithFirstIndex(string, prefix, postfix, index) {
-  let endIndex = 0;
-  let returnValue = "";
-  do {
-    const isGotCR = string[index - 1] === "\r";
-    returnValue += string.slice(endIndex, isGotCR ? index - 1 : index) + prefix + (isGotCR ? `\r
-` : `
-`) + postfix;
-    endIndex = index + 1;
-    index = string.indexOf(`
-`, endIndex);
-  } while (index !== -1);
-  returnValue += string.slice(endIndex);
-  return returnValue;
-}
-
-// pi/node_modules/chalk/source/vendor/ansi-styles/index.js
+// node_modules/chalk/source/vendor/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
-var ANSI_UNDERLINE_OFFSET = 20;
 var wrapAnsi16 = (offset = 0) => (code) => `\x1B[${code + offset}m`;
 var wrapAnsi256 = (offset = 0) => (code) => `\x1B[${38 + offset};5;${code}m`;
 var wrapAnsi16m = (offset = 0) => (red, green, blue) => `\x1B[${38 + offset};2;${red};${green};${blue}m`;
-var wrapUnderlineAnsi = (code) => `\x1B[58;5;${code < 90 ? code - 30 : code - 90 + 8}m`;
 var styles = {
   modifier: {
     reset: [0, 0],
@@ -52,10 +17,6 @@ var styles = {
     dim: [2, 22],
     italic: [3, 23],
     underline: [4, 24],
-    underlineDouble: ["4:2", 24],
-    underlineCurly: ["4:3", 24],
-    underlineDotted: ["4:4", 24],
-    underlineDashed: ["4:5", 24],
     overline: [53, 55],
     inverse: [7, 27],
     hidden: [8, 28],
@@ -100,32 +61,11 @@ var styles = {
     bgMagentaBright: [105, 49],
     bgCyanBright: [106, 49],
     bgWhiteBright: [107, 49]
-  },
-  underlineColor: {
-    underlineBlack: ["58;5;0", 59],
-    underlineRed: ["58;5;1", 59],
-    underlineGreen: ["58;5;2", 59],
-    underlineYellow: ["58;5;3", 59],
-    underlineBlue: ["58;5;4", 59],
-    underlineMagenta: ["58;5;5", 59],
-    underlineCyan: ["58;5;6", 59],
-    underlineWhite: ["58;5;7", 59],
-    underlineBlackBright: ["58;5;8", 59],
-    underlineGray: ["58;5;8", 59],
-    underlineGrey: ["58;5;8", 59],
-    underlineRedBright: ["58;5;9", 59],
-    underlineGreenBright: ["58;5;10", 59],
-    underlineYellowBright: ["58;5;11", 59],
-    underlineBlueBright: ["58;5;12", 59],
-    underlineMagentaBright: ["58;5;13", 59],
-    underlineCyanBright: ["58;5;14", 59],
-    underlineWhiteBright: ["58;5;15", 59]
   }
 };
 var modifierNames = Object.keys(styles.modifier);
 var foregroundColorNames = Object.keys(styles.color);
 var backgroundColorNames = Object.keys(styles.bgColor);
-var underlineColorNames = Object.keys(styles.underlineColor);
 var colorNames = [...foregroundColorNames, ...backgroundColorNames];
 function assembleStyles() {
   const codes = new Map;
@@ -136,7 +76,7 @@ function assembleStyles() {
         close: `\x1B[${style[1]}m`
       };
       group[styleName] = styles[styleName];
-      codes.set(Number.parseInt(style[0], 10), style[1]);
+      codes.set(style[0], style[1]);
     }
     Object.defineProperty(styles, groupName, {
       value: group,
@@ -149,16 +89,12 @@ function assembleStyles() {
   });
   styles.color.close = "\x1B[39m";
   styles.bgColor.close = "\x1B[49m";
-  styles.underlineColor.close = "\x1B[59m";
   styles.color.ansi = wrapAnsi16();
   styles.color.ansi256 = wrapAnsi256();
   styles.color.ansi16m = wrapAnsi16m();
   styles.bgColor.ansi = wrapAnsi16(ANSI_BACKGROUND_OFFSET);
   styles.bgColor.ansi256 = wrapAnsi256(ANSI_BACKGROUND_OFFSET);
   styles.bgColor.ansi16m = wrapAnsi16m(ANSI_BACKGROUND_OFFSET);
-  styles.underlineColor.ansi = wrapUnderlineAnsi;
-  styles.underlineColor.ansi256 = wrapAnsi256(ANSI_UNDERLINE_OFFSET);
-  styles.underlineColor.ansi16m = wrapAnsi16m(ANSI_UNDERLINE_OFFSET);
   Object.defineProperties(styles, {
     rgbToAnsi256: {
       value(red, green, blue) {
@@ -177,7 +113,7 @@ function assembleStyles() {
     },
     hexToRgb: {
       value(hex) {
-        const matches = /[\da-f]{6}|[\da-f]{3}/i.exec(hex.toString(16));
+        const matches = /[a-f\d]{6}|[a-f\d]{3}/i.exec(hex.toString(16));
         if (!matches) {
           return [0, 0, 0];
         }
@@ -246,7 +182,7 @@ function assembleStyles() {
 var ansiStyles = assembleStyles();
 var ansi_styles_default = ansiStyles;
 
-// pi/node_modules/chalk/source/vendor/supports-color/index.js
+// node_modules/chalk/source/vendor/supports-color/index.js
 import process2 from "node:process";
 import os from "node:os";
 import tty from "node:tty";
@@ -263,23 +199,16 @@ if (hasFlag("no-color") || hasFlag("no-colors") || hasFlag("color=false") || has
 } else if (hasFlag("color") || hasFlag("colors") || hasFlag("color=true") || hasFlag("color=always")) {
   flagForceColor = 1;
 }
-function hasNumericForceColor() {
-  return /^\d+$/.test(env.FORCE_COLOR);
-}
 function envForceColor() {
-  if (!("FORCE_COLOR" in env)) {
-    return;
+  if ("FORCE_COLOR" in env) {
+    if (env.FORCE_COLOR === "true") {
+      return 1;
+    }
+    if (env.FORCE_COLOR === "false") {
+      return 0;
+    }
+    return env.FORCE_COLOR.length === 0 ? 1 : Math.min(Number.parseInt(env.FORCE_COLOR, 10), 3);
   }
-  if (env.FORCE_COLOR === "false") {
-    return 0;
-  }
-  if (env.FORCE_COLOR === "true" || env.FORCE_COLOR.length === 0) {
-    return 1;
-  }
-  if (!hasNumericForceColor()) {
-    return;
-  }
-  return Math.min(Number.parseInt(env.FORCE_COLOR, 10), 3);
 }
 function translateLevel(level) {
   if (level === 0) {
@@ -309,9 +238,6 @@ function _supportsColor(haveStream, { streamIsTTY, sniffFlags = true } = {}) {
       return 2;
     }
   }
-  if (forceColor !== undefined && hasNumericForceColor()) {
-    return forceColor;
-  }
   if ("TF_BUILD" in env && "AGENT_NAME" in env) {
     return 1;
   }
@@ -339,7 +265,7 @@ function _supportsColor(haveStream, { streamIsTTY, sniffFlags = true } = {}) {
     return min;
   }
   if ("TEAMCITY_VERSION" in env) {
-    return /^(?:9\.0*[1-9]\d*\.|\d{2,}\.)/.test(env.TEAMCITY_VERSION) ? 1 : 0;
+    return /^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/.test(env.TEAMCITY_VERSION) ? 1 : 0;
   }
   if (env.COLORTERM === "truecolor") {
     return 3;
@@ -354,7 +280,7 @@ function _supportsColor(haveStream, { streamIsTTY, sniffFlags = true } = {}) {
     return 3;
   }
   if ("TERM_PROGRAM" in env) {
-    const version = Number.parseInt((env.TERM_PROGRAM_VERSION || "").split(".", 1)[0], 10);
+    const version = Number.parseInt((env.TERM_PROGRAM_VERSION || "").split(".")[0], 10);
     switch (env.TERM_PROGRAM) {
       case "iTerm.app": {
         return version >= 3 ? 3 : 2;
@@ -364,7 +290,7 @@ function _supportsColor(haveStream, { streamIsTTY, sniffFlags = true } = {}) {
       }
     }
   }
-  if (/-256(?:color)?$/i.test(env.TERM)) {
+  if (/-256(color)?$/i.test(env.TERM)) {
     return 2;
   }
   if (/^screen|^xterm|^vt100|^vt220|^rxvt|color|ansi|cygwin|linux/i.test(env.TERM)) {
@@ -388,34 +314,57 @@ var supportsColor = {
 };
 var supports_color_default = supportsColor;
 
-// pi/node_modules/chalk/source/index.js
+// node_modules/chalk/source/utilities.js
+function stringReplaceAll(string, substring, replacer) {
+  let index = string.indexOf(substring);
+  if (index === -1) {
+    return string;
+  }
+  const substringLength = substring.length;
+  let endIndex = 0;
+  let returnValue = "";
+  do {
+    returnValue += string.slice(endIndex, index) + substring + replacer;
+    endIndex = index + substringLength;
+    index = string.indexOf(substring, endIndex);
+  } while (index !== -1);
+  returnValue += string.slice(endIndex);
+  return returnValue;
+}
+function stringEncaseCRLFWithFirstIndex(string, prefix, postfix, index) {
+  let endIndex = 0;
+  let returnValue = "";
+  do {
+    const gotCR = string[index - 1] === "\r";
+    returnValue += string.slice(endIndex, gotCR ? index - 1 : index) + prefix + (gotCR ? `\r
+` : `
+`) + postfix;
+    endIndex = index + 1;
+    index = string.indexOf(`
+`, endIndex);
+  } while (index !== -1);
+  returnValue += string.slice(endIndex);
+  return returnValue;
+}
+
+// node_modules/chalk/source/index.js
 var { stdout: stdoutColor, stderr: stderrColor } = supports_color_default;
 var GENERATOR = Symbol("GENERATOR");
 var STYLER = Symbol("STYLER");
 var IS_EMPTY = Symbol("IS_EMPTY");
-var LEVEL = Symbol("LEVEL");
+var levelMapping = [
+  "ansi",
+  "ansi",
+  "ansi256",
+  "ansi16m"
+];
 var styles2 = Object.create(null);
-var assertValidLevel = (level) => {
-  if (!Number.isSafeInteger(level) || level < 0 || level > 3) {
-    throw new Error("The `level` should be an integer from 0 to 3");
-  }
-};
-var levelDescriptor = {
-  enumerable: true,
-  get() {
-    return this[LEVEL];
-  },
-  set(level) {
-    assertValidLevel(level);
-    this[LEVEL] = level;
-  }
-};
 var applyOptions = (object, options = {}) => {
-  if (options.level !== undefined) {
-    assertValidLevel(options.level);
+  if (options.level && !(Number.isInteger(options.level) && options.level >= 0 && options.level <= 3)) {
+    throw new Error("The `level` option should be an integer from 0 to 3");
   }
   const colorLevel = stdoutColor ? stdoutColor.level : 0;
-  object[LEVEL] = options.level === undefined ? colorLevel : options.level;
+  object.level = options.level === undefined ? colorLevel : options.level;
 };
 var chalkFactory = (options) => {
   const chalk = (...strings) => strings.join(" ");
@@ -443,42 +392,42 @@ styles2.visible = {
     return builder;
   }
 };
-var createModelConverters = (model, type) => {
-  const style = ansi_styles_default[type];
+var getModelAnsi = (model, level, type, ...arguments_) => {
   if (model === "rgb") {
-    const ansi = (red, green, blue) => style.ansi(ansi_styles_default.rgbToAnsi(red, green, blue));
-    const ansi256 = (red, green, blue) => style.ansi256(ansi_styles_default.rgbToAnsi256(red, green, blue));
-    return [ansi, ansi, ansi256, style.ansi16m];
+    if (level === "ansi16m") {
+      return ansi_styles_default[type].ansi16m(...arguments_);
+    }
+    if (level === "ansi256") {
+      return ansi_styles_default[type].ansi256(ansi_styles_default.rgbToAnsi256(...arguments_));
+    }
+    return ansi_styles_default[type].ansi(ansi_styles_default.rgbToAnsi(...arguments_));
   }
   if (model === "hex") {
-    const ansi = (hex) => style.ansi(ansi_styles_default.hexToAnsi(hex));
-    const ansi256 = (hex) => style.ansi256(ansi_styles_default.hexToAnsi256(hex));
-    return [ansi, ansi, ansi256, (hex) => style.ansi16m(...ansi_styles_default.hexToRgb(hex))];
+    return getModelAnsi("rgb", level, type, ...ansi_styles_default.hexToRgb(...arguments_));
   }
-  const ansi = (code) => style.ansi(ansi_styles_default.ansi256ToAnsi(code));
-  return [ansi, ansi, style.ansi256, style.ansi256];
+  return ansi_styles_default[type][model](...arguments_);
 };
 var usedModels = ["rgb", "hex", "ansi256"];
 for (const model of usedModels) {
-  const capitalizedModel = model[0].toUpperCase() + model.slice(1);
-  for (const [styleName, type] of [
-    [model, "color"],
-    ["bg" + capitalizedModel, "bgColor"],
-    ["underline" + capitalizedModel, "underlineColor"]
-  ]) {
-    const { close } = ansi_styles_default[type];
-    const converters = createModelConverters(model, type);
-    styles2[styleName] = {
-      get() {
-        const styleFunction = function(first, second, third) {
-          const open = converters[this.level](first, second, third);
-          return createBuilder(this, createStyler(open, close, this[STYLER]), this[IS_EMPTY]);
-        };
-        Object.defineProperty(this, styleName, { value: styleFunction });
-        return styleFunction;
-      }
-    };
-  }
+  styles2[model] = {
+    get() {
+      const { level } = this;
+      return function(...arguments_) {
+        const styler = createStyler(getModelAnsi(model, levelMapping[level], "color", ...arguments_), ansi_styles_default.color.close, this[STYLER]);
+        return createBuilder(this, styler, this[IS_EMPTY]);
+      };
+    }
+  };
+  const bgModel = "bg" + model[0].toUpperCase() + model.slice(1);
+  styles2[bgModel] = {
+    get() {
+      const { level } = this;
+      return function(...arguments_) {
+        const styler = createStyler(getModelAnsi(model, levelMapping[level], "bgColor", ...arguments_), ansi_styles_default.bgColor.close, this[STYLER]);
+        return createBuilder(this, styler, this[IS_EMPTY]);
+      };
+    }
+  };
 }
 var proto = Object.defineProperties(() => {}, {
   ...styles2,
@@ -511,23 +460,15 @@ var createStyler = (open, close, parent) => {
   };
 };
 var createBuilder = (self, _styler, _isEmpty) => {
-  const builder = (...arguments_) => {
-    if (arguments_.length === 1) {
-      return applyStyle(builder, "" + arguments_[0]);
-    }
-    if (arguments_.length === 2) {
-      return applyStyle(builder, arguments_[0] + " " + arguments_[1]);
-    }
-    return applyStyle(builder, arguments_.join(" "));
-  };
+  const builder = (...arguments_) => applyStyle(builder, arguments_.length === 1 ? "" + arguments_[0] : arguments_.join(" "));
   Object.setPrototypeOf(builder, proto);
-  builder[GENERATOR] = self[GENERATOR] ?? self;
+  builder[GENERATOR] = self;
   builder[STYLER] = _styler;
   builder[IS_EMPTY] = _isEmpty;
   return builder;
 };
 var applyStyle = (self, string) => {
-  if (self[GENERATOR][LEVEL] <= 0 || !string) {
+  if (self.level <= 0 || !string) {
     return self[IS_EMPTY] ? "" : string;
   }
   let styler = self[STYLER];
@@ -548,7 +489,7 @@ var applyStyle = (self, string) => {
   }
   return openAll + string + closeAll;
 };
-Object.defineProperties(createChalk.prototype, { ...styles2, level: levelDescriptor });
+Object.defineProperties(createChalk.prototype, styles2);
 var chalk = createChalk();
 var chalkStderr = createChalk({ level: stderrColor ? stderrColor.level : 0 });
 var source_default = chalk;

@@ -169,8 +169,7 @@ describe("Autonomous Continuation Loop (Task 4)", () => {
         expect(mockClient.callCount).toBe(2);
         const stage2Params = mockClient.capturedMessages[1];
         expect(stage2Params.annotations).toBeDefined();
-        expect(stage2Params.annotations?.length).toBe(1);
-        expect(stage2Params.annotations?.[0].id).toBe("mock-handoff-doc-id");
+        expect(stage2Params.annotations?.some((a: any) => a.id === "mock-handoff-doc-id")).toBe(true);
 
         // Verify stage 2 prompt references attachment and minimal fingerprint header
         const stage2Prompt = mockClient.capturedPrompts[1];

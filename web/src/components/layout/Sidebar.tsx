@@ -47,7 +47,6 @@ export function Sidebar(): React.JSX.Element {
     let count = 0;
     if (agentConfig.customAgentId) count++;
     if (agentConfig.coderAgentId) count++;
-    if (agentConfig.researcherAgentId) count++;
     return count;
   }, [agentConfig]);
 

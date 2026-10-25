@@ -1,0 +1,35 @@
+{
+  "generatedAt": "2026-10-25T21:09:57.029Z",
+  "channel": "chathub-ws",
+  "account": "GSC.VFU2@cma-cgm.com",
+  "agentId": null,
+  "workspaceRoot": "E:\\test_workspace",
+  "decision": [
+    "缺少 A/C/D 完整观测，无法判定（请补齐 arm）。"
+  ],
+  "results": [
+    {
+      "arm": "C",
+      "label": "隔离：无自定义 Agent + 原始 URL，无附件",
+      "agentId": null,
+      "hasCatalogAttachment": false,
+      "targetRelPath": "Library/CNNJI QUERY/shared/modules/JsygtBatch.psm1",
+      "webUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "canonicalUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "catalogUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "questionChars": 402,
+      "latencyMs": 6894,
+      "responseChars": 4,
+      "reasoningChars": 5,
+      "responseText": "无法读取",
+      "reasoningText": "请稍等…\n",
+      "verdict": {
+        "exactTokenHit": false,
+        "numericFactsHit": false,
+        "explicitRefusal": true,
+        "emittedActionBlock": false,
+        "citedUrl": false
+      }
+    }
+  ]
+}

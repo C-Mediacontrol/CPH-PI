@@ -3,3 +3,4 @@ export { ContextInspector } from './ContextInspector';
 export { FileExplorer } from './FileExplorer';
 export { TerminalPanel } from './TerminalPanel';
 export { DiffViewer } from './DiffViewer';
+export { SubagentInspector } from './SubagentInspector';

@@ -180,3 +180,4 @@ export interface LazyTextCollapseProps {
 | `web/tests/components/ToolCardLazy.test.tsx` | 工具卡片策略 | 运行中展开、失败自动展开、超长输出折叠 |
 | `npm run web:build` | 生产构建编译 | TypeScript 类型推导 0 错误，Vite 构建打包成功 |
 | `bun test` (106+ files) | 全仓全量回归 | 现有 846 项测试用例 100% 保持通过，0 失败 |
+

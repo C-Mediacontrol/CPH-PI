@@ -11,9 +11,50 @@ export class SkillRegistry {
   private loader: SkillLoader;
   private availableSkills: Map<string, Skill> = new Map();
   private activeSkills: Map<string, Skill> = new Map();
+  private agentMountedSkills: Set<string> = new Set(["handoff", "subagent"]);
 
-  constructor(loader?: SkillLoader) {
+  constructor(loader?: SkillLoader, agentMountedSkills?: string[]) {
     this.loader = loader || new SkillLoader();
+    if (agentMountedSkills && Array.isArray(agentMountedSkills)) {
+      this.agentMountedSkills = new Set(
+        agentMountedSkills.map((s) => s.toLowerCase().replace(/^\//, "").trim())
+      );
+    }
+  }
+
+  public getAgentMountedSkills(): string[] {
+    return Array.from(this.agentMountedSkills.values());
+  }
+
+  public isAgentMounted(name: string): boolean {
+    const key = name.toLowerCase().replace(/^\//, "").trim();
+    return this.agentMountedSkills.has(key);
+  }
+
+  public setAgentMountedSkills(names: string[]): void {
+    this.agentMountedSkills = new Set(
+      names.map((s) => s.toLowerCase().replace(/^\//, "").trim())
+    );
+  }
+
+  public toggleAgentMounted(name: string): boolean {
+    const key = name.toLowerCase().replace(/^\//, "").trim();
+    if (this.agentMountedSkills.has(key)) {
+      this.agentMountedSkills.delete(key);
+      return false;
+    } else {
+      this.agentMountedSkills.add(key);
+      return true;
+    }
+  }
+
+  public setAgentMounted(name: string, mounted: boolean): void {
+    const key = name.toLowerCase().replace(/^\//, "").trim();
+    if (mounted) {
+      this.agentMountedSkills.add(key);
+    } else {
+      this.agentMountedSkills.delete(key);
+    }
   }
 
   public getLoader(): SkillLoader {
@@ -165,23 +206,64 @@ export class SkillRegistry {
 
   /**
    * Builds formatted Markdown block for active skills to inject into prompt.
+   * Differentiates between:
+   * 1. Agent Pre-mounted Skills (uploaded to Agent Knowledge / Instructions):
+   *    Emits an activation directive referencing the internalized skill, avoiding duplicate attachment or body dumping.
+   * 2. Dynamic Attached Skills:
+   *    Injects the full SKILL.md specification and rules.
    */
   public buildPromptSection(skills?: Skill[]): string {
     const targetSkills = skills ?? this.getActiveSkills();
     if (targetSkills.length === 0) return "";
 
-    const sections = targetSkills.map((s, idx) => {
-      const header = `#### [技能 ${idx + 1}: ${s.name}]`;
-      const desc = s.description ? `**说明**: ${s.description}` : "";
-      const body = s.content ? `**指引与约束规范**:\n${s.content}` : "";
-      return [header, desc, body].filter(Boolean).join("\n");
-    });
+    const mounted: Skill[] = [];
+    const dynamic: Skill[] = [];
 
-    return [
-      "【已激活专业工程技能手册 (Active Specialized Skills)】",
-      "以下是你当前已激活的专属领域工程技能。请在后续分析、计划与工具调用中严格遵守各技能的规范与铁律约束：",
-      "",
-      ...sections,
-    ].join("\n");
+    for (const s of targetSkills) {
+      if (this.isAgentMounted(s.name)) {
+        mounted.push(s);
+      } else {
+        dynamic.push(s);
+      }
+    }
+
+    const blocks: string[] = [];
+
+    // 1. 已在 Agent 挂载的内置技能 (Agent Pre-mounted / Internalized Skills)
+    if (mounted.length > 0) {
+      const mountedItems = mounted.map((s) => {
+        const desc = s.description ? `: ${s.description}` : "";
+        return `- **[${s.name}]**${desc}`;
+      });
+
+      blocks.push(
+        [
+          "【已在 Agent 挂载的内置专业技能 (Agent Pre-mounted Skills)】",
+          "当前任务已激活以下预置于你的专属知识库与系统指令中的工程技能。该技能规范已由你完全掌握，无需重复上传附件或倾倒正文，请直接唤醒并遵循你所持有的对应技能流程与阶段门禁执行：",
+          ...mountedItems,
+        ].join("\n")
+      );
+    }
+
+    // 2. 需动态加载/挂载的技能 (Dynamic / External Skills)
+    if (dynamic.length > 0) {
+      const dynamicSections = dynamic.map((s, idx) => {
+        const header = `#### [技能 ${idx + 1}: ${s.name}]`;
+        const desc = s.description ? `**说明**: ${s.description}` : "";
+        const body = s.content ? `**指引与约束规范**:\n${s.content}` : "";
+        return [header, desc, body].filter(Boolean).join("\n");
+      });
+
+      blocks.push(
+        [
+          "【已激活专业工程技能手册 (Active Specialized Skills)】",
+          "以下是你当前已激活的专属领域工程技能（动态全量挂载）。请在后续分析、计划与工具调用中严格遵守各技能的规范与铁律约束：",
+          "",
+          ...dynamicSections,
+        ].join("\n")
+      );
+    }
+
+    return blocks.join("\n\n");
   }
 }

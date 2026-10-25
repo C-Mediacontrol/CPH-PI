@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../../services/store';
 import styles from './AgentDialog.module.css';
-import { Bot, X, Check, RotateCcw, Cpu, Code2, Search, Plus, Trash2 } from 'lucide-react';
+import { Bot, X, Check, RotateCcw, Cpu, Code2, Plus, Trash2 } from 'lucide-react';
 
 export const AgentDialog: React.FC = () => {
   const {
@@ -16,18 +16,16 @@ export const AgentDialog: React.FC = () => {
 
   const [mainInput, setMainInput] = useState('');
   const [coderInput, setCoderInput] = useState('');
-  const [researcherInput, setResearcherInput] = useState('');
 
   const [isAdding, setIsAdding] = useState(false);
   const [newName, setNewName] = useState('');
   const [newAgentId, setNewAgentId] = useState('');
-  const [newRole, setNewRole] = useState<'main' | 'coder' | 'researcher' | 'custom'>('custom');
+  const [newRole, setNewRole] = useState<'main' | 'coder' | 'custom'>('custom');
   const [newDesc, setNewDesc] = useState('');
 
   useEffect(() => {
     setMainInput(agentConfig.customAgentId || '');
     setCoderInput(agentConfig.coderAgentId || '');
-    setResearcherInput(agentConfig.researcherAgentId || '');
   }, [agentConfig]);
 
   useEffect(() => {
@@ -42,24 +40,21 @@ export const AgentDialog: React.FC = () => {
 
   if (!agentModalOpen) return null;
 
-  const handleSave = (role: 'main' | 'coder' | 'researcher') => {
-    const val =
-      role === 'main' ? mainInput : role === 'coder' ? coderInput : researcherInput;
+  const handleSave = (role: 'main' | 'coder') => {
+    const val = role === 'main' ? mainInput : coderInput;
     setAgentId(role, val.trim() || undefined);
   };
 
-  const handleReset = (role: 'main' | 'coder' | 'researcher') => {
+  const handleReset = (role: 'main' | 'coder') => {
     resetAgentId(role);
     if (role === 'main') setMainInput('');
     if (role === 'coder') setCoderInput('');
-    if (role === 'researcher') setResearcherInput('');
   };
 
   const handleResetAll = () => {
     resetAgentId('all');
     setMainInput('');
     setCoderInput('');
-    setResearcherInput('');
   };
 
   const handleAddCustom = () => {
@@ -87,7 +82,7 @@ export const AgentDialog: React.FC = () => {
             <div>
               <div className={styles.headerTitle}>Copilot 智能体编排与绑定</div>
               <div className={styles.headerDesc}>
-                配置 Main 调度中枢与专项 Coder / Researcher 的 Copilot Studio 智能体 ID
+                配置 Main 调度中枢与专项 Coder 的 Copilot Studio 智能体 ID
               </div>
             </div>
           </div>
@@ -195,53 +190,6 @@ export const AgentDialog: React.FC = () => {
             </div>
           </div>
 
-          {/* Researcher Agent Card */}
-          <div className={styles.agentCard}>
-            <div className={styles.cardHeader}>
-              <div>
-                <div className={styles.cardTitleRow}>
-                  <Search size={16} color="#f59e0b" />
-                  <span className={styles.cardTitle}>深度走查智能体 (Researcher Agent)</span>
-                  {agentConfig.researcherAgentId ? (
-                    <span className={styles.badgeCustom}>自定义绑定</span>
-                  ) : (
-                    <span className={styles.badgeDefault}>官方默认</span>
-                  )}
-                </div>
-                <div className={styles.cardDesc}>
-                  只读分析锤与架构斥候（Scout），负责宏观大纲梳理、调用链逆向分析与客观取证。
-                </div>
-              </div>
-            </div>
-            <div className={styles.inputGroup}>
-              <input
-                className={styles.input}
-                placeholder="输入 Researcher Agent ID (留空恢复默认)"
-                value={researcherInput}
-                onChange={(e) => setResearcherInput(e.target.value)}
-              />
-              <button
-                className={styles.btnPrimary}
-                onClick={() => handleSave('researcher')}
-              >
-                <Check size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                保存
-              </button>
-              {agentConfig.researcherAgentId && (
-                <button
-                  className={styles.btnSecondary}
-                  onClick={() => handleReset('researcher')}
-                  title="恢复为官方默认 ID"
-                >
-                  <RotateCcw size={14} />
-                </button>
-              )}
-            </div>
-            <div className={styles.defaultHint}>
-              默认: {agentConfig.defaultResearcher}
-            </div>
-          </div>
-
           {/* Custom Agents Section */}
           <div className={styles.sectionHeader}>
             <div className={styles.sectionTitle}>
@@ -280,7 +228,6 @@ export const AgentDialog: React.FC = () => {
                   style={{ flex: 1 }}
                 >
                   <option value="custom">通用 (Custom)</option>
-                  <option value="researcher">只读调研 (Researcher)</option>
                   <option value="coder">代码实施 (Coder)</option>
                   <option value="main">主协调 (Coordinator)</option>
                 </select>
@@ -354,7 +301,7 @@ export const AgentDialog: React.FC = () => {
           <button
             className={styles.btnSecondary}
             onClick={handleResetAll}
-            title="将 3 个智能体全部恢复为默认官方 Agent ID"
+            title="将智能体全部恢复为默认官方 Agent ID"
           >
             一键全部恢复默认
           </button>

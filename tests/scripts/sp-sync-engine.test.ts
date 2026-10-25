@@ -214,7 +214,7 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       // Verify manifest was updated with new sha256 for file1
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
       expect(manifest.files["src/app.ts"].sha256).toBeDefined();
-    }, 15000);
+    });
 
     it("should handle SyncSingleFile accurately", () => {
       if (!IS_WINDOWS) {
@@ -616,7 +616,7 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(entry2.serverRelativeUrl).toContain("src/service.ts");
       expect(entry2.sha256).not.toBe(entry1.sha256);
       expect(new Date(entry2.lastSyncedAt).getTime()).toBeGreaterThanOrEqual(new Date(initialCreatedAt).getTime());
-    }, 15000);
+    });
 
     it("should record valid 36-char GUID uniqueId, serverRelativeUrl, and firstCreatedAt in sync-manifest.json during SyncSingleFile, and preserve firstCreatedAt on update", async () => {
       if (!IS_WINDOWS) return;
@@ -678,6 +678,6 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(entry2.serverRelativeUrl).toContain("config/settings.json");
       expect(entry2.sha256).not.toBe(entry1.sha256);
       expect(new Date(entry2.lastSyncedAt).getTime()).toBeGreaterThanOrEqual(new Date(initialCreatedAt).getTime());
-    }, 15000);
+    });
   });
 });

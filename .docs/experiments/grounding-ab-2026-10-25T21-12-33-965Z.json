@@ -1,0 +1,59 @@
+{
+  "generatedAt": "2026-10-25T21:12:33.965Z",
+  "channel": "chathub-ws",
+  "account": "GSC.VFU2@cma-cgm.com",
+  "agentId": null,
+  "workspaceRoot": "E:\\test_workspace",
+  "decision": [
+    "缺少 A/C/D 完整观测，无法判定（请补齐 arm）。",
+    "F 命中 → 「内容附件」通道可用，且判分题公平；URL 路失败即为真失败而非题目问题。"
+  ],
+  "results": [
+    {
+      "arm": "D",
+      "label": "类型对照：自定义 Agent + 原始 URL，目标改为 .md",
+      "agentId": null,
+      "hasCatalogAttachment": false,
+      "targetRelPath": "Library/CNNJI QUERY/.docs/MODULE-REGISTRY.md",
+      "webUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/.docs/MODULE-REGISTRY.md",
+      "canonicalUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/.docs/MODULE-REGISTRY.md",
+      "catalogUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test/Library/CNNJI%20QUERY/.docs/MODULE-REGISTRY.md",
+      "questionChars": 389,
+      "latencyMs": 7345,
+      "responseChars": 4,
+      "reasoningChars": 8,
+      "responseText": "无法读取",
+      "reasoningText": "正在排队处理…\n",
+      "verdict": {
+        "exactTokenHit": false,
+        "numericFactsHit": false,
+        "explicitRefusal": true,
+        "emittedActionBlock": false,
+        "citedUrl": false
+      }
+    },
+    {
+      "arm": "F",
+      "label": "内容附件对照：把目标文件本体作为附件挂载，不给 URL",
+      "agentId": null,
+      "hasCatalogAttachment": true,
+      "targetRelPath": "Library/CNNJI QUERY/shared/modules/JsygtBatch.psm1",
+      "webUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "canonicalUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "catalogUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "questionChars": 191,
+      "latencyMs": 12087,
+      "responseChars": 300,
+      "reasoningChars": 6,
+      "responseText": "1) 创建 `StreamReader` 的原文行：citeturn1search1\n```powershell\n$sr = New-Object System.IO.StreamReader($fs, $script:NoBom)\n```\n\n2) 使用的编码变量名是 **`$script:NoBom`**。citeturn1search1\n\n3) 循环最多执行 **10 次尝试**，即首次尝试加最多 **9 次重试**；每次捕获 `System.IO.IOException` 后等待 **10 毫秒**，包括最后一次失败，随后抛出最后的异常。citeturn1search1",
+      "reasoningText": "正在处理…\n",
+      "verdict": {
+        "exactTokenHit": true,
+        "numericFactsHit": true,
+        "explicitRefusal": false,
+        "emittedActionBlock": false,
+        "citedUrl": false
+      }
+    }
+  ]
+}

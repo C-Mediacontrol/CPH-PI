@@ -225,3 +225,4 @@ export function getNextUtcMidnight(): number {
 | **云端合法性门禁** | `bun test tests/workspace/mirror-guard.test.ts` | 空目录允许初始化，不相关目录阻断并抛出保护错误 |
 | **全量回归测试** | `bun test` | 740+ 单元测试 100% 通过，0 失败 |
 | **Web 生产构建** | `npm run build` | 前后端 Bundle 编译成功，0 错误 |
+

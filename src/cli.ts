@@ -110,6 +110,7 @@ export interface CphPiCliOptions {
   cloudAttachmentThresholdChars?: number;
   cloudAttachmentThresholdLines?: number;
   graphTokenProvider?: () => Promise<string>;
+  enableWorkspaceCatalog?: boolean;
   port?: number;
   host?: string;
   autoOpen?: boolean;
@@ -254,6 +255,7 @@ export class CphPiCli {
         cloudAttachmentThresholdChars: options.cloudAttachmentThresholdChars,
         cloudAttachmentThresholdLines: options.cloudAttachmentThresholdLines,
         graphTokenProvider: this.graphTokenProvider,
+        enableWorkspaceCatalog: options.enableWorkspaceCatalog,
       } as any);
     (this.orchestrator as any).timeoutMs = timeoutMs;
 
@@ -1756,6 +1758,7 @@ export async function runCli(
     cloudAttachmentThresholdChars: customOptions.cloudAttachmentThresholdChars,
     cloudAttachmentThresholdLines: customOptions.cloudAttachmentThresholdLines,
     graphTokenProvider: customOptions.graphTokenProvider,
+    enableWorkspaceCatalog: customOptions.enableWorkspaceCatalog,
   };
 
   const cli = new CphPiCli(options);

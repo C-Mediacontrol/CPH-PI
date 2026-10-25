@@ -1,0 +1,236 @@
+/**
+ * DeepSeek-Style Handoff Milestone Anchor Card Styles
+ * Hairline borders, subtle dark styling, milestone badge, and seamless conversation integration.
+ */
+
+.card {
+  width: 100%;
+  margin: 16px 0;
+  border-radius: 8px;
+  background: var(--dsw-surface-base, #14171d);
+  border: 1px solid var(--dsw-border-subtle, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  transition: border-color var(--ds-transition-duration, 0.2s) ease;
+}
+
+.card:hover {
+  border-color: rgba(65, 118, 230, 0.25);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.iconWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--dsw-static-green-400, #4ed17e);
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #f1f5f9);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.generationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(65, 118, 230, 0.16);
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+  border: 1px solid rgba(65, 118, 230, 0.32);
+  font-family: var(--ds-font-family-code, monospace);
+  letter-spacing: 0.02em;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dismissBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-caption, #94a3b8);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dismissBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dsw-alias-label-primary, #f1f5f9);
+}
+
+.body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.docRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.docLabel {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #94a3b8);
+  font-weight: 500;
+}
+
+.docChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-family: var(--ds-font-family-code, monospace);
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #f1f5f9);
+  max-width: 100%;
+}
+
+.docChipName {
+  font-weight: 600;
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+}
+
+.docChipPath {
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--dsw-alias-label-caption, #94a3b8);
+  font-size: 11px;
+  cursor: pointer;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.copyBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--dsw-alias-label-primary, #f1f5f9);
+}
+
+.memoBlock {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.memoToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  color: var(--dsw-alias-label-secondary, #cbd5e1);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.memoToggle:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.memoToggleLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.memoTitle {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #e2e8f0);
+}
+
+.memoContent {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dsw-alias-label-secondary, #cbd5e1);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  font-family: var(--ds-font-family-code, monospace);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.noticeBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: var(--dsw-alias-label-secondary, #e2e8f0);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.noticeIcon {
+  color: var(--dsw-static-green-400, #4ed17e);
+  flex-shrink: 0;
+}

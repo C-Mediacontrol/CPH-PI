@@ -274,6 +274,8 @@ FINAL_ANSWER:
             pool: mockPool,
             cloudAttachmentThresholdChars: 0,
             cloudAttachmentThresholdLines: 0,
+            enableWorkspaceCatalog: false,
+            customAgentId: "default-agent",
           } as any
         );
 

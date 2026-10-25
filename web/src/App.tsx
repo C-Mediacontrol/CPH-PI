@@ -10,6 +10,7 @@ import {
   LedgerWALViewer,
   ContextInspector,
 } from './components/panels';
+import { SubagentInspector } from './components/panels/SubagentInspector';
 import { useAppStore } from './services/store';
 import { wsClient } from './services/client-ws';
 
@@ -37,6 +38,8 @@ export function App(): React.JSX.Element {
         return <LedgerWALViewer />;
       case 'context':
         return <ContextInspector />;
+      case 'subagent':
+        return <SubagentInspector />;
       default:
         return <FileExplorer />;
     }

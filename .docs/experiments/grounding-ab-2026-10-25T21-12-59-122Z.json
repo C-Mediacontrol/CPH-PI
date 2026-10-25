@@ -1,0 +1,35 @@
+{
+  "generatedAt": "2026-10-25T21:12:59.122Z",
+  "channel": "chathub-ws",
+  "account": "GSC.VFU2@cma-cgm.com",
+  "agentId": "T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3",
+  "workspaceRoot": "E:\\test_workspace",
+  "decision": [
+    "缺少 A/C/D 完整观测，无法判定（请补齐 arm）。"
+  ],
+  "results": [
+    {
+      "arm": "A",
+      "label": "基线：自定义 Agent + 原始 URL，无附件",
+      "agentId": "T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3",
+      "hasCatalogAttachment": false,
+      "targetRelPath": "Library/CNNJI QUERY/shared/modules/JsygtBatch.psm1",
+      "webUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "canonicalUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test_workspace/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "catalogUrl": "https://cmacgmgroup.sharepoint.com/sites/CMA-GBSC_BKGDOMAIN/AFRASIA/01%20Team/03%20AFR/AFR%20SCHK/06_Training/New%20Hire%20Training/2025/Vincent%20Fu/WorkSpace/test/Library/CNNJI%20QUERY/shared/modules/JsygtBatch.psm1",
+      "questionChars": 402,
+      "latencyMs": 7810,
+      "responseChars": 4,
+      "reasoningChars": 6,
+      "responseText": "无法读取",
+      "reasoningText": "正在处理…\n",
+      "verdict": {
+        "exactTokenHit": false,
+        "numericFactsHit": false,
+        "explicitRefusal": true,
+        "emittedActionBlock": false,
+        "citedUrl": false
+      }
+    }
+  ]
+}

@@ -22,7 +22,7 @@
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
   box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.15), 0 20px 40px -10px rgba(0, 0, 0, 0.1);
   width: 100%;
-  max-width: 680px;
+  max-width: 840px;
   max-height: 85vh;
   overflow: hidden;
   display: flex;

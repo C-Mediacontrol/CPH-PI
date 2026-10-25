@@ -6,7 +6,7 @@ import path from "node:path";
  */
 export interface SessionTurnRecord {
   turnNumber: number;
-  timestamp: string;
+  timestamp: string | number;
   userInput: string;
   modelReasoning?: string;
   modelResponse: string;
@@ -16,6 +16,7 @@ export interface SessionTurnRecord {
     output?: string;
     success?: boolean;
   }>;
+  durationMs?: number;
 }
 
 /**

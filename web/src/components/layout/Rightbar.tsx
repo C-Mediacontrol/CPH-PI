@@ -1,5 +1,5 @@
-import React from 'react';
-import { Files, Terminal, GitCompare, ScrollText, Cpu, PanelRightClose } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { Files, Terminal, GitCompare, ScrollText, Cpu, PanelRightClose, Bot } from 'lucide-react';
 import { useAppStore } from '../../services/store';
 import type { RightbarTab } from '../../types/protocol';
 import css from './Rightbar.module.css';
@@ -9,7 +9,21 @@ export interface RightbarProps {
 }
 
 export function Rightbar({ children }: RightbarProps): React.JSX.Element {
-  const { activeRightbarTab, setActiveRightbarTab, setRightbarCollapsed } = useAppStore();
+  const {
+    activeRightbarTab,
+    setActiveRightbarTab,
+    setRightbarCollapsed,
+    activeSubagentAsideId,
+  } = useAppStore();
+
+  useEffect(() => {
+    if (activeSubagentAsideId) {
+      if (activeRightbarTab !== 'subagent') {
+        setActiveRightbarTab('subagent');
+      }
+      setRightbarCollapsed(false);
+    }
+  }, [activeSubagentAsideId]);
 
   const tabs: Array<{ id: RightbarTab; label: string; icon: React.ReactNode }> = [
     { id: 'files', label: '工作区文件', icon: <Files size={14} /> },
@@ -17,6 +31,7 @@ export function Rightbar({ children }: RightbarProps): React.JSX.Element {
     { id: 'diff', label: '差异审查', icon: <GitCompare size={14} /> },
     { id: 'ledger', label: '执行账本 (WAL)', icon: <ScrollText size={14} /> },
     { id: 'context', label: '上下文探针', icon: <Cpu size={14} /> },
+    { id: 'subagent', label: '子代理', icon: <Bot size={14} /> },
   ];
 
   return (

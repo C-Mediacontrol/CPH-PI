@@ -224,7 +224,7 @@ export interface CustomAgentItem {
   id: string;
   name: string;
   agentId: string;
-  role: 'main' | 'coder' | 'researcher' | 'custom';
+  role: 'main' | 'coder' | 'custom';
   description?: string;
   createdAt?: number;
 }
@@ -232,10 +232,8 @@ export interface CustomAgentItem {
 export interface AgentConfig {
   customAgentId?: string;
   coderAgentId?: string;
-  researcherAgentId?: string;
   defaultMain: string;
   defaultCoder: string;
-  defaultResearcher: string;
   customAgents?: CustomAgentItem[];
 }
 

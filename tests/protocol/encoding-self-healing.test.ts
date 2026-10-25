@@ -8,7 +8,7 @@ import {
   createEncodingSelfHealingBashOperations,
   sanitizeOutput,
 } from "../../src/protocol/tool-bridge.ts";
-import type { BashOperations } from "../../pi/packages/coding-agent/src/core/tools/index.ts";
+import type { BashOperations } from "../../src/tools/index.ts";
 
 describe("Windows Console Smart Encoding Self-Healing Tests", () => {
   let tempDir: string;

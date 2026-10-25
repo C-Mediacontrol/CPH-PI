@@ -1,0 +1,414 @@
+/**
+ * SubagentHeaderLineage styles
+ * DeepSeek-Harness hairline aesthetic, tree lineage dropdown, and status indicators.
+ */
+
+.container {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.triggerBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
+  background: var(--dsw-surface-base, #ffffff);
+  color: var(--dsw-alias-label-primary, #0f172a);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.triggerBtn:hover {
+  background: rgba(65, 118, 230, 0.06);
+  border-color: rgba(65, 118, 230, 0.35);
+  color: var(--dsw-static-deepseek-500, #4176e6);
+}
+
+.triggerBtnActive {
+  background: rgba(65, 118, 230, 0.12);
+  border-color: var(--dsw-static-deepseek-500, #4176e6);
+  color: var(--dsw-static-deepseek-500, #4176e6);
+}
+
+.triggerBtnFocused {
+  border-color: var(--dsw-static-deepseek-500, #4176e6);
+  box-shadow: 0 0 0 2px rgba(65, 118, 230, 0.15);
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotRunning {
+  background: var(--dsw-static-green-500, #22c55e);
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  animation: pulseDot 1.8s infinite;
+}
+
+.dotCompleted {
+  background: var(--dsw-static-green-500, #22c55e);
+}
+
+.dotFailed {
+  background: var(--dsw-static-red-500, #ef4444);
+}
+
+.dotQueued {
+  background: var(--dsw-static-amber-500, #f59e0b);
+}
+
+@keyframes pulseDot {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.triggerText {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-caption, #94a3b8);
+  transition: transform 0.2s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.focusedTag {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(65, 118, 230, 0.15);
+  color: var(--dsw-static-deepseek-500, #4176e6);
+  font-family: var(--ds-font-family-code, monospace);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Dropdown Overlay
+   ========================================================================== */
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 400px;
+  max-width: 90vw;
+  background: #161922;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: dropdownFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.dropdownHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.dropdownTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.dropdownCounter {
+  font-size: 11px;
+  color: var(--dsw-alias-label-caption, #94a3b8);
+  font-family: var(--ds-font-family-code, monospace);
+}
+
+.treeList {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.treeItem {
+  position: relative;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: inherit;
+  text-align: left;
+}
+
+.treeItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.treeItemActive {
+  background: rgba(65, 118, 230, 0.12);
+  border-color: rgba(65, 118, 230, 0.45);
+}
+
+.treeItemRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.treeItemLeft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.treeItemRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.roleIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+}
+
+.subId {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+  font-family: var(--ds-font-family-code, monospace);
+}
+
+.roleBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(65, 118, 230, 0.15);
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+  border: 1px solid rgba(65, 118, 230, 0.25);
+}
+
+.accountBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--ds-font-family-code, monospace);
+}
+
+.focusedPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(65, 118, 230, 0.25);
+  color: #b7c8fe;
+  font-weight: 600;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.statusRunning {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--dsw-static-green-400, #4ed17e);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.statusCompleted {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--dsw-static-green-400, #4ed17e);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.statusFailed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--dsw-static-red-400, #f87171);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.statusQueued {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--dsw-static-amber-400, #fbbf24);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.duration {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--ds-font-family-code, monospace);
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.itemPrompt {
+  font-size: 11.5px;
+  color: #94a3b8;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 2px;
+}
+
+.itemActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.actionBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.actionBtnFocus {
+  border-color: rgba(65, 118, 230, 0.35);
+  background: rgba(65, 118, 230, 0.15);
+  color: #b7c8fe;
+}
+
+.actionBtnFocus:hover {
+  background: rgba(65, 118, 230, 0.25);
+  border-color: rgba(65, 118, 230, 0.5);
+  color: #ffffff;
+}
+
+/* ==========================================================================
+   Dropdown Footer
+   ========================================================================== */
+
+.dropdownFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.footerHint {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.restoreBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(65, 118, 230, 0.35);
+  background: rgba(65, 118, 230, 0.1);
+  color: var(--dsw-static-deepseek-400, #7aaaff);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.restoreBtn:hover {
+  background: rgba(65, 118, 230, 0.2);
+  border-color: rgba(65, 118, 230, 0.5);
+  color: #ffffff;
+}

@@ -8,6 +8,37 @@
 
 ## 已完成的变更请求
 
+### CR-2026-10-25-02: 消除运行时协议中的 Researcher 诱导、收拢 Dual-Agent 并优化 Web 弹窗体验
+
+- **发起日期**: 2026-10-25
+- **完成日期**: 2026-10-25
+- **状态**: ✅ 已完成并全量测试通过 (Completed & Verified)
+- **类型**: 🐛 缺陷修复 & 体验优化
+
+#### 摘要
+彻底消除 PromptBuilder 协议提醒与运行时无条件并发推荐中的 Researcher/斥候诱导，物理收拢 SubagentRunner 至 Dual-Agent (Main + Coder)，完成 Web 前端 Researcher 绑定移除与 AccountDialog 宽度体验优化：
+1. **彻底清理运行时协议提醒 (`PROTOCOL_REMINDER`)**：
+   - 从 `PromptBuilder.PROTOCOL_REMINDER` 中彻底移除 `researcher` 角色与斥候诱导；
+   - 明确审查与排查类任务由 Main Agent 直接查阅云端并输出 `FINAL_ANSWER`，杜绝滥用子代理；
+   - 更新 `buildTurn1Prompt`、`buildDirectAgentPrompt`、`buildTurn2TaskPrompt` 与 `buildTurn2TaskPromptWithAttachment`，将带有主观诱导的“推荐单批派发与此容量匹配的正交子任务以实现最高吞吐”修改为中立的物理容量客观陈述“仅在跨模块并行编码施工时按需调度”。
+2. **SubagentRunner 物理归一化为 Dual-Agent**：
+   - 彻底废弃并移除 `DEFAULT_RESEARCHER_AGENT_ID` 与 `this.researcherAgentId`；
+   - 在 `executeBatch`（串行/并行）调度及报告汇总中将非 `coder` 请求平滑归一化映射为 `coder`（绑定 `coderAgentId`），彻底杜绝历史残留。
+3. **Web 前端与 RPC 协议清退 Researcher**：
+   - `web/src/components/layout/AgentDialog.tsx`：彻底移除 Researcher Agent 卡片与输入状态、更新弹窗标题描述、从新增下拉选项中移除 `researcher`；
+   - `src/web/rpc-handler.ts` 与 `web/src/types/protocol.ts`：从 `CustomAgentItem` 与 `AgentConfig` 中移除 Researcher 相关冗余类型；
+   - `web/src/components/layout/Sidebar.tsx` 与 `web/src/services/store.ts`：更新计数与状态管理逻辑。
+4. **AccountDialog 弹窗视口与宽度优化**：
+   - 将 `AccountDialog.module.css` 中的 `.modal` 最大宽度由 `680px` 调整为 `840px`，使得 3 个统计胶囊徽标与 3 个核心操作按钮在单行内从容排布，不再发生拥挤和垂直错位。
+5. **分发包自动同步构建**：
+   - 运行 `bun run package`，同步刷新 `dist/copilot-agent-bundle.zip` 与 `package/agent-bundle/`。
+
+#### 验证结果
+- 全仓测试套件: **111 个测试文件、912 项测试用例全部 100% 绿灯通过，0 失败**。
+- Web 前端构建: `tsc && vite build` 生产打包编译 100% 成功，0 错误，打包耗时 7.97s。
+- 智能体分发包: `scripts/package-agent-bundle.ts` 打包通过，提示词与技能清单完整无损。
+- 严格遵循 AGENTS.md 准则 1（二级目录安全隔离）与准则 3（建设性正向引导）。
+
 ### CR-2026-10-25-01: Web 前端全滚动区域视口懒加载与渲染性能优化
 
 - **发起日期**: 2026-10-25
