@@ -680,4 +680,53 @@ describe("SharePoint Physical Sync Engine Suite (sp-sync-engine.ps1)", () => {
       expect(new Date(entry2.lastSyncedAt).getTime()).toBeGreaterThanOrEqual(new Date(initialCreatedAt).getTime());
     });
   });
+
+  describe("ReconcileUrls action", () => {
+    it("rewrites stale serverRelativeUrl to the current target folder", () => {
+      if (!IS_WINDOWS) {
+        expect(true).toBe(true);
+        return;
+      }
+      const manifestPath = path.join(tmpWorkspace, ".cph", "state", "sync-manifest.json");
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(
+        manifestPath,
+        JSON.stringify(
+          {
+            version: 2,
+            siteUrl: "https://tenant.sharepoint.com/sites/test",
+            targetFolder: "AFRASIA/WorkSpace/test_workspace",
+            files: {
+              "Library/a.ps1": {
+                sha256: "abc",
+                size: 1,
+                serverRelativeUrl:
+                  "/sites/test/AFRASIA/WorkSpace/test/Library/a.ps1",
+              },
+            },
+            folders: {},
+          },
+          null,
+          2
+        ),
+        "utf8"
+      );
+
+      const res = runPowerShell([
+        "-File", SCRIPT_PATH,
+        "-Action", "ReconcileUrls",
+        "-WorkspaceRoot", tmpWorkspace,
+        "-ManifestPath", manifestPath,
+        "-SiteUrl", "https://tenant.sharepoint.com/sites/test",
+        "-TargetFolder", "AFRASIA/WorkSpace/test_workspace",
+      ]);
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[RECONCILE] updated=1 total=1");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      expect(manifest.files["Library/a.ps1"].serverRelativeUrl).toBe(
+        "/sites/test/AFRASIA/WorkSpace/test_workspace/Library/a.ps1"
+      );
+    });
+  });
 });

@@ -9,7 +9,7 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile', 'Prewarm', 'PullFile', 'VerifyMirror', 'EnsureFolder')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('SyncWorkspace', 'SyncSingleFile', 'Prewarm', 'PullFile', 'VerifyMirror', 'EnsureFolder', 'ReconcileUrls')][string]$Action,
     [string]$SiteUrl,
     [string]$TargetFolder = '/Shared Documents/workspace-mirror',
     [Alias('FilePath')][string]$SourceFile,
@@ -620,7 +620,8 @@ switch ($Action) {
                         if ($cf.UniqueId -and (-not $existing.uniqueId -or $existing.uniqueId -like 'guid-*')) {
                             $existing["uniqueId"] = $cf.UniqueId.ToString()
                         }
-                        if ($cf.ServerRelativeUrl -and (-not $existing.serverRelativeUrl)) {
+                        # 云端实体是当前 TargetFolder 的唯一真相：URL 不一致时刷新，避免工作区迁移后 manifest 指向旧目录
+                        if ($cf.ServerRelativeUrl -and ($existing.serverRelativeUrl -ne [string]$cf.ServerRelativeUrl)) {
                             $existing["serverRelativeUrl"] = [string]$cf.ServerRelativeUrl
                         }
                     }
@@ -1225,6 +1226,59 @@ switch ($Action) {
             workspaceRoot = $WorkspaceRoot
         }
 
+        Write-Output "###REPORT_JSON_START###"
+        Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
+        Write-Output "###REPORT_JSON_END###"
+        exit 0
+    }
+
+    'ReconcileUrls' {
+        # 纯本地操作：按 SiteUrl + TargetFolder 重算 manifest 中的 serverRelativeUrl，不访问网络、不删除云端文件。
+        $manifest = Get-SyncManifest -Path $ManifestPath
+        $sitePath = ''
+        if ($SiteUrl) {
+            try {
+                $siteUri = [System.Uri]$SiteUrl
+                $sitePath = $siteUri.AbsolutePath.TrimEnd('/')
+            } catch {
+                $sitePath = ''
+            }
+        }
+
+        $folder = $TargetFolder.Replace('\', '/').TrimEnd('/').TrimStart('/')
+        if ($folder -like 'sites/*') {
+            $prefix = '/' + $folder
+        } elseif ($sitePath) {
+            $prefix = $sitePath + '/' + $folder
+        } else {
+            throw "ReconcileUrls requires SiteUrl or a /sites/... TargetFolder"
+        }
+        $prefix = $prefix.TrimEnd('/')
+
+        $updatedCount = 0
+        $totalCount = 0
+        foreach ($key in @($manifest.files.Keys)) {
+            $entry = $manifest.files[$key]
+            if (-not $entry) { continue }
+            $totalCount++
+            $normalizedRel = ([string]$key).Replace('\', '/').TrimStart('/')
+            $expected = "$prefix/$normalizedRel"
+            if ([string]$entry.serverRelativeUrl -ne $expected) {
+                $entry["serverRelativeUrl"] = $expected
+                $updatedCount++
+            }
+        }
+
+        Save-SyncManifest -Manifest $manifest -Path $ManifestPath
+        Write-Output "[RECONCILE] updated=$updatedCount total=$totalCount prefix=$prefix"
+
+        $report = @{
+            updated = [int]$updatedCount
+            total = [int]$totalCount
+            prefix = [string]$prefix
+            targetFolder = $TargetFolder
+            workspaceRoot = $WorkspaceRoot
+        }
         Write-Output "###REPORT_JSON_START###"
         Write-Output ($report | ConvertTo-Json -Depth 5 -Compress)
         Write-Output "###REPORT_JSON_END###"
