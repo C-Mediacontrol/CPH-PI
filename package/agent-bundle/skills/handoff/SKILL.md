@@ -7,10 +7,10 @@ description: 云端状态锚定与终局交付优先（Cloud-Anchored & Delivera
 
 ## 1. 核心理念：终局交付优先，天然继承上下文
 
-在 SharePoint 云端镜像工作区（`[SHAREPOINT REMOTE WORKSPACE]`）加持下，绝大多数调查、代码审查、问题诊断与常规重构任务均可直接在本会话内完成并输出 `FINAL_ANSWER`：
+在 SharePoint 云端镜像工作区（提示词内联的 `[SHAREPOINT REMOTE WORKSPACE]` 精简映射表 + 本轮附件 `remote-workspace-catalog.md` 完整清单）加持下，绝大多数调查、代码审查、问题诊断与常规重构任务均可直接在本会话内完成并输出 `FINAL_ANSWER`：
 - **优先当轮结题**：若核心分析、审查结论或代码修改已完成，直接输出完整的 `FINAL_ANSWER` 交付报告，在当前会话圆满收官。
 - **跨会话接力触发条件**：当执行超大型多阶段工程且推进至第 25 至第 29 轮仍有未完成的 `plan.md` 实施步骤时，输出标准 `handoff` 块移交进度。
-- **天然继承与零重复确认**：后继会话开局将天然继承最新的 `[SHAREPOINT REMOTE WORKSPACE]` 全量文件 URL 映射表与 `plan.md` 物理清单，直接从 `P0` 第一顺位动作切入执行，无需重新向用户确认初始目标。
+- **天然继承与零重复确认**：后继会话开局将天然继承最新的 `[SHAREPOINT REMOTE WORKSPACE]` 精简索引、完整清单附件与 `plan.md` 物理清单，直接从 `P0` 第一顺位动作切入执行，无需重新向用户确认初始目标。
 
 ## 2. 交接内容准则：高密度结论沉淀与云端状态对齐
 

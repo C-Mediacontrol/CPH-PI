@@ -7,14 +7,14 @@ description: 云原生双智能体（Main + Coder）正交并行编码派发与 
 
 ## 1. 适用场景与主控直读边界
 
-在 SharePoint 云端工作区（`[SHAREPOINT REMOTE WORKSPACE]`）架构下，主控智能体（`CPH-Main`）具备零本地 I/O 往返的全景源码直读能力：
+在 SharePoint 云端工作区（提示词内联的 `[SHAREPOINT REMOTE WORKSPACE]` 精简映射表 + 本轮附件 `remote-workspace-catalog.md` 完整清单）架构下，主控智能体（`CPH-Main`）具备零本地 I/O 往返的全景源码直读能力：
 - **主控直接闭环场景**：代码审查、架构审计、跨文件逻辑核对、Bug 根因诊断、技术问答以及单模块敏捷修改，均由 `CPH-Main` 直接通过 SharePoint 云端 URL 阅读并完成交付，直达 `FINAL_ANSWER`。
 - **`Coder` 子代理派发场景**：当工程任务涉及 **多个独立模块的并行代码重构、跨子系统功能开发或繁重的模块级单元测试迭代** 时，主控在云端完成全景架构设计与接口契约定义后，调用 `invoke_subagent` 派发 `role: "coder"` 子代理正交并发落地。
 
 ## 2. Coder 派发四大核心门禁（Four Coder Dispatch Gates）
 
 ### Gate 1：云端认知先行与契约锚定
-主控先通过 `[SHAREPOINT REMOTE WORKSPACE]` 映射表审阅相关源码，明确每个待修改模块的文件路径、SharePoint URL、函数签名与边界条件，确保下发给 `coder` 的工单具备清晰的修改坐标。
+主控先通过 `[SHAREPOINT REMOTE WORKSPACE]` 精简映射表与 `remote-workspace-catalog.md` 完整清单审阅相关源码，明确每个待修改模块的文件路径、SharePoint URL、函数签名与边界条件，确保下发给 `coder` 的工单具备清晰的修改坐标。
 
 ### Gate 2：文件正交隔离与 DAG 阶段屏障（Stage Barrier）
 在 `invoke_subagent` 的 `subagents` 数组中，通过 `stage`（正整数，默认 `1`）编排因果执行拓扑，遵循“契约先于实现、底座先于应用、研判先于重构、实施先于集成”的因果序：

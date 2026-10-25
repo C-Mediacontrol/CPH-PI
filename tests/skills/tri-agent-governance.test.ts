@@ -101,7 +101,7 @@ describe("Dual-Agent & Dev Governance & Packaging Contracts (Phase 4)", () => {
 
     // Standalone autonomous developer baseline
     expect(content).toContain("CPH-Dev");
-    expect(content).toMatch(/全景(?:代码)?快照|全景视野|workspace-v1\.txt/);
+    expect(content).toMatch(/工作区索引|remote-workspace-catalog\.md|全景视野/);
 
     // TDD & patch-first delivery
     expect(content).toContain("patch_file");
