@@ -10015,6 +10015,7 @@ class AccountPool {
         if (this.isFatalAuthGrantError(err)) {
           this.markAuthExpired(email, String(err?.message || err));
         }
+        throw err;
       }
     }
     const accounts = this.refreshAccountList();
@@ -11625,7 +11626,7 @@ STDOUT: ${stdout.trim()}`));
       const entry = manifestFiles[rel];
       if (entry) {
         const underCurrent = Boolean(entry.serverRelativeUrl && entry.serverRelativeUrl.replace(/\\/g, "/").startsWith(`${normalizedPrefix}/`));
-        const url = `${remoteRootUrl}/${encodeUrlPathSegments(rel)}`;
+        const url = underCurrent ? `${remoteRootUrl}/${encodeUrlPathSegments(rel)}` : "";
         rows.push({ rel, size, status: underCurrent ? "CLOUD-READY" : "CLOUD-STALE", url });
         if (underCurrent)
           syncedIndexable++;
@@ -11724,7 +11725,7 @@ STDOUT: ${stdout.trim()}`));
     const remoteRootUrl = `${origin}${encodedPrefix ? `/${encodedPrefix}` : ""}`;
     const files = PnPWorkspaceSyncEngine.listWorkspaceFilesForCatalog(opts.workspaceRoot);
     const manifestFiles = manifest?.files || {};
-    const scopePrefix = PnPWorkspaceSyncEngine.deriveTaskScopePrefix(opts.task || "", targetFolder);
+    const scopePrefix = PnPWorkspaceSyncEngine.deriveTaskScopePrefix(opts.task || "", targetFolder, opts.workspaceRoot);
     const sourceExtensions = new Set([
       ".ts",
       ".tsx",
@@ -11819,7 +11820,7 @@ ${lines.join(`
 `)}
 `;
   }
-  static deriveTaskScopePrefix(task, targetFolder) {
+  static deriveTaskScopePrefix(task, targetFolder, workspaceRoot) {
     if (!task)
       return;
     const folderName = targetFolder.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
@@ -11836,7 +11837,7 @@ ${lines.join(`
       const workSpaceIdx = decodedPath.toLowerCase().indexOf("/workspace/");
       if (workSpaceIdx >= 0) {
         const after = decodedPath.slice(workSpaceIdx + "/workspace/".length).split("/").filter(Boolean);
-        const rest = folderName && after[0] === folderName ? after.slice(1) : after.slice(1);
+        const rest = folderName && after[0] === folderName ? after.slice(1) : after;
         if (rest.length > 0)
           return rest.join("/");
       }
@@ -11850,8 +11851,16 @@ ${lines.join(`
     }
     const pathMatch = task.match(/(?:^|[\s`"'（(])([A-Za-z0-9_.\- ]+\/[A-Za-z0-9_.\-/ ]+)/);
     if (pathMatch) {
-      const candidate = pathMatch[1].trim().replace(/\\/g, "/");
-      return candidate.replace(/^\/+|\/+$/g, "");
+      const candidate = pathMatch[1].trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (workspaceRoot) {
+        try {
+          if (!fs7.statSync(path7.join(workspaceRoot, candidate)).isDirectory())
+            return;
+        } catch {
+          return;
+        }
+      }
+      return candidate;
     }
     return;
   }
@@ -11871,7 +11880,7 @@ ${lines.join(`
           files.add(rel);
       }
     } catch {}
-    const ignoredDirs = new Set([".git", ".cph", "node_modules", "dist", "package"]);
+    const ignoredDirs = new Set([".git", ".cph", ".skills", "node_modules", "dist", "package"]);
     const walk = (dir, relPrefix) => {
       let entries = [];
       try {
@@ -11900,7 +11909,7 @@ ${lines.join(`
       walk(libraryDir, "Library");
     }
     return [...files].filter((rel) => {
-      if (/(^|\/)(\.git|\.cph|node_modules|dist|package)(\/|$)/.test(rel))
+      if (/(^|\/)(\.git|\.cph|\.skills|node_modules|dist|package)(\/|$)/.test(rel))
         return false;
       try {
         return fs7.statSync(path7.join(workspaceRoot, rel)).isFile();
@@ -12489,47 +12498,72 @@ class FilePorter {
     }
     return u;
   }
-  async downloadBinary(rawUrl) {
+  async downloadBinary(rawUrl, outerSignal) {
     FilePorter.assertAllowedDownloadUrl(rawUrl);
     const norm = FilePorter.normalizeAsyncGwUrl(rawUrl);
     const parsed = new URL(norm.fetchUrl);
     const host = parsed.hostname.toLowerCase();
     const isAsyncGw = host === "asyncgw.teams.microsoft.com" || host.endsWith(".asyncgw.teams.microsoft.com");
-    const headers = {};
-    if (isAsyncGw && this.ic3TokenProvider) {
-      const token = await this.ic3TokenProvider();
-      if (token) {
+    const controller = new AbortController;
+    const onOuterAbort = () => controller.abort(outerSignal?.reason);
+    if (outerSignal) {
+      if (outerSignal.aborted)
+        controller.abort(outerSignal.reason);
+      else
+        outerSignal.addEventListener("abort", onOuterAbort, { once: true });
+    }
+    const timeoutHandle = setTimeout(() => controller.abort(new Error(`download timeout after ${this.timeoutMs}ms`)), Math.max(1, this.timeoutMs));
+    timeoutHandle?.unref?.();
+    try {
+      const headers = {};
+      if (isAsyncGw) {
+        const token = this.ic3TokenProvider ? await this.ic3TokenProvider() : undefined;
+        if (!token) {
+          throw new Error("IC3 token unavailable for asyncgw download; refusing to retry with another account");
+        }
         headers["Authorization"] = `Bearer ${token}`;
       }
-    }
-    const fetcher = this.fetchFn || fetch;
-    let res = await fetcher(norm.fetchUrl, { headers });
-    if ((res.status === 401 || res.status === 403) && isAsyncGw && this.graphTokenProvider) {
-      const graphToken = await this.graphTokenProvider();
-      if (graphToken) {
-        const retryHeaders = { ...headers, Authorization: `Bearer ${graphToken}` };
-        res = await fetcher(norm.fetchUrl, { headers: retryHeaders });
+      const fetcher = this.fetchFn || fetch;
+      let res;
+      try {
+        res = await fetcher(norm.fetchUrl, { headers, signal: controller.signal });
+      } catch (err) {
+        if (controller.signal.aborted) {
+          throw new Error(`Download aborted: ${String(controller.signal.reason?.message || controller.signal.reason || "timeout")}`);
+        }
+        throw err;
       }
-    }
-    if (!res.ok) {
-      throw new Error(`Failed to download binary from ${norm.fetchUrl} (${res.status} ${res.statusText})`);
-    }
-    const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024;
-    const clHeader = res.headers.get("content-length");
-    if (clHeader) {
-      const cl = parseInt(clHeader, 10);
-      if (!isNaN(cl) && cl > MAX_DOWNLOAD_SIZE) {
-        throw new Error(`Download payload exceeds 100MB limit: ${cl} bytes`);
+      if ((res.status === 401 || res.status === 403) && isAsyncGw && this.graphTokenProvider) {
+        const graphToken = await this.graphTokenProvider();
+        if (graphToken) {
+          const retryHeaders = { ...headers, Authorization: `Bearer ${graphToken}` };
+          res = await fetcher(norm.fetchUrl, { headers: retryHeaders, signal: controller.signal });
+        }
       }
+      if (!res.ok) {
+        throw new Error(`Failed to download binary from ${norm.fetchUrl} (${res.status} ${res.statusText})`);
+      }
+      const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024;
+      const clHeader = res.headers.get("content-length");
+      if (clHeader) {
+        const cl = parseInt(clHeader, 10);
+        if (!isNaN(cl) && cl > MAX_DOWNLOAD_SIZE) {
+          throw new Error(`Download payload exceeds 100MB limit: ${cl} bytes`);
+        }
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength > MAX_DOWNLOAD_SIZE) {
+        throw new Error(`Download payload exceeds 100MB limit: ${arrayBuffer.byteLength} bytes`);
+      }
+      return {
+        buffer: Buffer.from(arrayBuffer),
+        fileNameFromUrl: norm.fileNameFromUrl
+      };
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (outerSignal)
+        outerSignal.removeEventListener("abort", onOuterAbort);
     }
-    const arrayBuffer = await res.arrayBuffer();
-    if (arrayBuffer.byteLength > MAX_DOWNLOAD_SIZE) {
-      throw new Error(`Download payload exceeds 100MB limit: ${arrayBuffer.byteLength} bytes`);
-    }
-    return {
-      buffer: Buffer.from(arrayBuffer),
-      fileNameFromUrl: norm.fileNameFromUrl
-    };
   }
   static CRITICAL_DENY_PATTERNS = [
     /^cph-[^/]*-agent-prompt\.txt$/i,
@@ -12561,9 +12595,9 @@ class FilePorter {
     const isExplicitZipFile = params.destinationPath.toLowerCase().endsWith(".zip");
     FilePorter.assertSafeLandingPath(this.cwd, resolvedDest);
     const overwrite = params.overwrite === true;
-    const { buffer, fileNameFromUrl } = await this.downloadBinary(params.downloadUrl);
+    const { buffer, fileNameFromUrl } = await this.downloadBinary(params.downloadUrl, params.signal);
     const isZipPayload = Boolean(params.isZip || fileNameFromUrl?.toLowerCase().endsWith(".zip") || isExplicitZipFile);
-    if (isZipPayload && !isExplicitZipFile) {
+    if (isZipPayload && isDirTarget && !isExplicitZipFile) {
       const targetDir = resolvedDest;
       const zip = new import_adm_zip.default(buffer);
       const entries = zip.getEntries();
@@ -13446,39 +13480,52 @@ ${output}
 
 // src/protocol/prompt-builder.ts
 class PromptBuilder {
+  static buildWorkspaceGroundingBlock(options) {
+    const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
+    const catalogLine = options.catalogAttached ? "完整清单见随本轮消息挂载的云端附件 remote-workspace-catalog.md（会话附件，直接基于其内容推理，无需 read_file）；下方为任务范围内精简索引" : "见下方精简索引（未列出的文件按需 read_file 读取）";
+    const repoMap = options.boundedRepoMap === false ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || "" : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+      workspaceRoot: options.workspaceRoot,
+      task: options.task
+    });
+    return [
+      "【本地宿主机与工作区事实 (Grounding Facts)】",
+      `- 工作区绝对路径: ${wsNorm}`,
+      `- 工作区目录与云端文件索引: ${catalogLine}`,
+      repoMap ? `
+${repoMap.trim()}
+` : ""
+    ].join(`
+`).trimEnd();
+  }
   static PROTOCOL_REMINDER = `【交接协议规范 (Turn Protocol Contract)】
 1. 若需继续执行，必须且仅输出一个 \`\`\`action 块：
    - 读取文件: tool: read_file \\n path: <path>
    - 局部修改: tool: edit \\n path: <path> \\n old_string: <old> \\n new_string: <new>
    - 写入文件: tool: write_file \\n path: <path> \\n content: <content>
+   - 写入下载文件: tool: write_file \\n path: <path> \\n url: <下载链接>
    - 运行命令: tool: run_command \\n command: <cmd>
    - 提问用户: tool: ask_question \\n question: <question>
    - 调派子代理: tool: invoke_subagent \\n subagents: [{"role": "researcher"|"coder", "prompt": "<具体独立切片任务>"}]
 2. 当所有目标已达成且验证充分时，直接在独立一行输出最终交付总结：
    FINAL_ANSWER: <任务交付总结说明>`;
   static buildTurn1Prompt(options) {
-    const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitStatus = options.gitFacts || "Git: 未初始化或无未提交变更 (clean)";
     const treePreview = options.dirTree ? `
 【核心目录结构预览】
 ${options.dirTree}
 ` : "";
-    const repoMap = PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
       workspaceRoot: options.workspaceRoot,
-      task: options.task
+      task: options.task,
+      catalogAttached: options.catalogAttached,
+      boundedRepoMap: options.boundedRepoMap
     });
-    const repoMapSection = repoMap ? `
-${repoMap}
-` : "";
-    const catalogLine = options.catalogAttached ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引" : "见下方精简索引（未列出的文件按需 read_file 读取）";
     return `你是一个专业的自主式编程与架构智能体（Coding Agent）。你直接运行在用户本地宿主机的 CPH-PI 运行环境中，具备真实物理磁盘读写与终端命令执行工具（Tool Calling）。
 
-【本地宿主机与工作区事实 (Grounding Facts)】
-- 工作区绝对路径: ${wsNorm}
-- 工作区目录与云端文件索引: ${catalogLine}
+${grounding}
 - 本地 Git 仓库状态:
 ${gitStatus}
-${treePreview}${repoMapSection}
+${treePreview}
 【可用工具格式 (Tool Calling)】
 当你需要读取文件、修改代码、创建文件、运行测试命令、调派子代理或向用户提问时，请输出 \`\`\`action 块：
 1. 读取文件内容：
@@ -13524,12 +13571,20 @@ ${options.task}
 
 ` : ""}${this.PROTOCOL_REMINDER}`;
   }
-  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "", concurrencyWorkers, virtualRepoMap, catalogAttached = false) {
-    const wsNorm = workspaceRoot.replace(/\\/g, "/");
-    const catalogLine = catalogAttached ? "完整清单见随本轮消息挂载的附件 remote-workspace-catalog.md（含 2 层目录树与逐文件直链）；下方为任务范围内精简索引" : "见下方精简索引（未列出的文件按需 read_file 读取）";
-    let prompt = `【本地宿主机工作区事实】
-- 工作区绝对路径: ${wsNorm}
-- 工作区目录与云端文件索引: ${catalogLine}`;
+  static buildDirectAgentPrompt(workspaceRoot, task, activeSkillsSection = "", dirSkeleton = "", concurrencyWorkers, virtualRepoMap, catalogAttached = false, boundedRepoMap = true) {
+    const explicitRepoMap = virtualRepoMap && virtualRepoMap.trim() !== "" ? virtualRepoMap.trim() : undefined;
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot,
+      task,
+      catalogAttached,
+      boundedRepoMap
+    });
+    let prompt = grounding;
+    if (explicitRepoMap) {
+      prompt += `
+
+${explicitRepoMap}`;
+    }
     if (concurrencyWorkers !== undefined && concurrencyWorkers > 0) {
       prompt += `
 - 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)`;
@@ -13539,12 +13594,6 @@ ${options.task}
 
 【工作区受控目录骨架 (2-Level Skeleton)】
 ${dirSkeleton.trim()}`;
-    }
-    const effectiveRepoMap = virtualRepoMap ?? PnPWorkspaceSyncEngine.buildBoundedRepoMap({ workspaceRoot, task });
-    if (effectiveRepoMap && effectiveRepoMap.trim() !== "") {
-      prompt += `
-
-${effectiveRepoMap.trim()}`;
     }
     if (activeSkillsSection && activeSkillsSection.trim() !== "") {
       prompt += `
@@ -13558,16 +13607,20 @@ ${activeSkillsSection.trim()}`;
 ${task}`;
     return prompt;
   }
-  static buildHandshakePrompt(workspaceRoot, gitFacts, dirTree) {
-    const wsNorm = workspaceRoot.replace(/\\/g, "/");
+  static buildHandshakePrompt(workspaceRoot, gitFacts, dirTree, task, catalogAttached, boundedRepoMap) {
     const treePreview = dirTree ? `
 【当前工作区精简目录树】
 ${dirTree}
 ` : "";
+    const grounding = PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot,
+      task,
+      catalogAttached,
+      boundedRepoMap
+    });
     return `你是一个运行在本地宿主机的 CPH-PI 自主编程智能体。你的工具链路已直接接入物理操作系统。
 
-【本地宿主机工作区事实】
-- 工作区绝对路径: ${wsNorm}
+${grounding}
 - Git 仓库客观状态:
 ${gitFacts}
 ${treePreview}
@@ -13586,12 +13639,18 @@ command: git status
     let finalSkillsSection = "";
     let finalToolName;
     let finalConcurrencyWorkers;
+    let finalWorkspaceRoot;
+    let finalCatalogAttached;
+    let finalBoundedRepoMap;
     if (typeof optionsOrTask === "object" && optionsOrTask !== null) {
       finalTask = optionsOrTask.task;
       finalToolResult = optionsOrTask.toolResult;
       finalSkillsSection = optionsOrTask.skillsSection || "";
       finalToolName = optionsOrTask.toolName;
       finalConcurrencyWorkers = optionsOrTask.concurrencyWorkers;
+      finalWorkspaceRoot = optionsOrTask.workspaceRoot;
+      finalCatalogAttached = optionsOrTask.catalogAttached;
+      finalBoundedRepoMap = optionsOrTask.boundedRepoMap;
     } else {
       finalTask = optionsOrTask;
       finalToolResult = toolResult ?? "";
@@ -13602,7 +13661,15 @@ command: git status
     const toolHeader = finalToolName ? `[TOOL_RESULT for ${finalToolName} - SUCCESS]:` : `[TOOL_RESULT - SUCCESS]:`;
     const clusterFact = finalConcurrencyWorkers !== undefined && finalConcurrencyWorkers > 0 ? `
 - 并发集群容量: ${finalConcurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)` : "";
-    return `${toolHeader}
+    const groundingBlock = finalWorkspaceRoot ? `${PromptBuilder.buildWorkspaceGroundingBlock({
+      workspaceRoot: finalWorkspaceRoot,
+      task: finalTask,
+      catalogAttached: finalCatalogAttached,
+      boundedRepoMap: finalBoundedRepoMap
+    })}
+
+` : "";
+    return `${groundingBlock}${toolHeader}
 ${finalToolResult}
 
 【环境握手完成：本地工具与工作区已就绪】${clusterFact}
@@ -13672,14 +13739,17 @@ source: cloud-attachment | status: attached | freshness: unknown
 
 ${this.PROTOCOL_REMINDER}`;
   }
-  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary, excerpt, concurrencyWorkers) {
+  static buildTurn2TaskPromptWithAttachment(task, skillsSection, toolName, fileName, summary, excerpt, concurrencyWorkers, grounding) {
+    const groundingBlock = grounding ? `${PromptBuilder.buildWorkspaceGroundingBlock(grounding)}
+
+` : "";
     const fingerprintBlock = excerpt ? `
 
 【物理执行指纹摘要 (Head-Tail Fingerprint)】:
 ${excerpt}` : "";
     const clusterFact = concurrencyWorkers !== undefined && concurrencyWorkers > 0 ? `
 - 并发集群容量: ${concurrencyWorkers} 个并行 Worker (推荐单批派发与此容量匹配的正交子任务以实现最高吞吐)` : "";
-    return `[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
+    return `${groundingBlock}[TOOL_RESULT for ${toolName} - SUCCESS (ATTACHED)]:
 ✔ 探测握手执行完成 (共 ${summary.lineCount} 行 / ${summary.charCount} 字符)，完整输出已作为文件附件【${fileName}】挂载送达。
 【无损附件感知指引】：云端文档引擎已对该附件进行全量原生解析，请直接基于该附件分析推进。${fingerprintBlock}
 
@@ -13713,7 +13783,7 @@ ${this.PROTOCOL_REMINDER}`;
     const wsNorm = options.workspaceRoot.replace(/\\/g, "/");
     const gitFacts = options.gitFacts || "Git status: clean";
     const history = options.historySummary || "前序历史操作已成功同步。";
-    const repoMap = PnPWorkspaceSyncEngine.buildBoundedRepoMap({
+    const repoMap = options.boundedRepoMap === false ? PnPWorkspaceSyncEngine.readVirtualRepoMap(options.workspaceRoot) || "" : PnPWorkspaceSyncEngine.buildBoundedRepoMap({
       workspaceRoot: options.workspaceRoot,
       task: options.currentTask
     });
@@ -13740,20 +13810,6 @@ ${options.currentTask ? `【当前推进中的任务】
 ${options.currentTask}
 
 ` : ""}
-${this.PROTOCOL_REMINDER}`;
-  }
-  static buildFileSavedAndSyncedReceipt(params) {
-    const lines = params.landedFiles.map((item) => item.cloudWebUrl ? `✔ 文件已落盘至本地: ${item.relPath}
-✔ 已同步至云端工作区: ${item.cloudWebUrl}` : `✔ 文件已落盘至本地: ${item.relPath}`);
-    const invariantBlock = params.taskInvariant && params.taskInvariant.trim() !== "" ? `
-【当前推进战役北极星 (Task Invariant)】:
-${params.taskInvariant.trim()}
-` : "";
-    return `[TOOL_RESULT for ${params.toolName} - SUCCESS]:
-${lines.join(`
-`)}
-source: local+cloud | status: success | freshness: synced
-${invariantBlock}
 ${this.PROTOCOL_REMINDER}`;
   }
   static buildHandoffPreparationPrompt(task, sessionId) {
@@ -14116,15 +14172,26 @@ class ResilientParser {
 // src/protocol/deliverables-parser.ts
 import path14 from "node:path";
 var SECTION_RE = /【交付文件与落盘指引\s*\/\s*Deliverables】|^#{1,3}\s*Deliverables\b/im;
-var LINE_RE = /^\s*[-*]\s*`([^`]+)`\s*(?:<-|->|←|→|<=|=>|=>|:)\s*\[([^\]]*)\]\(([^)\s]+)\)\s*$/;
+var LINE_RE = /^\s*[-*]\s*`([^`]+)`\s*(?:<-|->|←|→|<=|=>|:)\s*\[([^\]]*)\]\(([^)\s]+)\)\s*.*$/;
+function extractSection(raw) {
+  SECTION_RE.lastIndex = 0;
+  const match = SECTION_RE.exec(raw);
+  if (!match)
+    return null;
+  const start = match.index + match[0].length;
+  const rest = raw.slice(start);
+  const headingMatch = rest.match(/\r?\n\s{0,3}#{1,6}\s/);
+  return headingMatch ? rest.slice(0, headingMatch.index) : rest;
+}
 
 class DeliverablesParser {
   static parse(raw) {
-    if (!raw || !SECTION_RE.test(raw))
+    const section = raw ? extractSection(raw) : null;
+    if (!section)
       return [];
     const items = [];
     const seen = new Set;
-    for (const line of raw.split(/\r?\n/)) {
+    for (const line of section.split(/\r?\n/)) {
       const match = line.match(LINE_RE);
       if (!match)
         continue;
@@ -14181,7 +14248,7 @@ class LandingService {
           downloadUrl: item.url,
           destinationPath: item.destinationPath,
           isDirectory,
-          isZip: item.isZipTarget || isDirectory,
+          isZip: item.isZipTarget,
           fileName: item.fileName
         });
         for (const rel of result.landedFiles) {
@@ -15237,6 +15304,8 @@ class Orchestrator {
   enableWorkspaceSnapshot;
   enableWorkspaceCatalog;
   enableAutoLanding;
+  enableBoundedRepoMap;
+  debug;
   autoLandingService;
   lastNextSnapshotMeta;
   lastModifiedFile;
@@ -15274,6 +15343,8 @@ class Orchestrator {
     this.enableWorkspaceSnapshot = options.enableWorkspaceSnapshot ?? false;
     this.enableWorkspaceCatalog = options.enableWorkspaceCatalog ?? true;
     this.enableAutoLanding = options.enableAutoLanding ?? true;
+    this.enableBoundedRepoMap = options.enableBoundedRepoMap ?? true;
+    this.debug = options.debug ?? false;
     this.autoLandingService = options.autoLandingService;
     this.isHandshakePending = options.isHandshakePending !== undefined ? options.isHandshakePending : !this.customAgentId;
   }
@@ -15350,11 +15421,7 @@ class Orchestrator {
   }
   async acquireIc3Token(email) {
     if (this.pool && typeof this.pool.getIc3AccessToken === "function") {
-      try {
-        return await this.pool.getIc3AccessToken(email);
-      } catch {
-        return;
-      }
+      return await this.pool.getIc3AccessToken(email);
     }
     return;
   }
@@ -15370,6 +15437,15 @@ class Orchestrator {
     if (this.autoLandingService)
       return this.autoLandingService;
     const target = this.resolveCloudTarget();
+    const toAbsoluteCloudUrl = (serverRelativeUrl) => {
+      if (!serverRelativeUrl)
+        return;
+      try {
+        return new URL(serverRelativeUrl, new URL(target.siteUrl)).toString();
+      } catch {
+        return serverRelativeUrl;
+      }
+    };
     return new LandingService({
       workspaceRoot: this.workspaceRoot,
       filePorter: new FilePorter({
@@ -15378,7 +15454,10 @@ class Orchestrator {
       }),
       syncFile: async (rel) => {
         const result = await new PnPWorkspaceSyncEngine().syncFile(this.workspaceRoot, rel, target.targetFolder, { siteUrl: target.siteUrl });
-        return { status: result.status, serverRelativeUrl: result.serverRelativeUrl };
+        return {
+          status: result.status,
+          serverRelativeUrl: toAbsoluteCloudUrl(result.serverRelativeUrl)
+        };
       }
     });
   }
@@ -15421,6 +15500,24 @@ class Orchestrator {
     fs13.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf8");
     return uploadResult;
   }
+  static async withTimeout(promise, ms, label) {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+          timer?.unref?.();
+        })
+      ]);
+    } finally {
+      if (timer)
+        clearTimeout(timer);
+    }
+  }
+  isCatalogAnnotation(annotation) {
+    return annotation?.messageAnnotationMetadata?.fileName === "remote-workspace-catalog.md";
+  }
   writeDeliveryReport(result, source) {
     try {
       const stateDir = path18.join(this.workspaceRoot, ".cph", "state");
@@ -15444,14 +15541,14 @@ class Orchestrator {
     try {
       const accountEmail = this.activeAccountEmail;
       const landing = this.buildLandingService(accountEmail);
-      const result = await landing.landDeliverables([
+      const result = await Orchestrator.withTimeout(landing.landDeliverables([
         {
           destinationPath: String(targetPath).replace(/\\/g, "/"),
           fileName: path18.basename(String(targetPath)),
           url: String(url),
           isZipTarget: String(targetPath).toLowerCase().endsWith(".zip")
         }
-      ]);
+      ]), 120000, "delivery");
       this.writeDeliveryReport(result, `write_file:${targetPath}`);
       const receipt = LandingService.formatReceipt(result);
       return {
@@ -15551,6 +15648,9 @@ class Orchestrator {
     try {
       const { task, signal, events } = options;
       const rootUserPrompt = options.rootUserPrompt || options.task;
+      if (options.skipHandshake) {
+        this.isHandshakePending = false;
+      }
       if (signal?.aborted) {
         const abortError = new Error("The operation was aborted");
         abortError.name = "AbortError";
@@ -15606,11 +15706,11 @@ class Orchestrator {
       let currentPrompt;
       if (this.customAgentId) {
         const workerCount = this.getConcurrencyWorkerCount();
-        currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree, workerCount, undefined, isWorkspaceCatalogEnabled);
+        currentPrompt = PromptBuilder.buildDirectAgentPrompt(this.workspaceRoot, task, skillsSection, dirTree, workerCount, undefined, isWorkspaceCatalogEnabled, this.enableBoundedRepoMap);
       } else if (this.isHandshakePending) {
         this.pendingTask = task;
         this.pendingSkills = skillsSection;
-        currentPrompt = PromptBuilder.buildHandshakePrompt(this.workspaceRoot, gitFacts, dirTree);
+        currentPrompt = PromptBuilder.buildHandshakePrompt(this.workspaceRoot, gitFacts, dirTree, this.pendingTask, isWorkspaceCatalogEnabled, this.enableBoundedRepoMap);
       } else {
         currentPrompt = PromptBuilder.buildTurn1Prompt({
           workspaceRoot: this.workspaceRoot,
@@ -15618,7 +15718,8 @@ class Orchestrator {
           dirTree,
           task,
           skillsSection,
-          catalogAttached: isWorkspaceCatalogEnabled
+          catalogAttached: isWorkspaceCatalogEnabled,
+          boundedRepoMap: this.enableBoundedRepoMap
         });
       }
       const history = [];
@@ -15645,6 +15746,7 @@ ${err?.stack || err?.message || String(err)}
 
 `, "utf-8");
           } catch {}
+          currentPrompt = currentPrompt.replace(/完整清单见随本轮消息挂载的附件[^\n]*/, "完整清单附件本轮暂不可用；以下精简索引可按需 read_file 补充");
           currentPrompt = `[WORKSPACE NOTICE: 完整目录附件本轮暂未就绪，以下精简索引可按需用 read_file 补读]
 ` + currentPrompt;
         }
@@ -15714,11 +15816,18 @@ ${err?.stack || err?.message || String(err)}
         if (turn === this.maxTurns - 1 && !this.isHandshakePending && refusalRetries === 0) {
           currentPrompt = PromptBuilder.buildHandoffPreparationPrompt(this.pendingTask || task, options.sessionId || this.sessionId);
         }
+        if (isWorkspaceCatalogEnabled && this.workspaceRoot && !currentAnnotations.some((a) => this.isCatalogAnnotation(a))) {
+          try {
+            const refreshed = await this.ensureWorkspaceCatalogAttachment(this.activeAccountEmail);
+            if (refreshed?.annotation)
+              currentAnnotations.push(refreshed.annotation);
+          } catch {}
+        }
         events?.onTurnStart?.(turn);
-        if (process.env.CPH_DEBUG === "1" || this.debug) {
+        if (this.debug || process.env.CPH_DEBUG === "1") {
           const promptHash = crypto7.createHash("sha256").update(currentPrompt).digest("hex").slice(0, 12);
           const attachmentNames = currentAnnotations.map((annotation) => annotation?.messageAnnotationMetadata?.fileName || annotation?.text || "").filter(Boolean).join(",");
-          console.debug(`[CPH-FINGERPRINT] turn=${turn} agentId=${this.customAgentId || "web"} promptHash=${promptHash} attachments=[${attachmentNames}]`);
+          console.log(`[CPH-FINGERPRINT] turn=${turn} agentId=${this.customAgentId || "web"} promptChars=${currentPrompt.length} promptHash=${promptHash} attachments=[${attachmentNames}]`);
         }
         const turnIndex = turn;
         const turnInputPrompt = currentPrompt;
@@ -15768,7 +15877,7 @@ ${err?.stack || err?.message || String(err)}
             }
           });
           turnResponseText = res.text;
-          currentAnnotations = [];
+          currentAnnotations = currentAnnotations.filter((annotation) => this.isCatalogAnnotation(annotation));
         } catch (err) {
           if (signal?.aborted || err?.name === "AbortError" || err?.message?.includes("aborted")) {
             const abortError = new Error("The operation was aborted");
@@ -15887,7 +15996,7 @@ ${PromptBuilder.PROTOCOL_REMINDER}`;
               const items = DeliverablesParser.parse(rawFinalAnswer);
               if (items.length > 0) {
                 const landing = this.buildLandingService(client?.token?.email || this.activeAccountEmail);
-                const result = await landing.landDeliverables(items);
+                const result = await Orchestrator.withTimeout(landing.landDeliverables(items), 120000, "delivery");
                 deliveryReceipt = LandingService.formatReceipt(result);
                 this.writeDeliveryReport(result, "final_answer");
               }
@@ -15963,7 +16072,13 @@ ${parsed.answer.summary || rawFinalAnswer}` : parsed.answer.summary || rawFinalA
             tool: parsed.action.tool,
             command: parsed.action.command,
             path: parsed.action.path || parsed.action.filePath,
-            question: parsed.action.question
+            question: parsed.action.question,
+            old_string: parsed.action.old_string ?? parsed.action.search,
+            new_string: parsed.action.new_string ?? parsed.action.replace,
+            content: parsed.action.content,
+            start_line: parsed.action.start_line,
+            end_line: parsed.action.end_line,
+            limit: parsed.action.limit
           });
           const isKnownRepeat = parsed.action.tool !== "invoke_subagent" && actionFp === lastFailedActionFp && repeatedFailureCount >= 2;
           let toolResult;
@@ -16052,6 +16167,17 @@ ${parsed.answer.summary || rawFinalAnswer}` : parsed.answer.summary || rawFinalA
                   });
                 } catch {}
               }
+              this.activeAccountEmail = client?.token?.email || this.activeAccountEmail || "";
+              if (isWorkspaceCatalogEnabled && this.workspaceRoot) {
+                try {
+                  const successorCatalog = await this.ensureWorkspaceCatalogAttachment(this.activeAccountEmail);
+                  if (successorCatalog?.annotation) {
+                    currentAnnotations = currentAnnotations.filter((annotation) => annotation.messageAnnotationMetadata?.fileName !== "remote-workspace-catalog.md");
+                    currentAnnotations.push(successorCatalog.annotation);
+                    events?.onAttachmentUploaded?.(successorCatalog, "workspace_catalog");
+                  }
+                } catch {}
+              }
               const workerCount = this.getConcurrencyWorkerCount();
               const dirTree = this.collectDirTreePreview();
               this.pendingTask = snapshot.originalTask || this.pendingTask || task;
@@ -16060,7 +16186,7 @@ ${parsed.answer.summary || rawFinalAnswer}` : parsed.answer.summary || rawFinalA
               refusalRetries = 0;
               turn = 0;
             }
-          } else if (["write", "write_file"].includes(parsed.action.tool) && Boolean(parsed.action.url || parsed.action.downloadUrl)) {
+          } else if (this.enableAutoLanding && ["write", "write_file"].includes(parsed.action.tool) && !parsed.action.content && Boolean(parsed.action.url || parsed.action.downloadUrl)) {
             toolResult = await this.deliverWriteFileFromUrl(parsed.action);
           } else if (isKnownRepeat) {
             toolResult = {
@@ -16216,7 +16342,12 @@ ${parsed.answer.summary || rawFinalAnswer}` : parsed.answer.summary || rawFinalA
             if (uploadedAttachment) {
               const excerpt = PromptBuilder.generateHeadTailExcerpt(rawContent);
               const workerCount = this.getConcurrencyWorkerCount();
-              currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, workerCount);
+              currentPrompt = PromptBuilder.buildTurn2TaskPromptWithAttachment(this.pendingTask, this.pendingSkills, parsed.action.tool || toolResult.actionName, uploadedAttachment.fileName, { lineCount, charCount }, excerpt, workerCount, {
+                workspaceRoot: this.workspaceRoot,
+                task: this.pendingTask,
+                catalogAttached: isWorkspaceCatalogEnabled,
+                boundedRepoMap: this.enableBoundedRepoMap
+              });
             } else {
               const workerCount = this.getConcurrencyWorkerCount();
               currentPrompt = PromptBuilder.buildTurn2TaskPrompt({
@@ -16224,7 +16355,10 @@ ${parsed.answer.summary || rawFinalAnswer}` : parsed.answer.summary || rawFinalA
                 toolResult: toolResult.output,
                 skillsSection: this.pendingSkills,
                 toolName: parsed.action.tool || toolResult.actionName,
-                concurrencyWorkers: workerCount
+                concurrencyWorkers: workerCount,
+                workspaceRoot: this.workspaceRoot,
+                catalogAttached: isWorkspaceCatalogEnabled,
+                boundedRepoMap: this.enableBoundedRepoMap
               });
             }
           } else {
@@ -18550,6 +18684,7 @@ ${targetSkill.description ? `说明: ${targetSkill.description}
             activeSkills: skillsToUse,
             initialAnnotations: currentInitialAnnotations,
             rootUserPrompt: rootTaskPrompt,
+            skipHandshake: Boolean(this.cloudWorkspace?.verified),
             events: {
               onDelta: (chunk) => {
                 if (this.isInterrupted)
@@ -21103,6 +21238,8 @@ ${source_default.yellow(msg)}
     this.orchestrator.timeoutMs = timeoutMs;
     this.debug = options.debug ?? config.debug ?? false;
     this.debugLogPath = options.debugLogPath ?? config.debugLogPath;
+    if (this.debug)
+      process.env.CPH_DEBUG = "1";
     if (this.debug) {
       TerminalLogger.getInstance().start({
         logFilePath: this.debugLogPath,
