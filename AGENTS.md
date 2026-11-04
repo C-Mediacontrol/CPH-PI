@@ -68,12 +68,22 @@
     - **先保全后施工**：需要回滚或大改时，先把当前现场提交为 WIP 分支/tag，再在干净基线上施工；同一工作区内按“改动 → 验证 → 提交”闭环推进，避免多任务未提交改动互相叠加。
     - **实验与产物**：基准实验脚本与结果需要复现时一并提交（或放入受跟踪的 `.docs/experiments/`）；一次性调试脚本在结束前清理或移入 `.gitignore` 覆盖目录。
 
+13. **分支与发布生命周期准则 (Branch & Release Lifecycle)**
+    - **单一主干**：`main` 是唯一长期分支与发布基线，任何时刻保持最新、可构建、可发布；功能与整改通过短命分支完成，合并进 `main` 后即删除该分支。
+    - **命名与登记**：分支命名采用 `feat/<CR-ID>-<slug>`、`fix/<CR-ID>-<slug>`、`chore/<slug>`；开分支时在 `.docs/CHANGE-REQUEST.md` 登记关联分支，完成时登记合并提交、分支处置与归档 tag。
+    - **备份用标签承载**：需要保留历史现场时，建立 annotated tag `archive/branch-<yyyy-mm-dd>-<slug>`，tag message 写清用途、依据文档与替代者；本地与远程的分支集合保持精简。
+    - **发布与归档**：交付版本在 `main` 打 `release/<yyyy-mm-dd>` 标签；`.docs/BRANCHES.md` 是分支、标签与恢复方式的单一事实源，新增、归档、删除分支时同步登记。
+    - **工作树卫生**：临时 worktree 随任务结束移除；移除前先保全未提交改动（diff 与未跟踪文件落到 `.cph/state/`）。
+    - **收尾核对**：每次任务收尾核对 `git status --porcelain` 为空、`git branch --merged main` 无遗留、`git worktree list` 仅主工作树、远程分支集合符合预期。
+
 
 ---
 
 ## 常用开发命令与资产指引
 - **系统提示词主文件**：`cph-dev-agent-prompt.txt`
 - **专属定制技能目录**：`skills/handoff/SKILL.md`
+- **分支与归档台账**：`.docs/BRANCHES.md`
 - **打包部署命令**：`bun run package`
 - **自动化测试套件**：`bun test tests/`
+- **分支收尾核对**：`git branch --merged main`；归档命令：`git tag -a archive/branch-<日期>-<slug> <commit>`
 

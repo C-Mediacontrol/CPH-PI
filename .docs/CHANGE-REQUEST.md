@@ -1,5 +1,14 @@
 # CHANGE-REQUEST (变更请求台账)
 
+## 登记约定 (Registration Convention)
+
+- **关联分支**：新建 `feat/*` 或 `fix/*` 分支时，在对应 CR 条目下登记分支名；命名遵循 `feat/<CR-ID>-<slug>`、`fix/<CR-ID>-<slug>`（见 `AGENTS.md` 准则 13）。
+- **完成登记**：CR 完成时补充 `合并提交`（`main` 上的提交 SHA）、`分支处置`（已删除 / 已归档）与 `归档 tag`（如 `archive/branch-<yyyy-mm-dd>-<slug>`）。
+- **唯一事实源**：分支与标签的完整清单、恢复方式见 [`.docs/BRANCHES.md`](./BRANCHES.md)。
+- **发布标记**：交付版本在 `main` 打 `release/<yyyy-mm-dd>` 标签，并在本台账登记。
+
+---
+
 ## 进行中的变更请求
 
 *暂无进行中的变更请求。*
