@@ -1,7 +1,7 @@
 {
   "name": "cph-pi",
   "version": "0.1.0",
-  "description": "基于 Pi 极简防臃肿基座的 Microsoft Copilot 自主编程 Agent Harness",
+  "description": "Microsoft Copilot 工作区同步与自主编程终端 (Copilot Workspace Sync & Autonomous Coding Terminal)",
   "type": "module",
   "scripts": {
     "start": "bun run src/cli.ts",

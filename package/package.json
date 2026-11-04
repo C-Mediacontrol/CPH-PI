@@ -1,7 +1,7 @@
 {
   "name": "cph-pi-release",
   "version": "0.1.0",
-  "description": "Microsoft Copilot 自主编程 Agent 独立极简运行时包 (零外部依赖，即装即用)",
+  "description": "CPH-PI 独立运行包：Microsoft Copilot 工作区同步与自主编程终端（免安装，零外部依赖）",
   "type": "module",
   "bin": {
     "cph-pi": "./bin/cph-pi.js",

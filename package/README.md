@@ -1,205 +1,187 @@
-# CPH-PI 极简使用者运行包 (Zero-Dependency Runtime Package)
+# CPH-PI 独立运行包（免安装）
 
-> **面向使用者**：本文件夹是 CPH-PI 的**最小独立运行时**。已彻底剥离所有开发者测试套件（`tests/`）、底层 monorepo 开发源码（`pi/`）、历史逆向探针与设计规格，**体积仅 ~1MB，零外部依赖，无需执行 `npm install`**，下载后即可在任意工作区直接运行！
+> 面向使用者的最小运行时：不需要 `npm install`，Node.js 20+ 或 Bun 直接运行。包含终端 Agent 本体、账号权限探测工具和线上 Copilot Agent 部署物料。
 
 ---
 
-## 目录结构速览
+## 这个包是什么
+
+- **终端运行时**：把 Microsoft 365 Copilot 接进本地工作区，执行读写文件、跑命令、文件搬运、长任务接力；绑定 SharePoint 云端工作区后，本地改动会增量镜像到云端。
+- **零依赖**：`bin/cph-pi.js` 已打包全部运行时代码，下载解压即可运行，不需要安装项目依赖。
+- **不包含**：开发源码（`src/`）、测试套件（`tests/`）、Web 前端产物（`web/dist`）、云端物理镜像脚本（`scripts/sp-sync-engine.ps1`）。这些都在完整仓库里。
+
+### 使用前提
+
+- Node.js 20+ 或 Bun 1.2+。
+- 合法企业 M365 账号，以及租户内可用的 Copilot 专属 Agent 权限。
+- Web 控制台需要仓库构建的 `web/dist`；云端物理镜像需要仓库里的同步脚本，并要求 Windows PowerShell 5.1。
+
+---
+
+## 目录结构
 
 ```text
 package/
 ├── bin/
-│   ├── cph-pi.js               # 核心 Harness 独立运行时 (890 KB, Node 20+ / Bun 直接运行)
-│   └── check-accounts.js       # 多账号权限自动化探测工具 (50 KB)
-├── agent-bundle/               # 线上 Copilot M365 Agent 部署物料
-│   ├── cph-dev-agent-prompt.txt # CPH-Dev 线上 Agent 系统提示词 (用于粘贴进 Agent 说明)
-│   ├── copilot-agent-bundle.zip # 一键打包 ZIP (含提示词与技能)
-│   └── skills/handoff/SKILL.md  # 跨会话自主交接技能
-├── accounts.example.json       # 本地账号凭证模板 (~/.config/m365-copilot2api/accounts.json)
-├── cph-pi.bat                  # Windows 快捷启动器 (双击或命令行调用)
-├── cph-pi.ps1                  # PowerShell 快捷启动器 (UTF-8 编码保障)
-├── package.json                # 描述文件 (支持 npm start / npm run check)
-└── README.md                   # 本使用说明
+│   ├── cph-pi.js                          # 终端运行时（约 820 KB）
+│   └── check-accounts.js                  # 账号权限探测（约 59 KB）
+├── agent-bundle/                          # 线上 Copilot Agent 部署物料
+│   ├── cph-main-agent-prompt.txt          # 主协调 Agent 提示词（源文件）
+│   ├── cph-coder-agent-prompt.txt         # 代码实现 Agent 提示词（源文件）
+│   ├── cph-dev-agent-prompt.txt           # 单智能体兼容提示词（源文件）
+│   ├── Instructions-Main-主协调智能体.txt   # 直接粘贴进 Agent 的说明
+│   ├── Instructions-Coder-代码实现智能体.txt
+│   ├── Instructions-系统提示词.txt         # 单智能体兼容版
+│   ├── skills/handoff/SKILL.md            # 跨会话交接技能
+│   ├── skills/subagent/SKILL.md           # 子代理协议技能
+│   ├── docs/PowerShell-Agent-Guide.*      # PowerShell 执行指南（docx / md / pdf / txt）
+│   ├── UPLOAD-GUIDE.md                    # 上传与配置步骤
+│   └── copilot-agent-bundle.zip           # 以上物料的打包
+├── accounts.example.json                  # 账号凭据模板
+├── cph-pi.bat                             # Windows 批处理启动器
+├── cph-pi.ps1                             # PowerShell 启动器
+├── package.json                           # 描述文件（node bin/cph-pi.js）
+└── README.md
 ```
 
----
-
-## 核心机制：为什么采用「文件上传」替代「聊天窗口直接发文本」？
-
-普通 AI 聊天或初级 Agent 里，工具执行的结果（比如读到的源码或测试日志）都是大段文本直接发进聊天输入框。放到真实软件工程中，这种做法很快就会崩溃。
-
-CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless Attachment Architecture)**：通过微软企业级 Office Substrate / OneDrive 通道，自动把代码与终端输出作为文档附件挂载给 Copilot，消息正文只留极简摘要。这是本 Harness 最具竞争力的核心特性之一：
-
-1. **突破聊天单轮 Token 硬上限**：聊天文本超过 2,000~4,000 Token 就会被微软网关强制截断甚至报错；改为文件上传后，微软云端文档引擎（Office Document Intelligence）会在服务端原生解析完整文档，实现真正的**千行源码全量阅读直通 (Full-File Reading)**；
-2. **100% 杜绝 Windows 中文乱码**：避开 WebSocket JSON 文本转义与网络拆包过程中多字节 GBK/UTF-8 编码切断，彻底告别 `\uFFFD`（菱形问号乱码），保持物理文件的真实字节；
-3. **彻底防止上下文窗口被打爆（压缩率 85%~95%）**：聊天窗口只保留一行元数据通知（如 `[已挂载附件 tool-result.txt: 200行]`），沉重的数据实体全部留在附件里。即使连续执行 25~30 轮复杂任务，上下文依然精炼聚焦，彻底告别“上下文疲劳”；
-4. **根除模型幻觉与历史复读**：线上 Agent 确立了“**附件即单一真实数据源 (Single Source of Truth)**”的认知契约，严格依据云端已解析的结构化文件推演和打补丁，杜绝把聊天历史中过时的旧代码混淆复读；
-5. **规避微软 Web WAF 敏感词误杀与拒答**：输入框文本是微软 WAF 安全审查的第一扫描区，代码片段极易触发误判拒答；合规企业文档通道极少被 WAF 误杀，任务执行成功率提升 95% 以上。
+整个目录约 1.6 MB。
 
 ---
 
-## 快速上手：三步开始使用
+## 快速上手
 
-### 前置条件
-电脑上装好下面**任意一种**运行环境即可（二选一）：
-- **Node.js** (v20+ LTS) — [官网下载](https://nodejs.org)
-- **Bun** (v1.2+) — [官网下载](https://bun.sh)（PowerShell 运行 `irm bun.sh/install.ps1 | iex`）
+### 第一步：注册全局命令 `cph-pi`
 
----
-
-## 全局环境变量注册 (实现任意路径输入 `cph-pi` 直接运行)
-
-想在系统**任意路径、任意工程目录**下（比如用户根目录 `C:\Users\UserX>`）直接敲 `cph-pi` 命令操作指定目录：
+在当前 `package` 目录下打开 PowerShell，把该目录加入当前用户的 `Path`：
 
 ```powershell
-PS C:\Users\UserX> cph-pi E:\test --agent https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3 --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
-```
-
-把本 `package` 文件夹的绝对路径加进系统的 **`Path`** 环境变量即可。
-
-### 方式一：PowerShell 一键命令永久注册 (强烈推荐)
-
-在当前 `package` 目录下打开 PowerShell，运行下面的命令，把该目录永久写入当前用户的 `Path`：
-
-```powershell
-# 1. 自动获取当前 package 目录绝对路径 (若已在该目录下执行)
 $pkgDir = (Get-Item .).FullName
-
-# 或者手动指定你的 package 实际解压路径，例如：
-# $pkgDir = "E:\copilot-web proxy\CPH-PI\package"
-
-# 2. 检查并永久追加到用户 Path 环境变量
 $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($currentPath -notlike "*$pkgDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$currentPath;$pkgDir", "User")
-    Write-Host "✔ 已成功将 CPH-PI 路径 ($pkgDir) 添加到用户 PATH 环境变量！" -ForegroundColor Green
-    Write-Host "👉 请重新打开一个新的 PowerShell 或 CMD 窗口即可全局生效！" -ForegroundColor Cyan
-} else {
-    Write-Host "○ PATH 中已包含该目录，无需重复添加。" -ForegroundColor Yellow
+    Write-Host "已加入用户 PATH：$pkgDir"
 }
 ```
 
-> **重要提示**：设置完成后，**必须重新打开一个新的 PowerShell 或 CMD 终端窗口**，系统才会刷新载入最新的 `Path`。
+重新打开一个 PowerShell 或 CMD 窗口后生效。
 
-### 方式二：Windows 图形界面手动配置
-1. 按键盘快捷键 `Win + R`，输入 `sysdm.cpl` 并回车打开「系统属性」；
-2. 切换到顶部的「**高级**」标签页，点击下方的「**环境变量**」按钮；
-3. 在上半部分的「**用户变量**」列表中找到名为 **`Path`** 的变量，双击打开编辑；
-4. 点击右侧的「**新建**」按钮，将当前 `package` 文件夹的完整绝对路径（例如 `E:\copilot-web proxy\CPH-PI\package`）粘贴进去；
-5. 点击「确定」并逐层保存退出；
-6. 重新打开一个全新的 PowerShell 终端，即可全局输入 `cph-pi` 运行。
+也可以不注册 PATH，直接在 `package` 目录里用 `.\cph-pi.bat`、`.\cph-pi.ps1` 或 `node bin/cph-pi.js` 启动。
 
-### 进阶优化：注册默认 Agent 环境变量 (省去每次敲 `--agent`)
-如果固定用一个专属智能体，可以把它的 URL 或纯 ID 注册为 `CPH_COPILOT_AGENT_ID` 环境变量：
+### 第二步：配置账号
+
+推荐用浏览器 PKCE 登录：
 
 ```powershell
-[Environment]::SetEnvironmentVariable(
-    "CPH_COPILOT_AGENT_ID",
-    "https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3",
-    "User"
-)
+cph-pi auth login
 ```
-设置后，启动命令即可极大简化为：
+
+还没注册 PATH 时：
+
 ```powershell
-PS C:\Users\UserX> cph-pi E:\test --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
+node bin/cph-pi.js auth login
 ```
 
----
+也可以手工创建凭据文件，运行时读取后会自动加密：
 
-### 第一步：配置本地账号凭据 (`accounts.json`)
+- Windows：`%USERPROFILE%\.config\m365-copilot2api\accounts.json`
+- macOS / Linux：`~/.config/m365-copilot2api/accounts.json`
+- 模板：本目录的 `accounts.example.json`；字段为 `email` + `refreshToken`，可选 `tenantId`、`userId`。
 
-系统会从当前用户家目录读取账号配置：
-- **Windows 路径**：`%USERPROFILE%\.config\m365-copilot2api\accounts.json`  
-  （即 `C:\Users\<你的用户名>\.config\m365-copilot2api\accounts.json`）
-- **macOS / Linux**：`~/.config/m365-copilot2api/accounts.json`
+可配置多个账号（默认最多 7 个）。遇到 429 或限流时，账号池会自动冷却轮转。
 
-参照本目录的 `accounts.example.json` 创建，填入企业账号与刷新令牌：
+### 第三步：配置线上 Copilot 智能体
 
-```json
-[
-  {
-    "email": "your-email@company.com",
-    "refreshToken": "0.AXcA...（你的 Microsoft OAuth Refresh Token）"
-  }
-]
-```
-> **提示**：可配置多个账号（推荐 2~7 个），Harness 会自动在遭遇网络频控（429）或限流时透明轮转调度。令牌在初次读取后会自动加密为 `enc:v1:` 密文存储。
+1. 浏览器打开企业 M365 门户：[https://m365.cloud.microsoft](https://m365.cloud.microsoft)，进入「Copilot」→「代理 (Agents)」→「创建代理」。
+2. 创建 **Main 主协调** 智能体：
+   - 说明：粘贴 `agent-bundle/Instructions-Main-主协调智能体.txt`
+   - 知识 / 技能：上传 `agent-bundle/skills/subagent/SKILL.md` 与 `agent-bundle/skills/handoff/SKILL.md`
+3. 创建 **Coder 代码实现** 智能体：
+   - 说明：粘贴 `agent-bundle/Instructions-Coder-代码实现智能体.txt`
+   - 知识 / 技能：上传 `agent-bundle/skills/handoff/SKILL.md`
+4. 两个 Agent 都保存并发布，分享范围设为「组织中的每个人」或包含你的轮转账号。
+5. 复制各自的聊天 URL（形如 `https://m365.cloud.microsoft/chat/agent/T_...`）。
 
----
+> 老的 `Instructions-系统提示词.txt` / `cph-dev-agent-prompt.txt` 只为单智能体兼容保留，新配置用 Main + Coder 两套即可。
 
-### 第二步：配置线上 Copilot 专属智能体 (3 分钟搞定)
+#### 探测账号对 Agent 的访问权限
 
-1. 浏览器打开企业 M365 门户：[https://m365.cloud.microsoft](https://m365.cloud.microsoft)；
-2. 点击左侧 **「Copilot」** -> **「代理 (Agents)」** -> **「创建代理 (Create Agent)」**；
-3. **名称**：输入 `CPH-Dev`；
-4. **说明 (Instructions)**：全选清空，直接打开本目录下的 `agent-bundle/cph-dev-agent-prompt.txt`，全文复制并粘贴进去；
-5. **知识 / 技能**：在「知识」板块上传 `agent-bundle/skills/handoff/SKILL.md`；
-6. 点击右上角 **「保存」** 并 **「发布」**，分享范围设为「组织中的每个人」；
-7. 打开该 Agent 的聊天窗口，复制浏览器地址栏的完整 URL（形如 `https://m365.cloud.microsoft/chat/agent/T_...`）。
-
-#### （可选）一键探测账号访问权限
-在当前目录下运行，检查账号池是否有该 Agent 的访问权限：
-```bash
+```powershell
 node bin/check-accounts.js --agent "https://m365.cloud.microsoft/chat/agent/T_..."
-# 或自动将可用账号写入白名单：
+# 把可用账号写入当前工作区白名单：
 node bin/check-accounts.js --apply
 ```
 
----
+### 第四步：启动
 
-### 第三步：启动 Harness 开始自主编程
-
-#### 方式 A：全局命令运行 (已配置 PATH 环境变量，强烈推荐)
-在任意路径的终端（如 `C:\Users\UserX>`），直接运行全局命令：
 ```powershell
-# 完整命令示例：指定工作区路径、专属 Agent、账号白名单与 Debug 输出
-PS C:\Users\UserX> cph-pi E:\test --agent https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3 --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
+# 全局命令（已配置 PATH）
+cph-pi E:\test
 
-# 若已注册 CPH_COPILOT_AGENT_ID 环境变量，则可极简调用：
-PS C:\Users\UserX> cph-pi E:\test --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
-```
+# 绑定自己的 Agent
+cph-pi E:\test -a "https://m365.cloud.microsoft/chat/agent/T_..." --coder-agent-id "T_..."
 
-#### 方式 B：本地脚本启动 (未配置 PATH 时在 package 目录下执行)
-```cmd
-:: Windows 批处理启动 (自动绑定当前目录为工作区)
-.\cph-pi.bat
+# 非交互执行单条任务
+cph-pi E:\test --task "检查当前仓库并给出 TODO 列表"
 
-:: 指定特定工程路径与专属 Agent
+# 本地启动器
 .\cph-pi.bat -w "E:\test" -a "T_..."
-```
-
-#### 方式 C：PowerShell 启动器
-```powershell
 .\cph-pi.ps1 -w "E:\test" -a "T_..."
-```
 
-#### 方式 D：Node / Bun 直接调用运行时
-```bash
+# Node / Bun 直接调用
 node bin/cph-pi.js E:\test -a "T_..."
-# 或
 bun run bin/cph-pi.js E:\test -a "T_..."
 ```
 
 ---
 
-## 常用命令速查
+## 能力速览
 
-### 命令行参数
-- `-w <path>`：指定目标代码工作区（默认当前命令行所在目录）；
-- `-a <id|url>`：指定专属自建智能体；
-- `-c`：接续最近活跃的会话；
-- `-r <id>`：恢复指定的历史会话；
-- `-t <prompt>`：非交互模式，执行完单条任务后直接退出。
+- **本地工具**：读文件（大文件超过 1MB 需指定行范围）、局部补丁、写文件、跑命令（默认 30 秒超时）、`file_porter` 下载云端生成的文件。
+- **工作区同步**：工作区绑定 SharePoint 后，每次 `edit` / `write_file` 自动把改动同步到云端；全量同步、镜像校验、URL 对账在 Web 控制台或仓库脚本里执行。
+- **目录清单附件**：按账号生成 `remote-workspace-catalog.md` 挂给 Copilot，换号自动重挂。
+- **无损附件交付**：大段工具输出（超过 12,000 字符或 200 行）作为 OneDrive / Substrate 附件交付，聊天正文只留摘要。
+- **文件交付**：`FINAL_ANSWER` 里声明的交付文件自动落盘、同步云端，并写 `delivery-report.json`。
+- **双智能体 + 长任务接力**：Main + Coder 双智能体，单任务默认 30 轮，接近上限自动生成交接文档并继续新会话（默认最多 50 次跃迁）。
+- **账号池**：最多 7 个账号，AES-256-GCM 加密凭据，429 冷却轮转，支持浏览器 PKCE 登录。
+- **Web 控制台**：`cph-pi web` 启动三栏工作台（需要仓库构建的 `web/dist`）。
 
-### 终端交互指令 (在 `cph-pi>` 提示符下输入)
-- `/status`：查看当前会话诊断卡、Token 消耗与账号状态；
-- `/accounts`：查看与管理轮转账号白名单；
-- `/agent [id|clear]`：查看、切换或解除专属智能体直连；
-- `/new`：归档当前任务并开启全新会话；
-- `/sessions`：列出当前工作区的所有历史会话；
-- `/exit`：退出终端。
+---
 
-### 快捷按键
-- `"""`：首行输入三个双引号开启多行输入，再次输入 `"""` 发送；
-- `Ctrl+C`：运行中按一次安全中止当前工具或网络流，保留会话；空闲时 1.5 秒内连按两次退出。
+## 常用参数
 
+| 参数 | 说明 |
+| --- | --- |
+| `-w, --workspace <path>` | 工作区目录，默认当前目录 |
+| `-a, --agent <id\|url>` | 主协调智能体 |
+| `--coder-agent-id <id\|url>` | 代码实现子智能体 |
+| `--researcher-agent-id <id\|url>` | 深度调研子智能体 |
+| `-c, --continue` | 接续最近会话 |
+| `-r, --resume <id>` | 恢复指定会话 |
+| `--task <prompt>` | 非交互执行单条任务 |
+| `--max-turns <n>` | 单任务最大轮数，默认 30 |
+| `--max-hops <n>` | 自动接力最大跃迁次数，默认 50 |
+| `-t, --timeout <seconds>` | 单轮请求超时，默认 600 秒 |
+| `-d, --debug [path]` | 开启调试日志（默认 `.cph/logs/`） |
+
+### 交互命令
+
+- `/help`、`/status`、`/accounts`、`/agent [id|clear]`、`/model [tone]`、`/debug`
+- `/new [title]`、`/reset`、`/sessions`、`/resume <id>`、`/continue [任务]`（别名 `/relay`）
+- `/skills`、`/skills find <词>`、`/skill <name>`、`/exit`
+
+快捷键：`"""` 多行输入；行尾 `\` 续行；运行中 `Ctrl+C` 中止；空闲时 1.5 秒内连按两次退出。
+
+---
+
+## 已知限制
+
+- **Web 控制台**：`package` 目录内没有 `web/dist`。需要 `cph-pi web` 时，请使用完整仓库，先执行 `npm --prefix web install` 和 `bun run web:build`，再启动。
+- **云端物理镜像**：自动单文件同步依赖工作区里已有 `.cph/state/sync-manifest.json`；首次绑定和全量同步需要仓库里的 `scripts/sp-sync-engine.ps1`（Windows PowerShell 5.1）与 `scripts/lib/PnPSession.psm1`。
+- **凭据加密**：令牌用 AES-256-GCM 加密存储；`M365_MASTER_KEY` 在多设备间需要保持一致，否则无法解密历史凭据。
+- **运行环境**：Node.js 20+ 或 Bun 1.2+；Windows、macOS、Linux 均可运行终端。
+
+---
+
+## 更多文档
+
+完整能力、架构说明、开发方式与排错请看仓库根目录的 `README.md` 和 `.docs/` 目录。
