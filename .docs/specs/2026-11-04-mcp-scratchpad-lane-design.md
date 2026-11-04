@@ -191,6 +191,16 @@ RES|S-b13615|1|BATCH-OK|v22.23.2|006d675
 - Copilot 在同一轮内重试读取约 12 次后放弃，如实回答"未读到 RES"，未编造 token；
 - 该失败样本说明：**模型会重试但有上限；超时/失败必须由 Harness 显式处理，不能依赖模型无限等待**。
 
+### 5.6 多行 Command/Result 列 + 10 条批量
+
+- 在原列表上新增两个多行明文列（SharePoint REST，`FieldTypeKind=3`，`NumberOfLines=20`）：
+  - `Command`（A 列）：Copilot 写入的输入命令；
+  - `Result`（B 列）：worker 写回的执行结果。
+- `S-a13aae` 实验：Copilot 创建一条 `Title=REQ|S-a13aae|1`、`Command` 含 10 条 `echo CMD-01..10` 的列表项；worker 读取 `Command`，执行后写 `Title=RES|S-a13aae|1`、`Result` 为 10 行结果（69 字符，落盘耗时 719ms）；Copilot 同轮读回全部 10 个结果（引用 `turn11search111`）。
+- 时间线：13:33:21 启动 → 13:33:29 确认卡 → 13:33:34 RES 落盘 → 13:33:42 最终回答；首条服务消息到末条约 11.6 秒。
+- 证明：**多行 A/B 列可以同时承载"命令下行"与"结果上行"**，且 10 条批量命令可在同轮完成。
+- 待验证：更长 `Result`（KB 级）的列容量、搜索片段截断、以及 10 条以上批量的上限。
+
 ---
 
 ## 6. 拟议架构（草案）
@@ -236,13 +246,16 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 | 列 | 类型 | 用途 |
 | --- | --- | --- |
 | `Title` | 单行文本 | 紧凑标识：`REQ|<session>|<seq>` / `RES|<session>|<seq>` |
+| `Command` | 多行文本 | **A 列：输入命令**（每行一条/批量） |
+| `Result` | 多行文本 | **B 列：输出结果**（长内容） |
 | `Session` | 单行文本 | 会话/任务标识 |
 | `Seq` | 数字 | 批次序号 |
 | `Kind` | 单行文本 | `REQ` / `RES` / `STATUS` |
-| `Body` | 多行文本 | JSON 命令或结果（长内容） |
 | `Status` | 单行文本 | `pending` / `running` / `done` / `error` |
 | `Nonce` | 单行文本 | HMAC 防注入 |
 | `UpdatedAt` | 日期时间 | TTL / 清理 |
+
+> `Command` / `Result` 已在实验中创建为多行明文列（`linesForEditing=20`）；它们是 A/B 两列的业务语义。列表标题列只做紧凑标识，不承载内容。
 
 > 待验证：MCP `create item` 的 `fields` 是否支持多行文本列与自定义列；列容量上限；搜索能否返回长 `Body` 内容（可能只返回片段）。
 
@@ -253,6 +266,17 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 - 确认次数上限、单轮总时长上限；
 - 若收到 `TriggerPluginAuth`（首次授权/重新授权）→ 停止自动处理，提示用户到 UI 完成授权；
 - 生产上默认关闭自动确认，由用户显式开启。
+
+### 6.6 Agent / 提示词 / Skill 协议约定
+
+列表是"人可读、模型可写、worker 可执行"的三方契约，必须同时登记到系统提示词与技能：
+
+- **列语义契约（A/B）**：`Command` = 输入命令（每行一条，或批量分隔），`Result` = 执行结果；`Title` 只放 `REQ|session|seq` / `RES|session|seq`；`Status` 表达 pending/running/done/error。
+- **Agent 提示词**：明确"写入 REQ 时填 Command 列；读到 RES 后读 Result 列；最多重试 N 次；不得伪造 token/结果；批量命令用换行分隔"。
+- **Skill**：新增 `skills/mcp-scratchpad/SKILL.md`（或等价技能），描述信封格式、批次、错误处理、清理与安全边界；与 `handoff` / `subagent` 同级登记。
+- **Harness 回执**：worker 写 RES 成功后，应在列表/日志中留可追踪状态；确认卡、命令、结果均进入审计。
+- **版本化**：`Session` 或 `Title` 前缀带协议版本（如 `v1`），便于后续演进与回退。
+- **一致性检查**：Agent 侧协议变更必须同步 Harness 解析与 `package/agent-bundle` 分发（AGENTS.md 准则 11）。
 
 ---
 
@@ -340,9 +364,9 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 
 ## 10. 待验证实验（Phase 1）
 
-1. **多行文本列**：新增 `Body` 列，验证 MCP `fields` 支持、容量上限、搜索能否读取长内容；用 10 条命令 + 长结果测试。
+1. ~~多行文本列~~（已完成）：`Command` / `Result` 多行明文列已创建；10 条命令 + 69 字符结果写入/读回成功（见 5.6）。长结果容量与搜索截断待验证。
 2. **延迟/掉线注入**：worker 延迟 5/15/30 秒、进程中途退出、重复写；观察 Copilot 重试上限与失败语义。
-3. **10 条批量命令上限**：吞吐、执行时间、结果长度、确认次数。
+3. ~~10 条批量命令~~（已完成）：10 条命令在一轮内完成，确认卡 1 次，worker 719ms（见 5.6）。
 4. **纯 WS 授权**：捕获首次 OAuth 流程（另用未授权账号/new list 触发），寻找可程序化完成的授权端点与 token 缓存；若不可行，明确"首次/过期必须 UI 授权"。
 5. **文件数据面**：验证 SharePoint 文件热覆写 + Work IQ 读取的时延与容量；行号切片协议。
 6. **能力探测**：设计一次 create + search 的探测流程与回退判定。
