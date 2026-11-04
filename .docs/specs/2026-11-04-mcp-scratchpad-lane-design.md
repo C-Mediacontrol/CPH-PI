@@ -240,6 +240,15 @@ RES|S-b13615|1|BATCH-OK|v22.23.2|006d675
 - 新建列表 `copilot_scratchpad_auth_1793802961089`（listId `8f821d87-7f0e-4fd2-a26b-574a77db59ba`），用同一 GSC.VFU2 账号、纯 WS 对其实施 MCP create：**无 `TriggerPluginAuth`、无授权卡，直接成功**（Item 1）。
 - 结论：当前的 MCP 授权是**连接器/用户级**，不是列表级；新建列表不会触发重新授权。要捕获首次 OAuth 流程，仍需撤销连接器授权或换用户/租户。
 
+### 5.11 文件数据面实验（结论：当前不可靠）
+
+- **冷创建 OneDrive 文件**（`cph-cold-*.txt`）：Copilot 只能拿到 metadata 与下载 URL，正文无法取回；等待后重试仍失败。
+- **既有 OneDrive 文件**（`ShipScheduleSharePointUpload.ps1`）：同样只拿到 metadata + 下载 URL，正文下载失败。
+- **团队站点工作区脚本**（`capture-screen.ts`）：Work 模式 MCP 直接 URL 访问返回 **403**；自定义 Main Agent 走企业搜索返回 **无结果**。
+- **团队站点 Markdown 文档**（`.docs/plans/...md`）：Main Agent 企业搜索同样无结果。
+- **结论**：在当前租户/索引/权限下，OneDrive 文件、团队站点文件与 List 附件均**不能可靠作为 Copilot 的读取数据面**；唯一被实证可读的是 List 多行文本列 `Command`/`Result`（300 行 / 2,699 字符，见 5.8）。
+- **影响**：`read_file` / `write_file` / `edit` 不应依赖文件数据面；大文本可尝试 List 分片，二进制/超大文件仍必须走 Legacy 本地工具或 FilePorter。
+
 ## 6. 拟议架构（草案）
 
 ### 6.1 双通道并存
@@ -369,9 +378,9 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 
 ### 8.3 建议
 
-- **读**：优先方案 B（云端文件 + Work IQ），把 `read_file` 改写为"worker 生成/更新云端文件，Copilot 直接读文件"，避免列表承载内容；
-- **写/改**：小补丁走方案 A（列表 Body）；大文件/新建文件走方案 B（原生文件生成 + FilePorter）；
-- **兜底**：方案 C 保证不支持场景仍可用；
+- **读**：文件数据面实验未通过（见 5.11），暂不假设云端文件可读；小/中文本优先走 List `Result` 分片；文件 I/O 保留 Legacy lane。若要启用文档库方案，需先证明"固定已索引文件热覆写"可读，并做索引预热。
+- **写/改**：小补丁走 List `Command`；大文件/新建文件走原生文件生成 + FilePorter，本地应用仍由 Legacy 工具完成；
+- **兜底**：Legacy 通道为默认，保证文件类操作可用；
 - 所有文件命令需要重新定义：`path`、`offset/limit`（行号）、`encoding`、`maxBytes`、结果引用（文件 URL/附件 ID），而不是把内容塞进列表。
 
 ---
@@ -411,6 +420,8 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 7. ~~List 附件~~（已完成）：REST 可上传/读回，但 Copilot 无读取附件内容能力（见 5.9）。
 8. ~~新建列表触发再授权~~（已完成）：不会触发；授权是连接器/用户级（见 5.10）。
 9. **首次授权捕获**：需要撤销连接器授权或换用户/租户，属于下一步高价值实验。
+
+10. ~~文件数据面~~（已完成）：OneDrive/团队站点文件均未验证可读；List 文本列仍是唯一通道（见 5.11）。下一步：更大 List 文本上限 / 固定已索引文件热覆写（需预热）。
 6. **能力探测**：设计一次 create + search 的探测流程与回退判定。
 
 ---
@@ -422,6 +433,7 @@ Copilot ──Work IQ search 读取 RES──▶ 继续下一批/最终回答
 - 不建议立即改产品代码；先用探针脚本完成 Phase 1，并把结果回填本文件。
 - 现有 action-block 通道保持默认；Scratchpad 通道默认关闭，显式启用。
 - 2026-11-04 决策：放弃纯 WS 授权探索；授权按用户级一次性前置条件处理（能力探测失败 → 提示 UI 授权）。
+- 2026-11-04 决策：文件数据面暂不纳入 scratchpad lane；`read_file`/`write_file`/`edit` 继续走 Legacy action-block；小文本可走 List `Result` 分片。
 
 ---
 
