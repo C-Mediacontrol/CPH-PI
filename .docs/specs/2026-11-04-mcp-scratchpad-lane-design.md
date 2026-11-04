@@ -2,6 +2,8 @@
 
 - **状态**: Phase 0 可行性验证完成；Phase 1 设计草案，**尚未批准实施**
 - **日期**: 2026-11-04
+
+> **已被最终方案取代**：[`2026-11-04-mcp-scratchpad-lane-final-design.md`](2026-11-04-mcp-scratchpad-lane-final-design.md)（Final v1）。本文件保留为研究记录与实验证据索引。
 - **适用项目**: CPH-PI（Microsoft Copilot 工作区同步与自主编程终端）
 - **实验脚本与原始证据**: `.cph/state/probe/`（本地、gitignored，含脱敏后的帧与日志）
 
