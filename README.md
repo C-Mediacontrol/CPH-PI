@@ -1,6 +1,6 @@
 # CPH-PI: 基于 Pi 极简防臃肿基座的 Microsoft Copilot 自主编程 Agent
 
-> **架构定位**：以 `@earendil-works/pi` 极简防臃肿（Anti-bloat）源码为外壳，深度融合 Microsoft Copilot / M365 原生协议控制核（Sydney SignalR WebSocket 传输、专属智能体直通与 GPT-6.1 Sol 锁定、多账号透明加密轮转池、两轮纯净探测握手状态机、两轮滑动历史压实、RefusalGuard 拒答熔断自愈、Windows 控制台编码自愈与 Auto-Handoff 自主无感连续接力闭环）。
+> **架构定位**：以 `@earendil-works/pi` 的极简防臃肿（Anti-bloat）源码为外壳，深度融合 Microsoft Copilot / M365 的原生协议控制核：Sydney SignalR WebSocket 传输、专属智能体直通与 GPT-6.1 Sol 锁定、多账号透明加密轮转池、两轮纯净探测握手状态机、两轮滑动历史压实、RefusalGuard 拒答熔断自愈、Windows 控制台编码自愈，以及 Auto-Handoff 自主无感连续接力闭环。
 
 ---
 
@@ -43,7 +43,7 @@
 
 ## 一、 为什么要开发这个 Harness？(架构定夺与核心动机)
 
-企业组织普遍拥有合法合规的 Microsoft 365 / Copilot 订阅，其云端底层接入了极其顶尖的推理模型（如 GPT-4o 及微软长思维链推理模型 `Gpt_61_Sol_Reasoning`）。然而，原生的 Copilot 主要是面向通用办公与网页聊天的产品设计，直接将它作为自主编程 Agent 使用时，会面临天然的结构性阻碍。
+企业普遍拥有合法合规的 Microsoft 365 / Copilot 订阅，其云端底层接入了极其顶尖的推理模型（如 GPT-4o 及微软长思维链推理模型 `Gpt_61_Sol_Reasoning`）。不过，原生 Copilot 主要面向通用办公与网页聊天，直接作为自主编程 Agent 使用会有天然的结构性阻碍。
 
 ### 1. 原生 Copilot 接入编程 Agent 的四大核心困境
 
@@ -56,13 +56,13 @@
 4. **企业 WAF 安全审查、敏感词拒答与 429 频控 (WAF Refusals & Throttling)**：
    微软云端部署了严格的 Web 防火墙（WAF）与内容安全过滤器。大一统的复杂 System Prompt 极易触发敏感规则，导致模型直接返回模板化拒答（“作为 AI 助手，我无法...”）；企业租户共享并发限制也常触发 `429 Too Many Requests`，导致任务半途而废。
 
-开发 **CPH-PI Harness** 的根本目标，就是构建一个中立、稳健、工业级的物理控制核与双工通信桥，彻底克服上述四大困境，让 Copilot 成为真正的顶级全自动编程智能体。
+开发 **CPH-PI Harness** 的根本目标，是构建一个中立、稳健、工业级的物理控制核与双工通信桥，彻底克服上述四大困境，让 Copilot 成为真正的顶级全自动编程智能体。
 
 ---
 
 ### 2. 主流编程 Agent 框架评测与基座定夺对比
 
-在选型之初，我们对业界主流的 Agent 框架进行了原型验证与深度评估：
+选型之初，我们对业界主流的 Agent 框架做了原型验证与深度评估：
 
 | 评估维度 | OpenCode (`CPH-OPENCODE`) | DeepSeek Harness (`dsh`) | **Pi (`CPH-PI`, 最终定夺)** |
 | :--- | :--- | :--- | :--- |
@@ -121,12 +121,12 @@
 ```
 
 ### 1. 传输层契约：原生 ChatHub (SignalR WebSocket) 双工长连接
-- **协议逆向落地**：逆向解密了微软 Sydney 核心网关，基于标准 SignalR 协议构建双工长连接，支持每秒多帧传输与以 `\x1e`（RECORD_SEPARATOR）为界的帧封包；
+- **协议逆向落地**：逆向解密了微软 Sydney 核心网关，基于标准 SignalR 协议构建双工长连接，支持每秒多帧传输，帧以 `\x1e`（RECORD_SEPARATOR）为界；
 - **增量流式解析 (Streaming Deltas)**：实时捕获并流式解析模型推理思考流（`Thinking`）与最终文本，支持心跳保活与异常断连自动重连；
 - **Substrate / OneDrive 附件旁路通道 (`SubstrateUploader`)**：支持将超过单轮字符限制的超长文件或工程摘要通过微软内部 Substrate 附件通道无损上传，直接突破上下文长度物理限制。
 
 ### 2. 专属自建智能体 (Custom Agent) 直通与 GPT-6.1 Sol 锁定
-在 Microsoft 365 体系中，企业可通过 Copilot Studio 或 M365 Agent Builder 构建并发布专有的自主编程智能体（如 `CPH-Dev`），其在云端发布后拥有全局唯一的 GPT ID（如 `T_9feac605-583d-...`）。
+在 Microsoft 365 体系中，企业可通过 Copilot Studio 或 M365 Agent Builder 构建并发布专有的自主编程智能体（如 `CPH-Dev`），发布后在云端拥有全局唯一的 GPT ID（如 `T_9feac605-583d-...`）。
 - **WebSocket 握手 Query 注入**：
   Sydney 连接建立时自动追加专属 Agent 标识：`gptId=${encodeURIComponent(agentId + "@MOS3")}&agent=Agent&agentHost=Bizchat.FullScreen`；
 - **SignalR 消息帧元数据挂载**：
@@ -138,15 +138,15 @@
 
 ### 3. 全量无损文件附件交付体系：为何用文件上传替代聊天窗口直接发文本？
 
-在传统 Agent 设计中，外部工具执行结果（如 `read_file` 的源码、`run_command` 的构建输出）通常直接以大段 Markdown 代码块或纯文本字符串形式拼接入聊天窗口的下一轮消息中。但在深入适配 Microsoft Copilot 时，这种朴素做法暴露出了极其严重的致命缺陷。
+在传统 Agent 设计中，外部工具执行结果（如 `read_file` 的源码、`run_command` 的构建输出）通常直接以大段 Markdown 代码块或纯文本字符串形式拼接入聊天窗口的下一轮消息中。但在深入适配 Microsoft Copilot 时，这种朴素做法暴露出极其严重的致命缺陷。
 
 CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless Attachment Architecture)**：通过 Microsoft Graph API 与 Office Substrate 附件旁路通道，将工具产生的大段数据实体（源码、长测试日志、交接文档）直接作为文档附件挂载上传到对话中，消息正文仅保留极简的元数据提要。
 
-这一架构演进出于以下五大核心动因：
+这一架构的演进出于以下五个核心原因：
 
 #### (1) 彻底突破聊天窗口单轮字符/Token 物理硬上限与截断
-- **聊天文本的脆弱性**：微软 Copilot Web / Sydney 核心网关在 WebSocket 消息文本上有着极其严苛的单轮输入长度上限（通常为 2,000 ~ 4,000 Token）。当 `read_file` 读取一个 500 行的源文件或 `npm test` 产生千行测试日志时，直接作为文本发送会被网关暴力截断，丢失后半段关键逻辑，甚至直接触发消息超长网络异常；
-- **云端文档引擎的原生能力**：微软 Substrate / OneDrive 附件通道具备企业级文档智能解析（Office Document Intelligence）。当文件作为附件挂载时，云端服务会在服务端对完整文件进行高保真分块索引与上下文注入，模型能够获取无截断的数十 KB 乃至数 MB 级完整工程文件，实现了真正的**源码全量阅读直通 (Full-File Reading)**。
+- **聊天文本的脆弱性**：微软 Copilot Web / Sydney 核心网关对 WebSocket 消息文本有极其严苛的单轮输入长度上限（通常为 2,000 ~ 4,000 Token）。当 `read_file` 读取一个 500 行的源文件或 `npm test` 产生千行测试日志时，直接作为文本发送会被网关暴力截断，丢失后半段关键逻辑，甚至直接触发消息超长网络异常；
+- **云端文档引擎的原生能力**：微软 Substrate / OneDrive 附件通道具备企业级文档智能解析（Office Document Intelligence）。当文件作为附件挂载时，云端服务会在服务端对完整文件进行高保真分块索引与上下文注入，模型能够获取无截断的数十 KB 乃至数 MB 级完整工程文件，实现真正的**源码全量阅读直通 (Full-File Reading)**。
 
 #### (2) 杜绝网络文本流转义与 Windows 多字节编码损坏（零乱码保证）
 - **转义造成的乱码**：在网络文本通道中，代码与终端输出必须被编码为嵌套在 SignalR JSON 帧内的长字符串。在 Windows 复杂的控制台环境（PowerShell / CMD 混合 GBK/CP936 与 UTF-8 编码）下，特殊字符（`\r\n`、引号、ANSI 颜色代码、反斜杠、中文多字节）在 JSON 转义与网络流拆包重组过程中极易发生多字节断裂，导致字符被永久破坏为 `\uFFFD`（菱形问号乱码，如 `Ҳ [System.IO.Path\]`）；
@@ -157,11 +157,11 @@ CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless At
 - **元数据与数据实体彻底解耦**：使用附件交付后，聊天正文仅需保留极轻量的元数据提要（例如 `[TOOL_RESULT for read_file]: 完整源码已通过附件 tool-result-read_file-123.txt 挂载交付 (共 200 行, 5800 字符)`），沉重的数据实体全被剥离至附件层。这使得主对话历史保持高度紧凑精悍（上下文压实率达 85%~95%），支持 25~30 轮甚至跨会话的超长链条任务稳健闭环。
 
 #### (4) 确立“附件即单一真实数据源”认知契约，根除模型幻觉与复读
-- **消除历史文本干扰**：当代码散落在聊天窗口中时，模型极易将上一轮讨论中废弃的伪代码或旧实现，与当前的最新磁盘现状混淆，诱发模型在自然语言中反复“复读”错误实现；
+- **消除历史文本干扰**：代码散落在聊天窗口里时，模型极易把上一轮讨论中废弃的伪代码或旧实现，和当前最新磁盘现状混淆，在自然语言里反复“复读”错误实现；
 - **单一数据源权威 (Single Source of Truth)**：我们在 Agent 系统提示词中建立了严格的认知契约：“**每次挂载的附件均为物理操作的完整实体，消息正文仅为元数据，所有技术推演一律基于云端原生解析出的附件展开**”。模型在感知到附件后，直接依据云端结构化解析的文件展开推演，并执行严谨的局部手术式打补丁（Patch），彻底杜绝了凭空臆测与幻觉。
 
 #### (5) 规避微软 Web WAF 敏感词误杀与安全过滤器拒答 (WAF Filter Evasion)
-- **输入框的敏感词风险**：聊天窗口的文本是微软 Web WAF 内容安全审查的第一扫描区。代码中常包含的系统级调用、敏感路径、正则表达式、系统底层 API 或特殊脚本语法，极易被 WAF 规则误判为攻击指令，触发直接拒答（Refusal）；
+- **输入框的敏感词风险**：聊天窗口的文本是微软 Web WAF 内容安全审查的第一扫描区。代码里常见的系统级调用、敏感路径、正则表达式、系统底层 API 或特殊脚本语法，极易被 WAF 规则误判为攻击指令，触发直接拒答（Refusal）；
 - **合规文档可信通道**：通过企业合法 M365 凭证上传的技术文档走的是微软内部受信任的企业合规处理通道，不会因代码片段的特殊词汇被 WAF 粗暴拦截，使任务执行成功率提升了 95% 以上。
 
 ---
@@ -218,7 +218,7 @@ CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless At
 
 ## 三、 干净电脑从零部署与环境配置指引 (Zero-to-One Deployment)
 
-本节专为在一台**完全干净的全新电脑**（Windows / macOS / Linux）上从零搭建 CPH-PI Harness 提供详尽、保姆级的步骤指引。
+本节给出在一台**完全干净的全新电脑**（Windows / macOS / Linux）上从零搭建 CPH-PI Harness 的步骤。
 
 ### 1. 系统与基础运行环境要求 (Prerequisites)
 
@@ -241,7 +241,7 @@ CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless At
 
 ### 2. 源码克隆与子模块初始化 (Clone with Submodules)
 
-由于 CPH-PI 依赖 `@earendil-works/pi` 源码基座，克隆时**必须递归拉取子模块**：
+CPH-PI 依赖 `@earendil-works/pi` 源码基座，克隆时**必须递归拉取子模块**：
 
 ```bash
 # 推荐：一步完整克隆（包含 pi 子模块）
@@ -256,7 +256,7 @@ cd CPH-PI
 
 #### 安装依赖
 
-在 `CPH-PI` 目录下执行依赖安装：
+在 `CPH-PI` 目录下安装依赖：
 
 ```bash
 # 使用 Bun 安装依赖（推荐）
@@ -266,7 +266,7 @@ bun install
 npm install
 ```
 
-同时，确保 `pi/` 子模块内部依赖就绪：
+再确保 `pi/` 子模块的依赖就绪：
 
 ```bash
 cd pi
@@ -278,7 +278,7 @@ cd ..
 
 ### 3. 环境变量与全局 PATH 注册规范 (Environment Variables)
 
-CPH-PI 支持通过环境变量进行全局配置与终端指令全局化注册。在一台全新电脑上，可按需配置以下环境变量：
+CPH-PI 用环境变量做全局配置与命令注册。新电脑上按需配置下面这些环境变量：
 
 | 环境变量名 | 是否必选 | 默认值 | 作用与说明 |
 | :--- | :--- | :--- | :--- |
@@ -289,7 +289,7 @@ CPH-PI 支持通过环境变量进行全局配置与终端指令全局化注册�
 
 #### (1) 全局注册 `Path`（实现任意路径直接敲 `cph-pi`）
 
-在 PowerShell 中执行以下命令，将 CPH-PI 所在目录（或极简运行包 `package` 目录）永久注册到当前用户的 `Path` 环境变量中：
+在 PowerShell 里运行下面的命令，把 CPH-PI 目录（或极简运行包 `package` 目录）永久加到当前用户的 `Path` 环境变量：
 
 ```powershell
 # 1. 指定你的 CPH-PI 根目录（或 package 目录）绝对路径：
@@ -304,7 +304,7 @@ if ($userPath -notlike "*$targetDir*") {
 }
 ```
 
-注册生效后，即可在 Windows **任意路径**（例如用户家目录）直接敲入全局命令操作目标工程目录：
+注册生效后，在 Windows **任意路径**（比如用户家目录）都能直接敲全局命令操作目标工程目录：
 
 ```powershell
 PS C:\Users\UserX> cph-pi E:\test --agent https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3 --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
@@ -330,7 +330,7 @@ PS C:\Users\UserX> cph-pi E:\test --agent https://m365.cloud.microsoft/chat/agen
 
 ### 4. 本地多账号凭据配置 (`~/.config/m365-copilot2api/accounts.json`)
 
-CPH-PI 通过 `TokenManager` 调度账号凭据。账号配置文件存放在当前系统用户的家目录下：
+CPH-PI 由 `TokenManager` 调度账号凭据，配置文件放在当前用户家目录下：
 
 - **Windows 路径**：`%USERPROFILE%\.config\m365-copilot2api\accounts.json`  
   （例如：`C:\Users\YourUsername\.config\m365-copilot2api\accounts.json`）
@@ -338,7 +338,7 @@ CPH-PI 通过 `TokenManager` 调度账号凭据。账号配置文件存放在当
 
 #### (1) 创建配置文件目录与文件
 
-在 PowerShell 中执行以下命令快速创建目录与初始文件模板：
+在 PowerShell 里运行下面的命令，创建目录与初始模板：
 
 ```powershell
 $configDir = Join-Path $HOME ".config\m365-copilot2api"
@@ -361,7 +361,7 @@ Write-Host "凭据配置文件路径: $configFile"
 
 #### (2) 账号数据契约与结构
 
-`accounts.json` 支持直接配置多个组织账号（推荐配置 2~7 个账号以实现完整的 429 容灾轮转）：
+`accounts.json` 可以直接配多个组织账号（推荐 2~7 个，实现完整的 429 容灾轮转）：
 
 ```json
 [
@@ -379,22 +379,22 @@ Write-Host "凭据配置文件路径: $configFile"
 ```
 
 - `email` (必填)：账号唯一邮箱标识；
-- `refreshToken` (必填)：该账号对应的 Microsoft OAuth 刷新令牌。支持填写原始明文；系统在读取与保存时会自动加密为 `enc:v1:<base64>` 密文格式，防止磁盘明文泄露。
+- `refreshToken` (必填)：该账号的 Microsoft OAuth 刷新令牌，可以填原始明文；系统读取与保存时会自动加密成 `enc:v1:<base64>` 密文，避免磁盘明文泄露。
 
 #### (3) 如何获取 M365 Refresh Token？
 
-Microsoft Copilot M365 认证走标准的 OAuth 2.0 授权码流程（使用微软官方企业 Client ID）：
+Microsoft Copilot M365 认证走标准 OAuth 2.0 授权码流程（使用微软官方企业 Client ID）：
 - **Client ID**: `c0ab8ce9-e9a0-42e7-b064-33d422df41f1`
 - **Scope**: `openid profile offline_access https://substrate.office.com/sydney/.default`
 - **Token Endpoint**: `https://login.microsoftonline.com/common/oauth2/v2.0/token`
 
-在企业单点登录（SSO）完成后，授权码交换得到的响应中即包含 `refresh_token`，将其填入上述 `accounts.json` 即可。
+企业单点登录（SSO）完成后，授权码交换的响应里就有 `refresh_token`，填进上面的 `accounts.json` 即可。
 
 ---
 
 ### 5. 线上 Copilot / M365 Agent Builder 配置全流程
 
-为了让 Copilot 具备最佳的具身编程表现并启用**专属直通模式（节省 80% Token、消除客套话、锁定 GPT-6.1 Sol 推理模型）**，需在线上 M365 中创建专属智能体。
+要让 Copilot 发挥出最好的具身编程表现并启用**专属直通模式（节省 80% Token、消除客套话、锁定 GPT-6.1 Sol 推理模型）**，需要在线上 M365 建一个专属智能体。
 
 #### 步骤 1：一键打包 Agent 资产包
 在 `CPH-PI` 根目录下运行打包脚本：
@@ -436,17 +436,17 @@ bun run package
 3. **关键共享设置**：在发布与共享选项中，确保将权限设置为 **「组织中的每个人 (Everyone in my organization)」**，或明确将你在 `accounts.json` 中配置的轮转账号添加为使用者，确保多账号轮转时均可访问。
 
 #### 步骤 7：复制专属 Agent ID 或 URL
-发布完成后，进入该 Agent 的独立聊天窗口，在浏览器地址栏复制完整 URL，例如：
+发布后进入该 Agent 的独立聊天窗口，从浏览器地址栏复制完整 URL，例如：
 ```text
 https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3
 ```
-其中的 `T_9feac605-...` 即为此 Agent 的唯一标识。
+`T_9feac605-...` 就是这个 Agent 的唯一标识。
 
 ---
 
 ### 6. 一键权限探测与白名单同步应用
 
-配置好线上 Agent 与本地账号后，在终端运行权限探测套件：
+配好线上 Agent 与本地账号后，在终端运行权限探测套件：
 
 ```bash
 # 探测账号池对专属 Agent 的访问权限
@@ -473,13 +473,13 @@ bun run check:accounts --agent "https://m365.cloud.microsoft/chat/agent/T_..."
 ```
 
 **一键写入白名单**：
-运行带 `--apply` 参数的命令，系统会自动将所有可用账号写入当前工作区的 `.cph/config.json`：
+运行带 `--apply` 的命令，系统会把所有可用账号写进当前工作区的 `.cph/config.json`：
 
 ```bash
 bun run check:accounts:apply
 ```
 
-后续所有多轮推理与 429 容灾轮转时，系统将**仅在可用账号之间安全流转**，彻底杜绝调用未授权账号造成的连接断裂。
+后续所有多轮推理与 429 容灾轮转时，系统**只在可用账号之间安全流转**，彻底杜绝调用未授权账号造成的连接断裂。
 
 ---
 
@@ -584,7 +584,7 @@ bun run src/cli.ts -a "T_..."
 
 ## 五、 测试套件与质量门禁
 
-CPH-PI 拥有严谨的全套自动化测试用例，涵盖协议契约、工具桥接、账号调度、滑动压实、TUI 差异渲染、专属智能体直通、编码智能自愈、大输出持久化、5 维高保真交接文档、自主无感接力闭环以及账号白名单过滤与权限探测。
+CPH-PI 有一套严谨的完整自动化测试用例，覆盖协议契约、工具桥接、账号调度、滑动压实、TUI 差异渲染、专属智能体直通、编码智能自愈、大输出持久化、5 维高保真交接文档、自主无感接力闭环以及账号白名单过滤与权限探测。
 
 ```bash
 # 执行全量测试套件 (43 个测试文件)

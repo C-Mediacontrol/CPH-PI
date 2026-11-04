@@ -26,22 +26,22 @@ package/
 
 ## 核心机制：为什么采用「文件上传」替代「聊天窗口直接发文本」？
 
-在普通的 AI 聊天或初级 Agent 中，执行工具的结果（例如读取的源码或测试日志）都是直接作为大段文本发在聊天输入框里。在面对真实的软件工程时，这种做法会迅速崩溃。
+普通 AI 聊天或初级 Agent 里，工具执行的结果（比如读到的源码或测试日志）都是大段文本直接发进聊天输入框。放到真实软件工程中，这种做法很快就会崩溃。
 
-CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless Attachment Architecture)**，通过微软企业级 Office Substrate / OneDrive 通道，自动将代码与终端输出作为文档附件挂载上传给 Copilot，消息正文仅保留极简摘要。这是本 Harness 最具竞争力的核心特性之一：
+CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless Attachment Architecture)**：通过微软企业级 Office Substrate / OneDrive 通道，自动把代码与终端输出作为文档附件挂载给 Copilot，消息正文只留极简摘要。这是本 Harness 最具竞争力的核心特性之一：
 
-1. **突破聊天单轮 Token 硬上限**：聊天文本超过 2,000~4,000 Token 就会被微软网关强制截断甚至报错；作为文件上传后，微软云端文档引擎（Office Document Intelligence）会在服务端原生解析完整文档，实现真正的**千行源码全量阅读直通 (Full-File Reading)**；
-2. **100% 杜绝 Windows 中文乱码**：避免了在 WebSocket JSON 文本流转义与网络拆包过程中发生的多字节 GBK/UTF-8 编码切断，彻底告别 `\uFFFD`（菱形问号乱码），保持物理文件真实字节；
-3. **彻底防止上下文窗口打爆 (压缩率 85%~95%)**：聊天窗口仅保留一行元数据通知（如 `[已挂载附件 tool-result.txt: 200行]`），沉重的数据实体全部沉淀在附件中。即使连续执行 25~30 轮复杂任务，上下文依然极其精炼聚焦，彻底告别“上下文疲劳”；
-4. **根除模型幻觉与历史复读**：线上 Agent 确立了“**附件即单一真实数据源 (Single Source of Truth)**”的认知契约，严格依据云端已解析出的结构化文件推演与打补丁，杜绝把聊天历史中过时的旧代码混淆复读；
-5. **规避微软 Web WAF 敏感词误杀与拒答**：输入框文本是微软 WAF 安全审查的第一扫描区，代码片段极易触发误判拒答；而合规企业文档通道极少被 WAF 误杀，任务执行成功率提升 95% 以上。
+1. **突破聊天单轮 Token 硬上限**：聊天文本超过 2,000~4,000 Token 就会被微软网关强制截断甚至报错；改为文件上传后，微软云端文档引擎（Office Document Intelligence）会在服务端原生解析完整文档，实现真正的**千行源码全量阅读直通 (Full-File Reading)**；
+2. **100% 杜绝 Windows 中文乱码**：避开 WebSocket JSON 文本转义与网络拆包过程中多字节 GBK/UTF-8 编码切断，彻底告别 `\uFFFD`（菱形问号乱码），保持物理文件的真实字节；
+3. **彻底防止上下文窗口被打爆（压缩率 85%~95%）**：聊天窗口只保留一行元数据通知（如 `[已挂载附件 tool-result.txt: 200行]`），沉重的数据实体全部留在附件里。即使连续执行 25~30 轮复杂任务，上下文依然精炼聚焦，彻底告别“上下文疲劳”；
+4. **根除模型幻觉与历史复读**：线上 Agent 确立了“**附件即单一真实数据源 (Single Source of Truth)**”的认知契约，严格依据云端已解析的结构化文件推演和打补丁，杜绝把聊天历史中过时的旧代码混淆复读；
+5. **规避微软 Web WAF 敏感词误杀与拒答**：输入框文本是微软 WAF 安全审查的第一扫描区，代码片段极易触发误判拒答；合规企业文档通道极少被 WAF 误杀，任务执行成功率提升 95% 以上。
 
 ---
 
 ## 快速上手：三步开始使用
 
 ### 前置条件
-只需确保电脑上安装了以下**任意一种**运行环境（二选一即可）：
+电脑上装好下面**任意一种**运行环境即可（二选一）：
 - **Node.js** (v20+ LTS) — [官网下载](https://nodejs.org)
 - **Bun** (v1.2+) — [官网下载](https://bun.sh)（PowerShell 运行 `irm bun.sh/install.ps1 | iex`）
 
@@ -49,17 +49,17 @@ CPH-PI 创新性地引入了 **全量无损文件附件交付体系 (Lossless At
 
 ## 全局环境变量注册 (实现任意路径输入 `cph-pi` 直接运行)
 
-为了能够在系统的**任意路径与任意工程目录下**（例如直接在用户根目录 `C:\Users\UserX>`），直接敲入 `cph-pi` 命令操作指定目录：
+想在系统**任意路径、任意工程目录**下（比如用户根目录 `C:\Users\UserX>`）直接敲 `cph-pi` 命令操作指定目录：
 
 ```powershell
 PS C:\Users\UserX> cph-pi E:\test --agent https://m365.cloud.microsoft/chat/agent/T_9feac605-583d-c37d-cb38-831efe727253.2d893690-5a50-4308-bb95-09fc0ece6464.gpt.1a1be0ff-8bb3-4b10-90f7-8666145e91d3 --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-cgm.com" --debug
 ```
 
-只需将本 `package` 文件夹的绝对路径注册到系统的 **`Path`** 环境变量中即可。
+把本 `package` 文件夹的绝对路径加进系统的 **`Path`** 环境变量即可。
 
 ### 方式一：PowerShell 一键命令永久注册 (强烈推荐)
 
-在当前 `package` 目录下打开 PowerShell，运行以下命令即可永久写入当前用户的 `Path`：
+在当前 `package` 目录下打开 PowerShell，运行下面的命令，把该目录永久写入当前用户的 `Path`：
 
 ```powershell
 # 1. 自动获取当前 package 目录绝对路径 (若已在该目录下执行)
@@ -90,7 +90,7 @@ if ($currentPath -notlike "*$pkgDir*") {
 6. 重新打开一个全新的 PowerShell 终端，即可全局输入 `cph-pi` 运行。
 
 ### 进阶优化：注册默认 Agent 环境变量 (省去每次敲 `--agent`)
-如果你固定使用某一个专属智能体，可将它的 URL 或纯 ID 直接注册为 `CPH_COPILOT_AGENT_ID` 环境变量：
+如果固定用一个专属智能体，可以把它的 URL 或纯 ID 注册为 `CPH_COPILOT_AGENT_ID` 环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
@@ -113,7 +113,7 @@ PS C:\Users\UserX> cph-pi E:\test --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-
   （即 `C:\Users\<你的用户名>\.config\m365-copilot2api\accounts.json`）
 - **macOS / Linux**：`~/.config/m365-copilot2api/accounts.json`
 
-参考本目录下的 `accounts.example.json`，创建并填入你的企业账号与刷新令牌：
+参照本目录的 `accounts.example.json` 创建，填入企业账号与刷新令牌：
 
 ```json
 [
@@ -138,7 +138,7 @@ PS C:\Users\UserX> cph-pi E:\test --accounts "GSC.VFU2@cma-cgm.com,GSC.DDAI@cma-
 7. 打开该 Agent 的聊天窗口，复制浏览器地址栏的完整 URL（形如 `https://m365.cloud.microsoft/chat/agent/T_...`）。
 
 #### （可选）一键探测账号访问权限
-在当前目录下运行，检测你的账号池是否拥有该 Agent 的访问权限：
+在当前目录下运行，检查账号池是否有该 Agent 的访问权限：
 ```bash
 node bin/check-accounts.js --agent "https://m365.cloud.microsoft/chat/agent/T_..."
 # 或自动将可用账号写入白名单：
@@ -185,7 +185,7 @@ bun run bin/cph-pi.js E:\test -a "T_..."
 ## 常用命令速查
 
 ### 命令行参数
-- `-w <path>`：指定操作的目标代码工作区（默认当前命令行所在目录）；
+- `-w <path>`：指定目标代码工作区（默认当前命令行所在目录）；
 - `-a <id|url>`：指定专属自建智能体；
 - `-c`：接续最近活跃的会话；
 - `-r <id>`：恢复指定的历史会话；
